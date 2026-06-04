@@ -4,22 +4,9 @@
  *  Run: node --env-file=.env.local --import tsx server/rebyte/hello.ts ["prompt"]
  */
 import { rebyteJSON, rebyteFetch } from './client.ts'
+import { parseSSE, isObj } from './sse.ts'
 
 const PROMPT = process.argv.slice(2).join(' ') || '请用一句话介绍你自己。'
-const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object'
-
-async function* parseSSE(body: ReadableStream<Uint8Array>) {
-  const reader = body.getReader(); const dec = new TextDecoder()
-  let buf = '', event = 'message', data: string[] = []
-  const flush = () => { if (!data.length && event === 'message') return null; const s = data.join('\n'); let d: unknown = s; if (s) { try { d = JSON.parse(s) } catch { /* */ } } const e = { event, data: d }; event = 'message'; data = []; return e }
-  for (;;) { const { done, value } = await reader.read(); if (done) break; buf += dec.decode(value, { stream: true })
-    let i: number; while ((i = buf.indexOf('\n')) >= 0) { const raw = buf.slice(0, i); buf = buf.slice(i + 1); const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
-      if (line === '') { const e = flush(); if (e) yield e; continue }
-      if (line.startsWith(':')) continue
-      const c = line.indexOf(':'); const f = c === -1 ? line : line.slice(0, c); const v = c === -1 ? '' : line.slice(c + 1).replace(/^ /, '')
-      if (f === 'event') event = v; else if (f === 'data') data.push(v) } }
-  const e = flush(); if (e) yield e
-}
 
 async function main() {
   console.log(`POST /v1/tasks  prompt="${PROMPT}"`)

@@ -10,7 +10,10 @@
     "predev:all": "pkill -f 'concurrently -n vite,server' 2>/dev/null || true",
     "dev:all": "concurrently -n vite,server -c blue,green 'pnpm dev' 'pnpm dev:server'",
     "build": "vite build",
-    "start": "node --import tsx server/index.ts"
+    "start": "node --import tsx server/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test:rebyte": "node --env-file=.env.local --import tsx server/rebyte/smoke.ts",
+    "test:rebyte:full": "node --env-file=.env.local --import tsx server/rebyte/smoke.ts && node --env-file=.env.local --import tsx server/rebyte/spike.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.14",

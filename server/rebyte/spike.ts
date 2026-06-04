@@ -16,71 +16,50 @@
 import { ensureDefaultAgentComputer } from './provision.ts'
 import { seedTravelkit } from './seed.ts'
 import { rebyteJSON, rebyteFetch } from './client.ts'
+import { parseSSE, isObj } from './sse.ts'
 
 const PROMPT = process.argv.slice(2).join(' ')
   || '请使用 travelkit 搜索 2026-06-05 北京到上海的机票，1 名成人，直飞，给我看几个选项。'
-const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object'
 
 const seenTypes = new Set<string>()
 const finalText: string[] = []
+const flags = { sawSearch: false, sawDelegation: false }
+const DELEGATION = ['run_claude_code', 'run_codex', 'run_coding_agent', 'coding_agent__']
 
-function summarize(ev: Record<string, unknown>, toolNames: Map<string, string>): boolean {
+function summarize(ev: Record<string, unknown>, toolNames: Map<string, string>): void {
   const type = String(ev.eventType ?? '?')
   seenTypes.add(type)
   const p = isObj(ev.payload) ? ev.payload : {}
   switch (type) {
-    case 'init': console.log(`  · init model=${p.model} cwd=${p.cwd}`); return false
-    case 'thinking': console.log(`  🤔 ${String(p.content ?? p.thinking ?? '').slice(0, 100)}`); return false
+    case 'init': console.log(`  · init model=${p.model} cwd=${p.cwd}`); return
+    case 'thinking': console.log(`  🤔 ${String(p.content ?? p.thinking ?? '').slice(0, 100)}`); return
     case 'text': case 'assistant': case 'message': case 'response': {
       const t = String(p.content ?? p.text ?? '')
       if (t.trim()) { finalText.push(t); console.log(`  💬 ${t.slice(0, 160)}`) }
-      return false
+      return
     }
     case 'tool_use': {
       const name = String(p.name ?? p.tool_name ?? '?'); const id = String(p.id ?? p.tool_id ?? '')
       if (id) toolNames.set(id, name)
       console.log(`  🔧 tool_use ${name} ${JSON.stringify(p.input ?? p.params ?? {}).slice(0, 140)}`)
-      return name.includes('flight_search') || name.includes('flight_verify')
+      // flight_search shows at the parent level only on legacy direct-call tasks; on
+      // the agent-loop architecture it runs nested inside the delegated coding sub-
+      // agent, so the parent stream only shows the coding_agent delegation. Either
+      // counts as "reached travelkit".
+      if (name.includes('flight_search') || name.includes('flight_verify')) flags.sawSearch = true
+      if (DELEGATION.some((d) => name.includes(d))) flags.sawDelegation = true
+      return
     }
     case 'tool_result': {
       const id = String(p.id ?? p.tool_id ?? ''); const name = toolNames.get(id) ?? '?'
       const out = typeof p.output === 'string' ? p.output : JSON.stringify(p.output ?? '')
       console.log(`  📦 tool_result ← ${name} (${out.length} chars)`)
       if (name.includes('flight_search')) console.log(`  ──── output head ────\n${out.slice(0, 500)}\n  ────`)
-      return false
+      return
     }
-    case 'result': console.log(`  · result ${JSON.stringify(p).slice(0, 2500)}`); return false
-    default: console.log(`  · ${type} ${JSON.stringify(p).slice(0, 2000)}`); return false
+    case 'result': console.log(`  · result ${JSON.stringify(p).slice(0, 2500)}`); return
+    default: console.log(`  · ${type} ${JSON.stringify(p).slice(0, 2000)}`); return
   }
-}
-
-async function* parseSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<{ event: string; data: unknown }> {
-  const reader = body.getReader(); const dec = new TextDecoder('utf-8')
-  let buf = '', event = 'message', dataLines: string[] = []
-  const flush = () => {
-    if (!dataLines.length && event === 'message') return null
-    const s = dataLines.join('\n'); let data: unknown = s
-    if (s) { try { data = JSON.parse(s) } catch { /* keep string */ } }
-    const ev = { event, data }; event = 'message'; dataLines = []; return ev
-  }
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += dec.decode(value, { stream: true })
-    let i: number
-    while ((i = buf.indexOf('\n')) >= 0) {
-      const raw = buf.slice(0, i); buf = buf.slice(i + 1)
-      const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
-      if (line === '') { const ev = flush(); if (ev) yield ev; continue }
-      if (line.startsWith(':')) continue
-      const c = line.indexOf(':')
-      const field = c === -1 ? line : line.slice(0, c)
-      const val = c === -1 ? '' : line.slice(c + 1).replace(/^ /, '')
-      if (field === 'event') event = val
-      else if (field === 'data') dataLines.push(val)
-    }
-  }
-  const ev = flush(); if (ev) yield ev
 }
 
 async function main() {
@@ -101,7 +80,9 @@ async function main() {
 
   console.log('[spike] 4/4 streaming /events (reconnect on empty-done race)…')
   const toolNames = new Map<string, string>()
-  let sawSearch = false, n = 0
+  let n = 0
+  let doneStatus = '?'
+  let finalResult = ''
   const timer = setTimeout(() => { console.error('[spike] timeout'); process.exit(2) }, 240_000)
 
   // The relay returns an immediate done (lastSeq:-1) if we connect before it has
@@ -113,11 +94,17 @@ async function main() {
     let got = 0
     for await (const ev of parseSSE(res.body)) {
       if (ev.event === 'done') {
-        if (got > 0) { console.log(`[spike] event:done ${JSON.stringify(ev.data)}`) }
+        if (got > 0) {
+          console.log(`[spike] event:done ${JSON.stringify(ev.data)}`)
+          if (isObj(ev.data)) {
+            doneStatus = String(ev.data.status ?? '?')
+            if (typeof ev.data.finalResult === 'string') finalResult = ev.data.finalResult
+          }
+        }
         break
       }
       got++; n++
-      if (isObj(ev.data) && summarize(ev.data, toolNames)) sawSearch = true
+      if (isObj(ev.data)) summarize(ev.data, toolNames)
     }
     if (got > 0) break // got the (replayed-from-0) stream; done
     const st = await rebyteJSON<{ status?: string }>(`/tasks/${task.id}`).catch(() => ({ status: '?' }))
@@ -127,11 +114,23 @@ async function main() {
     await new Promise((r) => setTimeout(r, 1000))
   }
   clearTimeout(timer)
-  console.log(`\n[spike] stream ended. events=${n} eventTypes=${JSON.stringify([...seenTypes])}`)
-  if (finalText.length) console.log(`[spike] final agent text:\n${finalText.join('').slice(0, 800)}`)
-  console.log(sawSearch
-    ? '\n✅ SPIKE PASS: agent 在 rebyte VM 调到 travelkit flight_search，事件契约已捕获。'
-    : '\n⚠️ 未见 flight_search —— 见上方事件。')
-  process.exit(0)
+  if (!finalResult && finalText.length) finalResult = finalText.join('')
+  console.log(`\n[spike] stream ended. events=${n} types=${JSON.stringify([...seenTypes])} done=${doneStatus} delegated=${flags.sawDelegation} flightSearchSeen=${flags.sawSearch}`)
+  if (finalResult) console.log(`[spike] final agent text:\n${finalResult.slice(0, 800)}`)
+
+  // PASS on the agent-loop architecture = task succeeded with a real answer AND
+  // travelkit was reached — either flight_search at the parent level (legacy direct
+  // call) OR a coding_agent delegation (flight_search runs nested in the sub-agent,
+  // not surfaced in the parent stream).
+  const reachedTravelkit = flags.sawSearch || flags.sawDelegation
+  const ok = doneStatus === 'succeeded' && finalResult.trim().length > 0 && reachedTravelkit
+  if (ok) {
+    const via = flags.sawSearch ? 'flight_search（父级直调）' : 'coding_agent 委派（flight_search 在子 agent 内）'
+    console.log(`\n✅ SPIKE PASS: done=succeeded，经 ${via} 拿到真实结果。`)
+    if (!flags.sawSearch) console.log('   注：委派路下 flight_search 在子 agent，父事件流不透出；要铁证可 peek 子 prompt 事件。')
+  } else {
+    console.log(`\n⚠️ SPIKE 未通：done=${doneStatus}, finalResult=${finalResult ? 'yes' : 'no'}, reachedTravelkit=${reachedTravelkit}（见上方事件）。`)
+  }
+  process.exit(ok ? 0 : 1)
 }
 main().catch((e) => { console.error('[spike] ERROR:', e?.stack || e?.message || e); process.exit(1) })
