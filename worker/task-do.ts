@@ -25,7 +25,7 @@ import { isObj, parseSSE } from '../server/rebyte/sse.ts'
 import { rebyteJSON, rebyteFetch, type RebyteConfig } from '../server/rebyte/client.ts'
 import { provisionComputer, seedSandbox } from './seed.ts'
 import { shouldDrainTerminal } from './turn-finalize.ts'
-import { framesHaveAssistantText } from '../server/frame-text.ts'
+import { framesHaveAssistantText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
 import type { Env } from './env.ts'
 
 const MODEL = 'claude-sonnet-4.6'
@@ -55,6 +55,10 @@ interface TurnState {
   submitted: boolean
   lastRelaySeq: number
   sawText: boolean
+  /** Whitespace-stripped concat of all assistant text emitted this turn, so the
+   *  `result` event + final `finalResult` (which echo the same answer on another
+   *  channel) are emitted once, not duplicated. */
+  emittedText: string
   /** Consecutive windows where GET /tasks reported terminal but we hadn't yet
    *  drained the relay's trailing text + `done` (which carries the final summary).
    *  The status flips a beat before finalResult populates, so we drain a few more
@@ -104,6 +108,18 @@ export class TaskDO extends DurableObject<Env> {
     if (!text.trim()) return
     await this.emit(promptId, { type: 'assistant', message: { content: [{ type: 'text', text }] } })
   }
+  /** Emit assistant text and record it in t.emittedText. When `dedupe`, skip text the
+   *  turn has already shown — the relay echoes the final answer on both the `text` and
+   *  `result`/`finalResult` channels, so without this the verify/order summary doubles
+   *  (or, pre-fix, was DROPPED because we only emitted finalResult when no text existed). */
+  private async emitTurnText(t: TurnState, text: string, dedupe: boolean): Promise<void> {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    if (dedupe && t.emittedText.includes(normText(trimmed))) return
+    await this.emitText(t.promptId, trimmed)
+    t.emittedText += normText(trimmed)
+    t.sawText = true
+  }
   private async emitToolUse(promptId: string, id: string, name: string, input: unknown): Promise<void> {
     await this.emit(promptId, { type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input: input ?? {} }] } })
   }
@@ -112,29 +128,36 @@ export class TaskDO extends DurableObject<Env> {
     await this.emit(promptId, { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, content }] } })
   }
 
-  /** Translate one relay event into stream-json frame(s). Returns assistant text produced. */
-  private async translate(promptId: string, ev: RelayEvent): Promise<string> {
+  /** Translate one relay event into stream-json frame(s), updating turn bookkeeping. */
+  private async translate(t: TurnState, ev: RelayEvent): Promise<void> {
     const type = String(ev.eventType ?? '')
     const p = isObj(ev.payload) ? ev.payload : {}
     switch (type) {
       case 'text': case 'assistant': case 'message': case 'response': {
-        const t = String(p.content ?? p.text ?? '')
-        await this.emitText(promptId, t)
-        return t
+        await this.emitTurnText(t, String(p.content ?? p.text ?? ''), false)
+        return
+      }
+      case 'result': {
+        // The agent-loop delivers the final summary on the `result` channel too — and
+        // SOMETIMES ONLY there (no preceding `text` event), e.g. a verify/order turn that
+        // opened with an "正在验价请稍候" ack. Render it as chat text, deduped so it doesn't
+        // double the answer when a `text` event already carried it.
+        await this.emitTurnText(t, String(p.result ?? p.content ?? p.text ?? ''), true)
+        return
       }
       case 'tool_use': {
         const name = String(p.name ?? p.tool_name ?? '')
         const id = String(p.id ?? p.tool_id ?? '') || crypto.randomUUID()
-        await this.emitToolUse(promptId, id, name, p.input ?? p.params ?? {})
-        return ''
+        await this.emitToolUse(t.promptId, id, name, p.input ?? p.params ?? {})
+        return
       }
       case 'tool_result': {
-        await this.emitToolResult(promptId, String(p.id ?? p.tool_id ?? ''), p.output)
-        return ''
+        await this.emitToolResult(t.promptId, String(p.id ?? p.tool_id ?? ''), p.output)
+        return
       }
       default:
-        await this.emit(promptId, { __relay: type || 'unknown', payload: p })
-        return ''
+        await this.emit(t.promptId, { __relay: type || 'unknown', payload: p })
+        return
     }
   }
 
@@ -179,6 +202,7 @@ export class TaskDO extends DurableObject<Env> {
       submitted: false,
       lastRelaySeq: 0,
       sawText: false,
+      emittedText: '',
       terminalDrains: 0,
       deadline: Date.now() + TURN_TIMEOUT_MS,
     }
@@ -186,22 +210,37 @@ export class TaskDO extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(Date.now())
   }
 
-  /** Self-heal a finalized-but-empty turn. If a turn finalized before its answer
-   *  reached the store (truncation), the chat text shown in the UI is missing and a
-   *  browser refresh — which reads only the store — can't recover it. But the relay
-   *  still retains the full per-prompt response, so backfill it as an assistant text
-   *  frame. Returns true iff it wrote a recovered frame. Idempotent: no-op once the
-   *  turn already has assistant text, so repeated content loads don't duplicate.
-   *
-   *  Only targets terminal prompts, so it never races the running turn's frame writer
-   *  (which only ever touches the in-flight prompt); seq is computed locally rather
-   *  than via the shared `frameSeq`, which belongs to that in-flight prompt. */
+  /** Append assistant text frames to a terminal prompt, computing seq locally rather
+   *  than via the shared `frameSeq` (which belongs to the in-flight prompt). Targets
+   *  only terminal prompts, so it never races the running turn's frame writer. */
+  private async backfillText(promptId: string, texts: string[]): Promise<void> {
+    let seq = await this.maxFrameSeq(promptId)
+    for (const text of texts) {
+      await this.store.appendFrame(promptId, ++seq, { type: 'assistant', message: { content: [{ type: 'text', text }] } })
+    }
+  }
+
+  /** Self-heal a finalized turn whose answer is missing OR present-but-unrendered, so a
+   *  browser refresh (which reads only the store) shows the complete message. Two cases:
+   *    1. Answer is in the store on the `result` channel but never rendered as chat text
+   *       (the agent-loop delivers the final summary there) → render it locally, no relay.
+   *    2. Answer never reached the store at all → backfill the relay's retained per-prompt
+   *       response. Returns true iff it wrote a recovered frame. Idempotent: re-running
+   *       finds the text already rendered and no-ops, so repeated loads don't duplicate. */
   async recoverPrompt(promptId: string): Promise<boolean> {
     const p = await this.store.getPrompt(promptId)
     if (!p || p.status === 'running') return false // the live turn owns its own frames
-    if (framesHaveAssistantText(await this.store.framesSince(promptId, 0))) return false
+    const frames = await this.store.framesSince(promptId, 0)
 
-    // Find the session's relay task and this prompt's position within it.
+    // Case 1 (local, no relay call): final text sits on the result channel, unrendered.
+    const pending = unrenderedResultTexts(frames)
+    if (pending.length) {
+      await this.backfillText(promptId, pending)
+      return true
+    }
+    // Case 2: nothing rendered at all → recover from the relay's retained response.
+    if (framesHaveAssistantText(frames)) return false
+
     let relayTaskId = await this.ctx.storage.get<string>('relayTaskId')
     if (!relayTaskId) relayTaskId = (await this.store.getTask(p.task_id))?.relay_task_id ?? undefined
     if (!relayTaskId) return false
@@ -221,8 +260,7 @@ export class TaskDO extends DurableObject<Env> {
     const text = relayPrompts[idx]?.response?.trim()
     if (!text) return false
 
-    const seq = (await this.maxFrameSeq(promptId)) + 1
-    await this.store.appendFrame(promptId, seq, { type: 'assistant', message: { content: [{ type: 'text', text }] } })
+    await this.backfillText(promptId, [text])
     return true
   }
 
@@ -282,7 +320,7 @@ export class TaskDO extends DurableObject<Env> {
 
       const done = await this.streamWindow(t, config)
       if (done.terminal) {
-        if (!t.sawText && done.finalResult?.trim()) await this.emitText(t.promptId, done.finalResult)
+        if (done.finalResult) await this.emitTurnText(t, done.finalResult, true)
         return this.finalize(t, this.mapStatus(done.status ?? 'completed'))
       }
 
@@ -305,7 +343,7 @@ export class TaskDO extends DurableObject<Env> {
           await this.ctx.storage.setAlarm(Date.now() + 100)
           return
         }
-        if (!t.sawText && st.finalResult?.trim()) await this.emitText(t.promptId, st.finalResult)
+        if (st.finalResult) await this.emitTurnText(t, st.finalResult, true)
         return this.finalize(t, this.mapStatus(st.status))
       }
 
@@ -370,7 +408,7 @@ export class TaskDO extends DurableObject<Env> {
         const seq = typeof ev.seq === 'number' ? ev.seq : t.lastRelaySeq + 1
         if (seq <= t.lastRelaySeq) continue
         t.lastRelaySeq = seq
-        if ((await this.translate(t.promptId, ev)).trim()) t.sawText = true
+        await this.translate(t, ev)
       }
       return { terminal: false } // stream closed without done (window timeout or relay close)
     } catch (e) {

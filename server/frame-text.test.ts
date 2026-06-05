@@ -6,9 +6,10 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isAssistantTextFrame, framesHaveAssistantText } from './frame-text.ts'
+import { isAssistantTextFrame, framesHaveAssistantText, resultFrameText, unrenderedResultTexts } from './frame-text.ts'
 
 const assistantText = (text: string) => ({ type: 'assistant', message: { content: [{ type: 'text', text }] } })
+const resultFrame = (text: string) => ({ __relay: 'result', payload: { result: text } })
 const toolUse = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'x', name: 'flight_search', input: {} }] } }
 const toolResult = { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'x', content: '...' }] } }
 
@@ -40,4 +41,42 @@ test('THE TRUNCATION CASE: a finalized turn with only delegation frames reads as
   assert.equal(framesHaveAssistantText(truncated), false)
   // After backfill, the recovered text frame makes it whole.
   assert.equal(framesHaveAssistantText([...truncated, { seq: 4, data: assistantText('以下是验价结果…') }]), true)
+})
+
+test('resultFrameText extracts the agent text from a __relay:result frame', () => {
+  assert.equal(resultFrameText(resultFrame('验价通过！')), '验价通过！')
+  assert.equal(resultFrameText(assistantText('hi')), null)
+  assert.equal(resultFrameText({ __relay: 'result', payload: { result: '   ' } }), null)
+  assert.equal(resultFrameText({ __relay: 'thinking', payload: { result: 'x' } }), null)
+})
+
+test('THE CZ8882 CASE: answer present on result channel but unrendered → self-heal renders it', () => {
+  // Exactly the stuck verify turn: early ack as text, then the real answer arrives only
+  // on the result channel (echoed ack ×2, then the verify table) — never as a text frame.
+  const ack = '好的，您选择了 CZ8882…我来为您实时验价，请稍候...'
+  const table = '验价通过！价格与搜索时完全一致……（表格）'
+  const frames = [
+    { seq: 1, data: { __rebyte_run: 'r' } },
+    { seq: 2, data: assistantText(ack) },
+    { seq: 3, data: toolUse },
+    { seq: 4, data: resultFrame(ack) }, // echo of the ack
+    { seq: 5, data: resultFrame(ack) }, // echo again
+    { seq: 6, data: resultFrame(table) }, // the real answer — unrendered
+  ]
+  // It HAS assistant text (the ack), so the old guard skipped it — but the answer is missing.
+  assert.equal(framesHaveAssistantText(frames), true)
+  // The detector finds exactly the table (ack echoes deduped against the rendered ack).
+  assert.deepEqual(unrenderedResultTexts(frames), [table])
+  // After backfilling it, nothing is left pending (idempotent on the next load).
+  const healed = [...frames, { seq: 7, data: assistantText(table) }]
+  assert.deepEqual(unrenderedResultTexts(healed), [])
+})
+
+test('a complete turn (answer already rendered as text) has no pending result texts', () => {
+  const ans = '以下是航班选项……'
+  const frames = [
+    { seq: 1, data: assistantText(ans) },
+    { seq: 2, data: resultFrame(ans) }, // result echoes the same answer → already rendered
+  ]
+  assert.deepEqual(unrenderedResultTexts(frames), [])
 })

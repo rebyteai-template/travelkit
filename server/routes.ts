@@ -17,7 +17,7 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import type { Store, Task } from './store.ts'
-import { framesHaveAssistantText } from './frame-text.ts'
+import { framesHaveAssistantText, unrenderedResultTexts } from './frame-text.ts'
 
 /** Single default project (no project picker in this build). */
 export const DEFAULT_PROJECT_ID = 'default'
@@ -91,13 +91,12 @@ app.get('/tasks/:id/content', async (c) => {
   const prompts = await Promise.all(
     rows.map(async (p) => {
       let frames = await store.framesSince(p.id, 0)
-      // Self-heal: a turn that finalized before its answer reached the store shows as
-      // terminal-but-empty, and a browser refresh reads only the store — so it can't
-      // recover on its own. The backend (rebyte relay) still retains the full text, so
-      // ask it to backfill once, then re-read. No-op for turns whose answer did land.
-      if (p.status !== 'running' && !framesHaveAssistantText(frames)) {
-        if (await c.var.recoverPrompt(task.id, p.id)) frames = await store.framesSince(p.id, 0)
-      }
+      // Self-heal a terminal turn whose answer the UI can't show: either nothing landed
+      // (truncation), or the answer is stored on the `result` channel but never rendered
+      // as chat text. A browser refresh reads only the store, so it can't recover on its
+      // own — ask the backend to backfill, then re-read. No-op for turns already whole.
+      const needsHeal = p.status !== 'running' && (!framesHaveAssistantText(frames) || unrenderedResultTexts(frames).length > 0)
+      if (needsHeal && (await c.var.recoverPrompt(task.id, p.id))) frames = await store.framesSince(p.id, 0)
       return { id: p.id, prompt: p.prompt, status: p.status, frames }
     }),
   )
