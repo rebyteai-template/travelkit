@@ -37,6 +37,9 @@ app.use('/api/app/*', async (c, next) => {
     if (!p) return false
     return env.TASK_DO.getByName(p.task_id).cancel(promptId)
   })
+  c.set('recoverPrompt', async (taskId, promptId) => {
+    return env.TASK_DO.getByName(taskId).recoverPrompt(promptId)
+  })
   await next()
 })
 

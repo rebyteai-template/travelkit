@@ -24,6 +24,8 @@ import type { Store } from '../server/store.ts'
 import { isObj, parseSSE } from '../server/rebyte/sse.ts'
 import { rebyteJSON, rebyteFetch, type RebyteConfig } from '../server/rebyte/client.ts'
 import { provisionComputer, seedSandbox } from './seed.ts'
+import { shouldDrainTerminal } from './turn-finalize.ts'
+import { framesHaveAssistantText } from '../server/frame-text.ts'
 import type { Env } from './env.ts'
 
 const MODEL = 'claude-sonnet-4.6'
@@ -53,6 +55,11 @@ interface TurnState {
   submitted: boolean
   lastRelaySeq: number
   sawText: boolean
+  /** Consecutive windows where GET /tasks reported terminal but we hadn't yet
+   *  drained the relay's trailing text + `done` (which carries the final summary).
+   *  The status flips a beat before finalResult populates, so we drain a few more
+   *  windows to catch the tail before finalizing. */
+  terminalDrains: number
   deadline: number
 }
 
@@ -172,10 +179,51 @@ export class TaskDO extends DurableObject<Env> {
       submitted: false,
       lastRelaySeq: 0,
       sawText: false,
+      terminalDrains: 0,
       deadline: Date.now() + TURN_TIMEOUT_MS,
     }
     await this.ctx.storage.put('turn', t)
     await this.ctx.storage.setAlarm(Date.now())
+  }
+
+  /** Self-heal a finalized-but-empty turn. If a turn finalized before its answer
+   *  reached the store (truncation), the chat text shown in the UI is missing and a
+   *  browser refresh — which reads only the store — can't recover it. But the relay
+   *  still retains the full per-prompt response, so backfill it as an assistant text
+   *  frame. Returns true iff it wrote a recovered frame. Idempotent: no-op once the
+   *  turn already has assistant text, so repeated content loads don't duplicate.
+   *
+   *  Only targets terminal prompts, so it never races the running turn's frame writer
+   *  (which only ever touches the in-flight prompt); seq is computed locally rather
+   *  than via the shared `frameSeq`, which belongs to that in-flight prompt. */
+  async recoverPrompt(promptId: string): Promise<boolean> {
+    const p = await this.store.getPrompt(promptId)
+    if (!p || p.status === 'running') return false // the live turn owns its own frames
+    if (framesHaveAssistantText(await this.store.framesSince(promptId, 0))) return false
+
+    // Find the session's relay task and this prompt's position within it.
+    let relayTaskId = await this.ctx.storage.get<string>('relayTaskId')
+    if (!relayTaskId) relayTaskId = (await this.store.getTask(p.task_id))?.relay_task_id ?? undefined
+    if (!relayTaskId) return false
+
+    const ordered = await this.store.listPrompts(p.task_id)
+    const idx = ordered.findIndex((row) => row.id === promptId)
+    if (idx < 0) return false
+
+    // The relay keeps each prompt's final response in /content. Only trust positional
+    // indexing when the prompt counts match (else bail rather than backfill wrong text).
+    const content = await rebyteJSON<{ prompts?: Array<{ response?: string }> }>(
+      `/tasks/${relayTaskId}/content?include=events`,
+      { config: this.rebyteConfig() },
+    ).catch(() => null)
+    const relayPrompts = content?.prompts
+    if (!Array.isArray(relayPrompts) || relayPrompts.length !== ordered.length) return false
+    const text = relayPrompts[idx]?.response?.trim()
+    if (!text) return false
+
+    const seq = (await this.maxFrameSeq(promptId)) + 1
+    await this.store.appendFrame(promptId, seq, { type: 'assistant', message: { content: [{ type: 'text', text }] } })
+    return true
   }
 
   /** Cancel the in-flight turn. The running alarm sees 'turn' gone and stops. */
@@ -238,12 +286,25 @@ export class TaskDO extends DurableObject<Env> {
         return this.finalize(t, this.mapStatus(done.status ?? 'completed'))
       }
 
-      // Window ended without a stream `done`. Ask the relay directly — finalize the moment
-      // it's terminal (the live stream doesn't always send a clean done on delegated turns).
+      // Window ended without a stream `done`. Ask the relay directly.
       const st = await rebyteJSON<{ status?: string; finalResult?: string }>(`/tasks/${t.relayTaskId}`, { config }).catch(
         () => ({}) as { status?: string; finalResult?: string },
       )
       if (st.status && TERMINAL.has(st.status)) {
+        // The relay is terminal — but on delegated turns its events arrive in a tail-burst
+        // (delegation tool_use → long gap → tool_result → manager text → `done{finalResult}`),
+        // and the status flips a beat BEFORE that text + done reach /events (and before
+        // st.finalResult is populated). Finalizing on the bare status here drops the agent's
+        // answer — the "second message loads back only halfway then sticks" bug. So once we
+        // have neither the streamed text nor a finalResult, drain a few more windows: the
+        // reconnect replays this prompt's tail and delivers the `done` (handled above). Bound
+        // the drains so a genuinely silent terminal turn still finalizes.
+        if (shouldDrainTerminal({ sawText: t.sawText, finalResult: st.finalResult, terminalDrains: t.terminalDrains, now: Date.now(), deadline: t.deadline })) {
+          t.terminalDrains++
+          await this.ctx.storage.put('turn', t)
+          await this.ctx.storage.setAlarm(Date.now() + 100)
+          return
+        }
         if (!t.sawText && st.finalResult?.trim()) await this.emitText(t.promptId, st.finalResult)
         return this.finalize(t, this.mapStatus(st.status))
       }
@@ -253,7 +314,7 @@ export class TaskDO extends DurableObject<Env> {
         return this.finalize(t, 'failed')
       }
 
-      await this.ctx.storage.put('turn', t) // persist lastRelaySeq / sawText
+      await this.ctx.storage.put('turn', t) // persist lastRelaySeq / sawText / terminalDrains
       await this.ctx.storage.setAlarm(Date.now() + 100) // continue promptly
     } catch (e: unknown) {
       await this.emit(t.promptId, { __error: e instanceof Error ? e.message : String(e) })

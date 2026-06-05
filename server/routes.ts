@@ -17,6 +17,7 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import type { Store, Task } from './store.ts'
+import { framesHaveAssistantText } from './frame-text.ts'
 
 /** Single default project (no project picker in this build). */
 export const DEFAULT_PROJECT_ID = 'default'
@@ -27,6 +28,10 @@ export interface RouteVars {
   store: Store
   runTurn: (taskId: string, projectId: string, promptId: string, prompt: string) => Promise<void>
   cancelTurn: (promptId: string) => Promise<boolean>
+  /** Backfill a finalized-but-empty turn's answer from the backend into the store
+   *  (the stream may have stopped before it persisted). Returns true if it recovered
+   *  something. See GET /tasks/:id/content. */
+  recoverPrompt: (taskId: string, promptId: string) => Promise<boolean>
 }
 
 export const app = new Hono<{ Variables: RouteVars }>()
@@ -84,12 +89,17 @@ app.get('/tasks/:id/content', async (c) => {
 
   const rows = await store.listPrompts(task.id)
   const prompts = await Promise.all(
-    rows.map(async (p) => ({
-      id: p.id,
-      prompt: p.prompt,
-      status: p.status,
-      frames: await store.framesSince(p.id, 0),
-    })),
+    rows.map(async (p) => {
+      let frames = await store.framesSince(p.id, 0)
+      // Self-heal: a turn that finalized before its answer reached the store shows as
+      // terminal-but-empty, and a browser refresh reads only the store — so it can't
+      // recover on its own. The backend (rebyte relay) still retains the full text, so
+      // ask it to backfill once, then re-read. No-op for turns whose answer did land.
+      if (p.status !== 'running' && !framesHaveAssistantText(frames)) {
+        if (await c.var.recoverPrompt(task.id, p.id)) frames = await store.framesSince(p.id, 0)
+      }
+      return { id: p.id, prompt: p.prompt, status: p.status, frames }
+    }),
   )
   return c.json({ task: { id: task.id, status: task.status }, prompts })
 })

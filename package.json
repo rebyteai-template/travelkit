@@ -17,7 +17,9 @@
     "db:migrate": "wrangler d1 migrations apply tripdesk --remote",
     "db:migrate:local": "wrangler d1 migrations apply tripdesk --local",
     "bootstrap:rebyte": "node --env-file=.env.local --import tsx scripts/bootstrap-rebyte.ts",
-    "test:rebyte": "node --env-file=.env.local --import tsx server/rebyte/smoke.ts"
+    "test": "node --import tsx --test worker/*.test.ts server/*.test.ts",
+    "test:rebyte": "node --env-file=.env.local --import tsx server/rebyte/smoke.ts",
+    "test:rebyte:multiturn": "node --env-file=.env.local --import tsx server/rebyte/multiturn.ts"
   },
   "dependencies": {
     "hono": "^4.12.10",
