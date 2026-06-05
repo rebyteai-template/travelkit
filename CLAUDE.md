@@ -43,6 +43,7 @@ set -a; . ./cloudflare.env; set +a && pnpm run deploy
 ## rebyte 集成
 
 - `POST /v1/tasks` 走 **agent-loop**：manager 不直连 travelkit MCP，而是**委派**沙箱子 agent（`coding_agent__run_claude_code_in_sandbox`）去调 `flight_search`；父任务事件流只见委派 + manager 散文总结。鉴权用 `API_KEY` 头（非 Bearer），client 见 `server/rebyte/client.ts`。
+- **不传 `model` / `executor`**：`/v1/tasks` 直接 `void` 掉这俩字段（cctools `relay/src/routes/v1/tasks.ts`，仅为旧客户端向后兼容保留）。模型是 **org 级**的（`org_settings.agent_loop_model`，默认 `claude-sonnet-4.6`，可选含 `deepseek-v4-pro`），**在 rebyte 管理台切，不在代码里传**。所以 POST 体只发 `{prompt, workspaceId}`，自动跟随 org 当前模型。
 - 取结果：`/tasks/:id/events`（SSE，`Accept: text/event-stream`），信封 `{seq,eventType,payload}`，eventType ∈ thinking/tool_use/tool_result/text/result，末 `event:done {status,finalResult}`。**注意空 done 竞态**：连得太早 relay 回个无前置事件的空 done（非终止），要按"本连接收到过事件才算 done"判（`task-do.ts streamWindow`、smoke/spike 都这么守）。
 - 每用户一个沙箱，首轮在 DO 里按需 provision + seed travelkit（纯 fetch，不用 SDK；`worker/seed.ts`），存 `agent_computers` 表。
 - 测试：`pnpm test:rebyte`（L0 存活+L1 鉴权+L2 manager 往返，秒级）。全链路探针 `node --import tsx server/rebyte/{spike,cardprobe}.ts`（开 VM/烧额度）。

@@ -28,7 +28,9 @@ import { shouldDrainTerminal } from './turn-finalize.ts'
 import { framesHaveAssistantText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
 import type { Env } from './env.ts'
 
-const MODEL = 'claude-sonnet-4.6'
+// No model/executor here on purpose: POST /v1/tasks IGNORES both (cctools relay
+// `void input.model; void input.executor`). The agent-loop model is resolved org-wide
+// from org_settings.agent_loop_model — switch it in the rebyte admin, not in code.
 const TURN_TIMEOUT_MS = 240_000 // hard ceiling for a whole turn
 const WINDOW_MS = 20_000 // per-alarm streaming window — short enough to never risk eviction
 const DEFAULT_API_URL = 'https://api.rebyte.ai/v1'
@@ -294,7 +296,7 @@ export class TaskDO extends DurableObject<Env> {
           const relayPrompt = `${REBYTE_INSTRUCTION}\n\n用户需求：\n${t.prompt}`
           const task = await rebyteJSON<{ id: string }>('/tasks', {
             method: 'POST',
-            body: JSON.stringify({ prompt: relayPrompt, workspaceId: ac.id, executor: 'claude', model: MODEL }),
+            body: JSON.stringify({ prompt: relayPrompt, workspaceId: ac.id }),
             config,
           })
           relayTaskId = task.id

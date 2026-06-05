@@ -69,7 +69,7 @@ async function main() {
   console.log('[cardprobe] 3/4 POST /tasks…')
   const task = await rebyteJSON<{ id: string; url?: string }>('/tasks', {
     method: 'POST',
-    body: JSON.stringify({ prompt: PROMPT, workspaceId: ac.id, executor: 'claude', model: 'claude-sonnet-4.6' }),
+    body: JSON.stringify({ prompt: PROMPT, workspaceId: ac.id }), // model/executor ignored by /v1/tasks (org-wide)
   })
   console.log(`[cardprobe]     task=${task.id} ${task.url ?? ''}`)
 

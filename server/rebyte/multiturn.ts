@@ -19,10 +19,6 @@ import { seedTravelkit } from './seed.ts'
 import { rebyteJSON, rebyteFetch } from './client.ts'
 import { parseSSE, isObj } from './sse.ts'
 
-// Unset → omit `model` on POST /tasks so the relay uses the workspace/backend default
-// (e.g. after switching the model behind the claude/codex executors to DS). Set
-// REBYTE_MODEL=… to pin a specific model. executor stays `claude` either way.
-const MODEL = process.env.REBYTE_MODEL
 const WINDOW_MS = 20_000
 const TURN_TIMEOUT_MS = 240_000
 const TERMINAL = new Set(['completed', 'succeeded', 'failed', 'canceled', 'cancelled'])
@@ -147,12 +143,12 @@ async function main() {
   // probe per turn catches "finalized but empty / wrong stage" regressions too.
   const expect = ['', '验价', '确认', '支付']
 
-  console.log(`[multiturn] 3/3 turn 1: POST /tasks (model=${MODEL ?? '(backend default)'}, executor=claude)`)
-  const body: Record<string, unknown> = { prompt: `${INSTRUCTION}\n\n用户需求：\n${turns[0]}`, workspaceId: ac.id, executor: 'claude' }
-  if (MODEL) body.model = MODEL
+  // No model/executor: POST /v1/tasks ignores both; the relay resolves the model
+  // org-wide (org_settings.agent_loop_model). So this tests whatever the org is set to.
+  console.log('[multiturn] 3/3 turn 1: POST /tasks (model resolved org-wide by relay)')
   const task = await rebyteJSON<{ id: string; status?: string }>('/tasks', {
     method: 'POST',
-    body: JSON.stringify(body),
+    body: JSON.stringify({ prompt: `${INSTRUCTION}\n\n用户需求：\n${turns[0]}`, workspaceId: ac.id }),
   })
   console.log(`[multiturn]     relayTask=${task.id}`)
 

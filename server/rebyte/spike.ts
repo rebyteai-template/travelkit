@@ -71,10 +71,10 @@ async function main() {
   const files = await seedTravelkit(ac)
   console.log(`[spike]     seeded ${files.length} files`)
 
-  console.log(`[spike] 3/4 POST /tasks (executor=claude)…`)
+  console.log(`[spike] 3/4 POST /tasks (model resolved org-wide)…`)
   const task = await rebyteJSON<{ id: string; status?: string; url?: string }>('/tasks', {
     method: 'POST',
-    body: JSON.stringify({ prompt: PROMPT, workspaceId: ac.id, executor: 'claude', model: 'claude-sonnet-4.6' }),
+    body: JSON.stringify({ prompt: PROMPT, workspaceId: ac.id }), // model/executor ignored by /v1/tasks
   })
   console.log(`[spike]     task=${task.id}  ${task.url ?? ''}`)
 
