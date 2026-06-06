@@ -35,7 +35,8 @@ export function SearchResultsTable({
         <h2>航班搜索结果</h2>
         {totalCount ? <span className="muted">共 {totalCount} 个方案</span> : null}
       </div>
-      <table>
+      <div className="table-scroll">
+        <table>
         <thead>
           <tr>
             <th>选项</th>
@@ -62,7 +63,8 @@ export function SearchResultsTable({
             </tr>
           ))}
         </tbody>
-      </table>
+        </table>
+      </div>
       <p className="hint">点「预订」我会先帮你验价，确认后再收集乘机人信息。也可以直接在左侧补充筛选需求。</p>
     </div>
   )

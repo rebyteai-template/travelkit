@@ -41,7 +41,7 @@ body {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
 }
-.brand { font-weight: 700; letter-spacing: .3px; }
+.brand { font-weight: 700; letter-spacing: .3px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag {
   font-size: 12px; color: var(--accent); background: var(--accent-soft);
   padding: 2px 8px; border-radius: var(--radius-pill);
@@ -51,6 +51,7 @@ body {
   border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 5px 10px; cursor: pointer;
 }
 .topbar .ghost:hover { color: var(--text); }
+.topbar > button, .topbar .pane-toggle { flex-shrink: 0; }   /* controls hold size; brand truncates instead of overflowing */
 
 /* mobile-only topbar controls (hidden on desktop) */
 .hamburger { display: none; background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 16px; line-height: 1; cursor: pointer; }
@@ -99,6 +100,11 @@ body {
 
   .bench { padding: 14px; }
   .card { padding: 14px; }
+  .topbar { gap: 6px; }
+  .hamburger, .topbar .ghost { padding: 8px 10px; }          /* ≥40px touch targets */
+  .pane-toggle button { padding: 8px 12px; }
+  .results button { min-height: 40px; padding: 8px 14px; }
+  .table-scroll table { min-width: 640px; }                  /* keep fare comparison readable; scroll instead of squish */
   .pf-grid { grid-template-columns: 1fr; }   /* passenger form stacks */
 }
 .left { display: flex; flex-direction: column; border-right: 1px solid var(--border); min-height: 0; }
@@ -137,6 +143,7 @@ body {
 .results-head h2 { margin: 0; font-size: 17px; }
 .muted { color: var(--muted); }
 
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
 th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
 th { color: var(--muted); font-weight: 600; background: var(--panel-2); }
