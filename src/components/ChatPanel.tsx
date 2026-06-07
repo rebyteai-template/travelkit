@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { ChatBubble } from '../frames.ts'
+import { Markdown } from './Markdown.tsx'
 
 export function ChatPanel({ chat, busy }: { chat: ChatBubble[]; busy: boolean }) {
   const endRef = useRef<HTMLDivElement>(null)
@@ -21,7 +22,7 @@ export function ChatPanel({ chat, busy }: { chat: ChatBubble[]; busy: boolean })
             </a>
           ) : (
             <div key={b.key} className={`bubble ${b.role}`}>
-              {b.text}
+              {b.role === 'assistant' ? <Markdown text={b.text} /> : b.text}
             </div>
           ),
         )

@@ -26,7 +26,9 @@
     "jose": "^6.2.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "rebyte-sandbox": "github:ReByteAI/sandbox-sdk#84b68495e0e958e75835336a59aa9f125dcca0d8"
+    "react-markdown": "^10.1.0",
+    "rebyte-sandbox": "github:ReByteAI/sandbox-sdk#84b68495e0e958e75835336a59aa9f125dcca0d8",
+    "remark-gfm": "^4.0.1"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
