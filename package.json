@@ -11,7 +11,7 @@
     "dev": "concurrently -n vite,worker -c blue,green \"vite\" \"wrangler dev\"",
     "build": "vite build",
     "predeploy": "pnpm gen:seed",
-    "deploy": "wrangler deploy",
+    "deploy": "pnpm build && wrangler deploy",
     "pretypecheck": "pnpm gen:seed",
     "typecheck": "tsc --noEmit",
     "db:migrate": "wrangler d1 migrations apply tripdesk --remote",

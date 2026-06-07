@@ -54,18 +54,20 @@ export function FareDetailCard({
           {hasDiscount ? <span className="fare-strike"> 原价 {cur}{fare.publishTotal}</span> : null}
         </div>
         {multiPax ? (
-          <table className="fare-pax">
-            <tbody>
-              {fare.passengers.map((p, i) => (
-                <tr key={i}>
-                  <td>{paxLabel(p.passengerType)} ×{p.num}</td>
-                  <td className="num">票面 {cur}{p.baseFare}</td>
-                  <td className="num">税 {cur}{p.tax}</td>
-                  <td className="num">小计 {cur}{p.salePrice * p.num}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="table-scroll">
+            <table className="fare-pax">
+              <tbody>
+                {fare.passengers.map((p, i) => (
+                  <tr key={i}>
+                    <td>{paxLabel(p.passengerType)} ×{p.num}</td>
+                    <td className="num">票面 {cur}{p.baseFare}</td>
+                    <td className="num">税 {cur}{p.tax}</td>
+                    <td className="num">小计 {cur}{p.salePrice * p.num}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : null}
       </section>
 

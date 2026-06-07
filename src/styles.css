@@ -104,7 +104,7 @@ body {
   .hamburger, .topbar .ghost { padding: 8px 10px; }          /* ≥40px touch targets */
   .pane-toggle button { padding: 8px 12px; }
   .results button { min-height: 40px; padding: 8px 14px; }
-  .table-scroll table { min-width: 640px; }                  /* keep fare comparison readable; scroll instead of squish */
+  .results .table-scroll table { min-width: 640px; }         /* 7-列搜索结果表保持可读,横滚不挤压;别波及窄表(如票价拆分) */
   .pf-grid { grid-template-columns: 1fr; }   /* passenger form stacks */
 }
 .left { display: flex; flex-direction: column; border-right: 1px solid var(--border); min-height: 0; }
@@ -147,7 +147,7 @@ body {
 .md a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .md strong { font-weight: 700; }
 .md blockquote { margin: 8px 0; padding: 2px 0 2px 10px; border-left: 3px solid var(--border); color: var(--muted); }
-.md table { margin: 4px 0; }                  /* 表格外观继承全局 table/th/td(下方),这里只收外边距 */
+.md table { margin: 4px 0; display: block; overflow-x: auto; }  /* 宽表在窄屏内部横滚,不撑破气泡 */
 .md hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
 
 .run-link { align-self: flex-start; font-size: 12px; color: var(--accent); text-decoration: none; opacity: .8; }
@@ -208,9 +208,9 @@ tr.cheapest td { background: var(--good-soft); }
 .fare-section:last-of-type { border-bottom: none; }
 
 .fare-journey + .fare-journey { margin-top: 10px; }
-.fare-journey-main { display: flex; align-items: baseline; gap: 12px; }
+.fare-journey-main { display: flex; align-items: baseline; gap: 4px 12px; flex-wrap: wrap; }  /* multi-segment flight strings wrap instead of pushing the card wide */
 .fare-route { font-size: 15px; font-weight: 600; }
-.fare-flights { color: var(--muted); font-size: 13px; }
+.fare-flights { color: var(--muted); font-size: 13px; min-width: 0; word-break: break-word; }
 .fare-journey-sub { font-size: 12px; margin-top: 2px; }
 
 .fare-price-total { display: flex; align-items: baseline; justify-content: space-between; }
@@ -244,10 +244,11 @@ tr.cheapest td { background: var(--good-soft); }
 .pf-pax:last-of-type { border-bottom: none; }
 .pf-pax-head { font-weight: 600; margin-bottom: 10px; }
 .pf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
-.pf-field { display: flex; flex-direction: column; gap: 4px; }
+.pf-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }  /* grid item shrinks below the control's native intrinsic width */
 .pf-label { font-size: 12px; color: var(--muted); }
 .pf-label em { color: var(--err); font-style: normal; margin-left: 2px; }
 .pf input, .pf select {
+  width: 100%; min-width: 0;   /* native inputs/date pickers default to a wide intrinsic size — pin to the column or they overflow on mobile */
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 8px 10px; font: inherit;
 }
