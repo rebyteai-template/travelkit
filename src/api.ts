@@ -28,11 +28,14 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   if (KEY) h['X-Embed-Key'] = KEY
   return h
 }
-/** EventSource can't set headers, so the SSE stream carries uid + org + key as query params. */
+/** EventSource can't set headers, so the SSE stream carries uid + org + token + key as query
+ *  params. token rides in the query (not just a header) only here — test-phase tradeoff, gated
+ *  by `k`; see worker/index.ts. */
 function withAuthQuery(path: string): string {
   const q = new URLSearchParams()
   if (UID) q.set('uid', UID)
   if (ORG) q.set('org', ORG)
+  if (TOKEN) q.set('token', TOKEN)
   if (KEY) q.set('k', KEY)
   const s = q.toString()
   return s ? `${path}${path.includes('?') ? '&' : '?'}${s}` : path

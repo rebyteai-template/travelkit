@@ -34,7 +34,8 @@ app.use('/api/app/*', async (c, next) => {
   }
   const uid = c.req.header('X-Tenant-Uid') || c.req.query('uid') || env.DEV_EMAIL || ''
   const org = c.req.header('X-Tenant-Org') || c.req.query('org') || ''
-  const token = c.req.header('X-Travelkit-Token') || ''
+  // EventSource can't set headers, so the SSE stream passes token as a query param too.
+  const token = c.req.header('X-Travelkit-Token') || c.req.query('token') || ''
   // All of the handoff must be present — uid, org AND token (k checked above). Missing any →
   // 401, which the SPA turns into the Unauthorized page. Tenant = (org, uid): a user can be in
   // multiple orgs, each its own tenant (own sandbox + history).
