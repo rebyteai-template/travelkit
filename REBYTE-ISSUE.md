@@ -68,3 +68,22 @@
 - 父任务对该委派的记录似乎**只承载 manager 的最终总结文本**，不承载子 agent 的结构化 tool_result。
 - manager 自身似乎**只能用一组内置工具**；**远程 MCP 连接在当前 cctools 里似乎是关闭/不支持的**——这可能正是它「只能委派进沙箱、不能直连领域 MCP」的原因。
 - agent-loop 的定位（从其系统提示词看）更像「把活委派给 Claude Code / Codex 的代码任务路由器」，与「ToB agent 直接调领域工具」这个用例存在错配。
+
+---
+
+## 5. 机制定位（已读 cctools 源码确认）+ 已落地的修复
+
+经 cctools 源码确认，结构化结果丢失发生在**两道切口**，第一道决定结局：
+
+- **切口 1（委派工具返回边界，决定性）** —— `relay/src/agent-framework/dust-loop/lib/api/actions/servers/coding_agent/tools/index.ts:197-222`。
+  `run_claude_code_in_sandbox` 把子会话全量事件经 `extractFinalResult(events)` 压成**一段 final text**，只 `return Ok([{type:"text", text:finalText}])`。manager 从这一刻起就没拿到结构化数据。
+- **切口 2（公开 API 投影）** —— `relay/src/routes/v1/tasks.ts` 的 `/events`、`/content` 与 `relay/src/services/AgentLoopPublicView.ts` 都硬过滤 `parent_prompt_id IS NULL`，子会话被排除；`synthesizeEvents` 只吐 manager 的 action，其 `tool_result.content = outputsToText(outputs)` 即切口 1 那段文本。
+
+**关键**：子会话事件其实**完整存在**（GCS 对象存储，`fetchEventsForPrompt(taskId, subPromptId)` 可读，含 travelkit `tool_use` + 完整 JSON 的 `tool_result`，经 `eventNormalizer.ts` 规范成 `{eventType, payload}`，未截断），且 manager 委派的 tool_use/tool_result payload 里**已带 `subPromptId`** 句柄。
+
+**已落地修复（方案 B：透出子会话事件，frames.ts 零改动）：**
+
+1. **cctools** —— 新增只读、org 域校验的 `GET /v1/tasks/:id/prompts/:promptId/events`（`relay/src/routes/v1/tasks.ts`）：校验 `promptId` 是本 task 的子会话（`parent_prompt_id IS NOT NULL`）后，包一层已有的 `fetchEventsForPrompt` 返回 `{promptId, events}`。
+2. **TripDesk** —— `worker/task-do.ts`：`translate()` 遇到带 `subPromptId` 的 `tool_result` 时调 `replaySubPrompt()`，拉子会话的 `tool_use`/`tool_result` 并 replay 进当前 prompt 的 frames（每个 subPromptId 只拉一次）。`src/frames.ts` 现成按工具名路由，无需改动。
+
+> 待办：在真实子会话上回归一次，核对 `data.displayOptions` / `solutionId` 字段齐全；并确认线上 relay 的 GCS 凭证可用（`fetchEventsForPrompt` 依赖 `getGcsClient()`）。

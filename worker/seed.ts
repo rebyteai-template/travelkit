@@ -20,6 +20,17 @@ export interface ProvisionedComputer {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
+/** The per-user travelkit credential, materialized into the sandbox. Today the token lives
+ *  in .mcp.json's Authorization header; when travelkit ships as a script-in-skill the token
+ *  moves there — change ONLY this function (the iframe handoff / tenant logic stay put). */
+function mcpJson(token: string): string {
+  return JSON.stringify(
+    { mcpServers: { travelkit: { type: 'http', url: 'https://mcp.travelkit.ai/mcp', headers: { Authorization: `Bearer ${token}` } } } },
+    null,
+    2,
+  )
+}
+
 /** Provision a fresh agent-computer and wait until sandboxId is populated (the VM is
  *  addressable). Polls ~80s. */
 export async function provisionComputer(config: RebyteConfig, name: string): Promise<ProvisionedComputer> {
@@ -37,19 +48,32 @@ export async function provisionComputer(config: RebyteConfig, name: string): Pro
   throw new Error(`agent-computer ${created.id} 80s 内未就绪`)
 }
 
-/** Write travelkit (.mcp.json + settings + skill) into the sandbox /code via the envd file
- *  API. Each write is a multipart POST; nested paths auto-create dirs. */
-export async function seedSandbox(ac: ProvisionedComputer): Promise<void> {
-  const domain = new URL(ac.sandboxBaseUrl).host // e.g. prod.rebyte.app
-  const host = `https://49983-${ac.sandboxId}.${domain}`
-  for (const [rel, content] of Object.entries(SEED_FILES)) {
-    const fd = new FormData()
-    fd.append('file', new Blob([content]), rel.split('/').pop() ?? 'file')
-    const res = await fetch(`${host}/files?path=${encodeURIComponent('/code/' + rel)}&username=user`, {
-      method: 'POST',
-      headers: { 'X-API-KEY': ac.sandboxApiKey },
-      body: fd,
-    })
-    if (!res.ok) throw new Error(`seed ${rel} failed: HTTP ${res.status}`)
-  }
+/** Write one file into the sandbox /code via the envd file API (multipart POST; nested paths
+ *  auto-create dirs). */
+async function writeFile(ac: ProvisionedComputer, rel: string, content: string): Promise<void> {
+  const host = `https://49983-${ac.sandboxId}.${new URL(ac.sandboxBaseUrl).host}` // e.g. prod.rebyte.app
+  const fd = new FormData()
+  fd.append('file', new Blob([content]), rel.split('/').pop() ?? 'file')
+  const res = await fetch(`${host}/files?path=${encodeURIComponent('/code/' + rel)}&username=user`, {
+    method: 'POST',
+    headers: { 'X-API-KEY': ac.sandboxApiKey },
+    body: fd,
+  })
+  if (!res.ok) throw new Error(`write ${rel} failed: HTTP ${res.status}`)
+}
+
+/** Write travelkit (.mcp.json + settings + skill) into the sandbox /code. The travelkit token
+ *  is NOT baked into SEED_FILES (build artifact stays secret-free) — it comes per-user from the
+ *  iframe handoff and is written into .mcp.json here via applyCredential. */
+export async function seedSandbox(ac: ProvisionedComputer, travelkitToken: string): Promise<void> {
+  for (const [rel, content] of Object.entries(SEED_FILES)) await writeFile(ac, rel, content)
+  await applyCredential(ac, travelkitToken)
+}
+
+/** Overwrite ONLY the travelkit credential (.mcp.json) in an already-provisioned sandbox —
+ *  used when the user's token rotates (re-login) so we refresh in place instead of rebuilding
+ *  the VM. This is the single chokepoint for "where the token lives"; the future script-in-skill
+ *  migration changes only this + mcpJson(). */
+export async function applyCredential(ac: ProvisionedComputer, travelkitToken: string): Promise<void> {
+  await writeFile(ac, '.mcp.json', mcpJson(travelkitToken))
 }

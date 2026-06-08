@@ -35,15 +35,21 @@ export function createD1Store(db: D1Database): Store {
     },
     async getAgentComputer(userEmail) {
       const row = await db
-        .prepare(`SELECT ac_id AS id, sandbox_id AS sandboxId FROM agent_computers WHERE user_email = ?`)
+        .prepare(`SELECT ac_id AS id, sandbox_id AS sandboxId, token_hash AS tokenHash FROM agent_computers WHERE user_email = ?`)
         .bind(userEmail)
         .first<AgentComputerRow>()
       return row ?? undefined
     },
-    async saveAgentComputer(userEmail, acId, sandboxId) {
+    async saveAgentComputer(userEmail, acId, sandboxId, tokenHash) {
       await db
-        .prepare(`INSERT OR IGNORE INTO agent_computers (user_email, ac_id, sandbox_id) VALUES (?, ?, ?)`)
-        .bind(userEmail, acId, sandboxId)
+        .prepare(`INSERT OR IGNORE INTO agent_computers (user_email, ac_id, sandbox_id, token_hash) VALUES (?, ?, ?, ?)`)
+        .bind(userEmail, acId, sandboxId, tokenHash)
+        .run()
+    },
+    async setAgentComputerTokenHash(userEmail, tokenHash) {
+      await db
+        .prepare(`UPDATE agent_computers SET token_hash = ? WHERE user_email = ?`)
+        .bind(tokenHash, userEmail)
         .run()
     },
     async setTaskStatus(id, status) {

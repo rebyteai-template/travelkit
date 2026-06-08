@@ -1,7 +1,39 @@
 const BASE = '/api/app'
 
+// Embed identity: the host frames us as `…/#uid=<uid>&token=<travelkitToken>`. We read the
+// fragment once at load (it never hits the server logs / Referer), stash it for the iframe's
+// lifetime, then clear it from the URL. uid = tenant key; token = the caller's travelkit
+// credential (seeded into their sandbox on first turn). Both ride as headers on every call.
+const _h = new URLSearchParams(location.hash.slice(1))
+const UID = _h.get('uid') || sessionStorage.getItem('td_uid') || ''
+const TOKEN = _h.get('token') || sessionStorage.getItem('td_tk') || ''
+// Shared embed gate key (a global secret we hand the integrator). Blocks strangers who only
+// know the domain from spinning sandboxes — the API rejects any call without it. Not per-user
+// auth; the signed-handoff upgrade adds that later.
+const KEY = _h.get('k') || sessionStorage.getItem('td_k') || ''
+if (UID) sessionStorage.setItem('td_uid', UID)
+if (TOKEN) sessionStorage.setItem('td_tk', TOKEN)
+if (KEY) sessionStorage.setItem('td_k', KEY)
+if (location.hash) history.replaceState(null, '', location.pathname + location.search)
+
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const h: Record<string, string> = { ...extra }
+  if (UID) h['X-Tenant-Uid'] = UID
+  if (TOKEN) h['X-Travelkit-Token'] = TOKEN
+  if (KEY) h['X-Embed-Key'] = KEY
+  return h
+}
+/** EventSource can't set headers, so the SSE stream carries uid + key as query params. */
+function withAuthQuery(path: string): string {
+  const q = new URLSearchParams()
+  if (UID) q.set('uid', UID)
+  if (KEY) q.set('k', KEY)
+  const s = q.toString()
+  return s ? `${path}${path.includes('?') ? '&' : '?'}${s}` : path
+}
+
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`${BASE}${path}`, init)
+  const r = await fetch(`${BASE}${path}`, { ...init, headers: authHeaders(init?.headers as Record<string, string>) })
   if (!r.ok) throw new Error(`${init?.method ?? 'GET'} ${path} failed: ${r.status}`)
   return r.json() as Promise<T>
 }
@@ -40,7 +72,7 @@ export const followup = (taskId: string, prompt: string): Promise<{ promptId: st
 export async function loadContent(
   taskId: string,
 ): Promise<{ task: { id: string; status: string }; prompts: PromptContent[] } | null> {
-  const r = await fetch(`${BASE}/tasks/${taskId}/content`)
+  const r = await fetch(`${BASE}/tasks/${taskId}/content`, { headers: authHeaders() })
   if (r.status === 404) return null
   if (!r.ok) throw new Error(`loadContent failed: ${r.status}`)
   return r.json()
@@ -53,7 +85,7 @@ export function streamPrompt(
   onFrame: (seq: number, data: unknown) => void,
   onDone: (status: string) => void,
 ): () => void {
-  const es = new EventSource(`${BASE}/prompts/${promptId}/stream`)
+  const es = new EventSource(withAuthQuery(`${BASE}/prompts/${promptId}/stream`))
   es.onmessage = (e) => {
     const seq = Number(e.lastEventId) || 0
     try { onFrame(seq, JSON.parse(e.data)) } catch { /* ignore malformed */ }

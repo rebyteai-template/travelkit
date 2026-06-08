@@ -12,25 +12,34 @@
 import { Hono } from 'hono'
 import { createD1Store } from '../server/db.ts'
 import { app as api, type RouteVars } from '../server/routes.ts'
-import { authedEmail } from './auth.ts'
 import type { Env } from './env.ts'
 
 export { TaskDO } from './task-do.ts'
 
 const app = new Hono<{ Bindings: Env; Variables: RouteVars }>()
 
-// Authenticate (Cloudflare Access → email) and inject the runtime deps the routes expect:
-// the D1 store + a turn runner that forwards to the per-task Durable Object (carrying the
-// user's email so the DO uses that tenant's sandbox). Applied to the API surface only.
+// Embed identity (iframe handoff): the host passes `uid` (stable tenant key) + the caller's
+// travelkit `token` in the iframe URL fragment; the SPA forwards them as request headers
+// (uid also as a query param on the SSE stream, since EventSource can't set headers).
+// BARE-PASS for the test phase: whoever can construct the URL is authorized — no signature
+// yet (locked down before external integration). Falls back to DEV_EMAIL for local dev.
+// The token is consumed by the DO to seed that user's sandbox .mcp.json on first turn.
 app.use('/api/app/*', async (c, next) => {
   const env = c.env
-  const email = await authedEmail(c.req.raw, env)
-  if (!email) return c.json({ error: 'unauthorized' }, 401)
+  // Gate 0: the shared embed key, checked before any tenant/VM work. Stops strangers who only
+  // know the domain (a stray sandbox provision costs quota). Unset EMBED_KEY → gate disabled.
+  if (env.EMBED_KEY) {
+    const key = c.req.header('X-Embed-Key') || c.req.query('k') || ''
+    if (key !== env.EMBED_KEY) return c.json({ error: 'forbidden' }, 401)
+  }
+  const uid = c.req.header('X-Tenant-Uid') || c.req.query('uid') || env.DEV_EMAIL || ''
+  const token = c.req.header('X-Travelkit-Token') || ''
+  if (!uid) return c.json({ error: 'unauthorized' }, 401)
   const store = createD1Store(env.DB)
-  c.set('userEmail', email)
+  c.set('userEmail', uid)
   c.set('store', store)
   c.set('runTurn', async (taskId, _projectId, promptId, prompt) => {
-    await env.TASK_DO.getByName(taskId).runTurn(taskId, promptId, prompt, email)
+    await env.TASK_DO.getByName(taskId).runTurn(taskId, promptId, prompt, uid, token)
   })
   c.set('cancelTurn', async (promptId) => {
     const p = await store.getPrompt(promptId)
@@ -46,7 +55,14 @@ app.use('/api/app/*', async (c, next) => {
 app.route('/api/app', api)
 
 // Everything else is the SPA. not_found_handling=single-page-application makes the
-// assets service serve index.html for client-side routes.
-app.all('*', (c) => c.env.ASSETS.fetch(c.req.raw))
+// assets service serve index.html for client-side routes. Allow embedding in the host's
+// iframe (test phase: any origin; lock `frame-ancestors` to the host domain at integration).
+app.all('*', async (c) => {
+  const res = await c.env.ASSETS.fetch(c.req.raw)
+  const out = new Response(res.body, res)
+  out.headers.set('Content-Security-Policy', 'frame-ancestors *')
+  out.headers.delete('X-Frame-Options')
+  return out
+})
 
 export default app

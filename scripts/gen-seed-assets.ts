@@ -23,8 +23,9 @@ function walk(dir: string): string[] {
 
 const files: Record<string, string> = {}
 
-// .mcp.json (travelkit MCP, with token) → /code/.mcp.json
-files['.mcp.json'] = readFileSync(join(ROOT, '.mcp.json'), 'utf8')
+// NOTE: .mcp.json is intentionally NOT baked here. The travelkit token is per-user and comes
+// from the iframe handoff at runtime — worker/seed.ts writes .mcp.json into each sandbox with
+// that user's token. Keeps the build artifact free of any credential.
 
 // Pre-trust the project MCP so the sandbox's headless claude actually loads travelkit
 // (mirrors server/rebyte/seed.ts).

@@ -15,6 +15,7 @@ import { ChatPanel } from './components/ChatPanel.tsx'
 import { Composer } from './components/Composer.tsx'
 import { Bench, type BenchMode } from './components/Bench.tsx'
 import { SessionList } from './components/SessionList.tsx'
+import { Unauthorized } from './components/Unauthorized.tsx'
 
 /** Current session lives in the URL (?t=…) so refresh/deep-link restores it. Identity
  *  comes from Cloudflare Access, so a session belongs to a user, not a browser tab. */
@@ -30,6 +31,8 @@ function setUrlTaskId(id: string | null): void {
 
 export function App() {
   const [email, setEmail] = useState('')
+  // Auth gate: null = checking, true = valid embed handoff, false = show Unauthorized.
+  const [authed, setAuthed] = useState<boolean | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [taskId, setTaskId] = useState<string | null>(() => urlTaskId())
   const [prompts, setPrompts] = useState<PromptContent[]>([])
@@ -42,12 +45,18 @@ export function App() {
     () => (typeof localStorage !== 'undefined' && localStorage.getItem('tripdesk-theme') === 'dark' ? 'dark' : 'light'),
   )
 
-  // Bootstrap: who am I, my sessions, and restore the one named in the URL.
+  // Bootstrap: validate the embed handoff (getMe 401 → Unauthorized), then load sessions and
+  // restore the one named in the URL. Skip all data calls if the gate rejects us.
   useEffect(() => {
-    getMe().then((m) => setEmail(m.email)).catch(() => {})
-    void refreshSessions()
-    const t = urlTaskId()
-    if (t) void openSession(t)
+    getMe()
+      .then((m) => {
+        setEmail(m.email)
+        setAuthed(true)
+        void refreshSessions()
+        const t = urlTaskId()
+        if (t) void openSession(t)
+      })
+      .catch(() => setAuthed(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -122,6 +131,9 @@ export function App() {
     setOrderDraft((prev) => (prev.length === need.length ? prev : need))
     setMode('passengers')
   }
+
+  if (authed === false) return <Unauthorized />
+  if (authed === null) return <div className="app-booting" aria-busy="true" />
 
   return (
     <div className="app">
