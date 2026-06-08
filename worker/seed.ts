@@ -8,8 +8,10 @@
  * The envd file API takes a multipart `file` field, auth via the sandbox's own X-API-KEY,
  * and auto-creates parent dirs — all verified against a live sandbox.
  */
-import { SEED_FILES } from './seed-assets.generated.ts'
+import { SEED_FILES, SEED_VERSION } from './seed-assets.generated.ts'
 import { rebyteJSON, type RebyteConfig } from '../server/rebyte/client.ts'
+
+export { SEED_VERSION }
 
 export interface ProvisionedComputer {
   id: string
@@ -72,8 +74,30 @@ async function writeFile(ac: ProvisionedComputer, rel: string, content: string):
  *  is NOT baked into SEED_FILES (build artifact stays secret-free) — it comes per-user from the
  *  iframe handoff and is written into .claude/settings.json here via applyCredential. */
 export async function seedSandbox(ac: ProvisionedComputer, travelkitToken: string): Promise<void> {
-  for (const [rel, content] of Object.entries(SEED_FILES)) await writeFile(ac, rel, content)
+  await pushSeedFiles(ac)
   await applyCredential(ac, travelkitToken)
+}
+
+/** Re-push ONLY the skill tree (SEED_FILES), not the credential — used to refresh an existing
+ *  sandbox after the skill changed (seed_version bump) when no token is at hand. Idempotent
+ *  overwrites via the envd file API; no reprovision. */
+export async function pushSeedFiles(ac: ProvisionedComputer): Promise<void> {
+  for (const [rel, content] of Object.entries(SEED_FILES)) await writeFile(ac, rel, content)
+}
+
+/** Files an earlier seed version created that the current design no longer wants. The envd file
+ *  API has no DELETE (returns 405), so on re-seed we can't remove them — instead we overwrite
+ *  them with inert content. `.mcp.json`: neutralize the legacy travelkit MCP wiring (the new
+ *  skill talks direct HTTP, not MCP) so Claude Code can't load a dead server. Removed reference
+ *  `.md` files are passive (the fresh SKILL.md no longer links them) and left as-is. */
+const STALE_NEUTRALIZE: Record<string, string> = {
+  '.mcp.json': JSON.stringify({ mcpServers: {} }, null, 2) + '\n',
+}
+
+/** Overwrite stale artifacts with inert content. Only meaningful on re-seed of a sandbox built by
+ *  an older seed version; harmless (idempotent no-op writes) otherwise. */
+export async function neutralizeStaleArtifacts(ac: ProvisionedComputer): Promise<void> {
+  for (const [rel, content] of Object.entries(STALE_NEUTRALIZE)) await writeFile(ac, rel, content)
 }
 
 /** Overwrite ONLY the Simplifly credential (.claude/settings.json `env`) in an already-provisioned

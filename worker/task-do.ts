@@ -28,7 +28,7 @@ import { createD1Store } from '../server/db.ts'
 import type { Store } from '../server/store.ts'
 import { isObj, parseSSE } from '../server/rebyte/sse.ts'
 import { rebyteJSON, rebyteFetch, type RebyteConfig } from '../server/rebyte/client.ts'
-import { provisionComputer, seedSandbox, applyCredential, type ProvisionedComputer } from './seed.ts'
+import { provisionComputer, seedSandbox, pushSeedFiles, neutralizeStaleArtifacts, applyCredential, SEED_VERSION, type ProvisionedComputer } from './seed.ts'
 import { shouldDrainTerminal } from './turn-finalize.ts'
 import { framesHaveAssistantText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
 import type { Env } from './env.ts'
@@ -235,24 +235,35 @@ export class TaskDO extends DurableObject<Env> {
     const tokenHash = travelkitToken ? await sha256Hex(travelkitToken) : ''
     const existing = await this.store.getAgentComputer(email)
     if (existing?.id) {
-      // Hot-refresh: the user's token rotates on re-login. If it changed, rewrite .mcp.json in
-      // the SAME sandbox (no reprovision) so their flights don't fail on a stale/expired token.
-      // Best-effort — a write failure just leaves the old token, surfacing as an auth error.
-      if (travelkitToken && tokenHash !== existing.tokenHash) {
+      // Hot-refresh of a reused sandbox (same VM, no reprovision), best-effort — a write failure
+      // just leaves the old state, surfacing as an auth/skill error:
+      //  · seed stale — a deploy changed the skill tree (SEED_VERSION bump); re-push SEED_FILES so
+      //    the user stops running the old skill. Also refreshes the credential when we have a token.
+      //  · token rotated — the user re-logged-in with a new token; rewrite just the credential.
+      const seedStale = existing.seedVersion !== SEED_VERSION
+      const tokenChanged = !!travelkitToken && tokenHash !== existing.tokenHash
+      if (seedStale || tokenChanged) {
         try {
           const ac = await rebyteJSON<ProvisionedComputer>(`/agent-computers/${existing.id}`, { config: this.rebyteConfig() })
           if (ac.sandboxId && ac.sandboxBaseUrl && ac.sandboxApiKey) {
-            await applyCredential(ac, travelkitToken)
-            await this.store.setAgentComputerTokenHash(email, tokenHash)
+            if (seedStale) {
+              if (travelkitToken) await seedSandbox(ac, travelkitToken)
+              else await pushSeedFiles(ac) // no token at hand → refresh files only, keep credential
+              await neutralizeStaleArtifacts(ac) // envd has no DELETE → overwrite legacy .mcp.json inert
+              await this.store.setAgentComputerSeed(email, travelkitToken ? tokenHash : (existing.tokenHash ?? ''), SEED_VERSION)
+            } else {
+              await applyCredential(ac, travelkitToken)
+              await this.store.setAgentComputerTokenHash(email, tokenHash)
+            }
           }
-        } catch { /* keep the old credential; user sees an auth error if it's expired */ }
+        } catch { /* keep old state; user sees an auth/skill error if it's stale */ }
       }
       return { id: existing.id, sandboxId: existing.sandboxId ?? undefined }
     }
 
     const ac = await provisionComputer(this.rebyteConfig(), `tripdesk:${email || 'anon'}`)
     await seedSandbox(ac, travelkitToken)
-    await this.store.saveAgentComputer(email, ac.id, ac.sandboxId ?? null, tokenHash)
+    await this.store.saveAgentComputer(email, ac.id, ac.sandboxId ?? null, tokenHash, SEED_VERSION)
     // Re-read so concurrent provisioners converge on the same (winning) row.
     const canonical = await this.store.getAgentComputer(email)
     return canonical?.id ? { id: canonical.id, sandboxId: canonical.sandboxId ?? undefined } : { id: ac.id, sandboxId: ac.sandboxId }

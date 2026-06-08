@@ -34,6 +34,9 @@ export interface AgentComputerRow {
   /** sha256 of the travelkit token last written into this sandbox's .mcp.json; null for rows
    *  created before token hot-refresh existed. Drives the "token rotated → rewrite" check. */
   tokenHash: string | null
+  /** SEED_VERSION (content stamp) of the skill tree last pushed into this sandbox; null for rows
+   *  created before seed-version tracking. Drives the "skill changed → re-seed" check. */
+  seedVersion: string | null
 }
 export interface Prompt {
   id: string
@@ -57,9 +60,11 @@ export interface Store {
 
   getAgentComputer(userEmail: string): Promise<AgentComputerRow | undefined>
   /** Idempotent (INSERT OR IGNORE): first writer per email wins, losers no-op. */
-  saveAgentComputer(userEmail: string, acId: string, sandboxId: string | null, tokenHash: string): Promise<void>
+  saveAgentComputer(userEmail: string, acId: string, sandboxId: string | null, tokenHash: string, seedVersion: string): Promise<void>
   /** Update the recorded token hash after rewriting the sandbox's credential in place. */
   setAgentComputerTokenHash(userEmail: string, tokenHash: string): Promise<void>
+  /** Update token hash + seed version together after re-seeding a stale sandbox in place. */
+  setAgentComputerSeed(userEmail: string, tokenHash: string, seedVersion: string): Promise<void>
 
   createPrompt(id: string, taskId: string, prompt: string): Promise<void>
   getPrompt(id: string): Promise<Prompt | undefined>
