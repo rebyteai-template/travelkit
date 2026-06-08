@@ -14,16 +14,21 @@
  *
  * Pure fetch: never imports the rebyte-sandbox SDK. Per-user sandbox is looked up by email
  * (agent_computers table), falling back to the legacy single kv.agent_computer. Frame fidelity
- * matches src/frames.ts (assistant tool_use/text, user tool_result). Note REBYTE-ISSUE.md:
- * through the agent-loop only the manager's text summary reaches the parent — bench cards
- * won't populate — so in practice we deliver delegation + summary text, reliably finalized.
+ * matches src/frames.ts (assistant tool_use/text, user tool_result).
+ *
+ * Sub-session replay (REBYTE-ISSUE.md): the agent-loop delegates domain MCP calls to a sandbox
+ * sub-session and the parent stream carries only the manager's text summary — the structured
+ * flight_search/verify JSON (with solutionId) stays in the sub-session. We recover it via the
+ * relay's per-prompt events endpoint: each delegation result is tagged with `subPromptId`, and
+ * replaySubPrompt() pulls that sub-session's real travelkit tool_use/tool_result into this
+ * prompt's frames so the bench cards populate. See replaySubPrompt() + REBYTE-ISSUE.md §3.
  */
 import { DurableObject } from 'cloudflare:workers'
 import { createD1Store } from '../server/db.ts'
 import type { Store } from '../server/store.ts'
 import { isObj, parseSSE } from '../server/rebyte/sse.ts'
 import { rebyteJSON, rebyteFetch, type RebyteConfig } from '../server/rebyte/client.ts'
-import { provisionComputer, seedSandbox } from './seed.ts'
+import { provisionComputer, seedSandbox, applyCredential, type ProvisionedComputer } from './seed.ts'
 import { shouldDrainTerminal } from './turn-finalize.ts'
 import { framesHaveAssistantText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
 import type { Env } from './env.ts'
@@ -51,6 +56,9 @@ interface TurnState {
   promptId: string
   prompt: string
   userEmail: string
+  /** The caller's travelkit token (from the iframe handoff), seeded into their sandbox on
+   *  first turn. Only consumed at provision time; harmless on follow-ups. */
+  travelkitToken: string
   relayTaskId?: string
   /** Did this turn already submit its prompt to the relay (create or /prompts)?
    *  Guards a retried alarm from double-submitting after a window/eviction. */
@@ -66,6 +74,9 @@ interface TurnState {
    *  The status flips a beat before finalResult populates, so we drain a few more
    *  windows to catch the tail before finalizing. */
   terminalDrains: number
+  /** Sub-session prompt ids whose delegated domain-tool events we've already
+   *  pulled + replayed into this prompt's frames (so we fetch each once). */
+  fetchedSubPrompts: string[]
   deadline: number
 }
 
@@ -81,6 +92,12 @@ const REBYTE_INSTRUCTION = [
   '沙箱/演示模式：可搜索、验价、下单、发起支付（发起支付会返回第三方支付链接给用户自行完成）；',
   '绝不替用户在第三方平台完成付款，也绝不谎称已支付。',
 ].join('')
+
+/** Hex sha256 — lets us detect a rotated travelkit token without storing the raw token. */
+async function sha256Hex(s: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s))
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
 
 interface CachedAgentComputer {
   id: string
@@ -155,11 +172,44 @@ export class TaskDO extends DurableObject<Env> {
       }
       case 'tool_result': {
         await this.emitToolResult(t.promptId, String(p.id ?? p.tool_id ?? ''), p.output)
+        // Agent-loop delegates domain MCP calls (flight_search / verify) to a sandbox
+        // sub-session whose STRUCTURED tool_results never ride the parent stream — only
+        // this delegation's text summary does (REBYTE-ISSUE.md). The relay tags the
+        // delegation result with `subPromptId`; resolve it into the sub-session's real
+        // travelkit tool_use/tool_result and replay those into THIS prompt's frames so
+        // the bench cards populate. frames.ts already routes by tool name — no change there.
+        const subPromptId = typeof p.subPromptId === 'string' ? p.subPromptId : ''
+        if (subPromptId && !t.fetchedSubPrompts.includes(subPromptId)) {
+          t.fetchedSubPrompts.push(subPromptId)
+          await this.replaySubPrompt(t, subPromptId)
+        }
         return
       }
       default:
         await this.emit(t.promptId, { __relay: type || 'unknown', payload: p })
         return
+    }
+  }
+
+  /** Pull a delegated sandbox sub-session's normalized events and replay its domain
+   *  tool_use/tool_result into the current prompt's frames. This is what makes the
+   *  search/verify cards render: the structured flight_search JSON the manager
+   *  collapsed to prose lives in the sub-session, reachable via the relay's per-prompt
+   *  events endpoint. Best-effort — a failure just leaves the chat summary as-is. The
+   *  delegation's tool_result has already arrived, so the sub-session is terminal and
+   *  its GCS events are flushed. Only tool frames matter to the bench; text/thinking
+   *  from the sub-agent stay internal (the manager's own summary is the chat answer). */
+  private async replaySubPrompt(t: TurnState, subPromptId: string): Promise<void> {
+    if (!t.relayTaskId) return
+    const data = await rebyteJSON<{ events?: RelayEvent[] }>(
+      `/tasks/${t.relayTaskId}/prompts/${subPromptId}/events`,
+      { config: this.rebyteConfig() },
+    ).catch(() => null)
+    if (!data?.events?.length) return
+    for (const ev of data.events) {
+      const type = String(ev.eventType ?? '')
+      if (type !== 'tool_use' && type !== 'tool_result') continue
+      await this.translate(t, ev)
     }
   }
 
@@ -181,13 +231,28 @@ export class TaskDO extends DurableObject<Env> {
    *  travelkit into it (both pure fetch), persists it, and returns it. Concurrent first
    *  turns race on INSERT OR IGNORE — the loser's VM is orphaned (minor), both then use the
    *  winner's row. */
-  private async agentComputerFor(email: string): Promise<CachedAgentComputer> {
+  private async agentComputerFor(email: string, travelkitToken: string): Promise<CachedAgentComputer> {
+    const tokenHash = travelkitToken ? await sha256Hex(travelkitToken) : ''
     const existing = await this.store.getAgentComputer(email)
-    if (existing?.id) return { id: existing.id, sandboxId: existing.sandboxId ?? undefined }
+    if (existing?.id) {
+      // Hot-refresh: the user's token rotates on re-login. If it changed, rewrite .mcp.json in
+      // the SAME sandbox (no reprovision) so their flights don't fail on a stale/expired token.
+      // Best-effort — a write failure just leaves the old token, surfacing as an auth error.
+      if (travelkitToken && tokenHash !== existing.tokenHash) {
+        try {
+          const ac = await rebyteJSON<ProvisionedComputer>(`/agent-computers/${existing.id}`, { config: this.rebyteConfig() })
+          if (ac.sandboxId && ac.sandboxBaseUrl && ac.sandboxApiKey) {
+            await applyCredential(ac, travelkitToken)
+            await this.store.setAgentComputerTokenHash(email, tokenHash)
+          }
+        } catch { /* keep the old credential; user sees an auth error if it's expired */ }
+      }
+      return { id: existing.id, sandboxId: existing.sandboxId ?? undefined }
+    }
 
     const ac = await provisionComputer(this.rebyteConfig(), `tripdesk:${email || 'anon'}`)
-    await seedSandbox(ac)
-    await this.store.saveAgentComputer(email, ac.id, ac.sandboxId ?? null)
+    await seedSandbox(ac, travelkitToken)
+    await this.store.saveAgentComputer(email, ac.id, ac.sandboxId ?? null, tokenHash)
     // Re-read so concurrent provisioners converge on the same (winning) row.
     const canonical = await this.store.getAgentComputer(email)
     return canonical?.id ? { id: canonical.id, sandboxId: canonical.sandboxId ?? undefined } : { id: ac.id, sandboxId: ac.sandboxId }
@@ -195,17 +260,19 @@ export class TaskDO extends DurableObject<Env> {
 
   // ── RPC surface (called from the Worker via env.TASK_DO.getByName(taskId)) ──
   /** Persist the turn intent and fire the alarm. Returns immediately; the alarm drives it. */
-  async runTurn(taskId: string, promptId: string, prompt: string, userEmail = ''): Promise<void> {
+  async runTurn(taskId: string, promptId: string, prompt: string, userEmail = '', travelkitToken = ''): Promise<void> {
     const t: TurnState = {
       taskId,
       promptId,
       prompt,
       userEmail,
+      travelkitToken,
       submitted: false,
       lastRelaySeq: 0,
       sawText: false,
       emittedText: '',
       terminalDrains: 0,
+      fetchedSubPrompts: [],
       deadline: Date.now() + TURN_TIMEOUT_MS,
     }
     await this.ctx.storage.put('turn', t)
@@ -292,7 +359,7 @@ export class TaskDO extends DurableObject<Env> {
 
         if (!relayTaskId) {
           // First turn: provision the per-user sandbox and create the relay task.
-          const ac = await this.agentComputerFor(t.userEmail)
+          const ac = await this.agentComputerFor(t.userEmail, t.travelkitToken)
           const relayPrompt = `${REBYTE_INSTRUCTION}\n\n用户需求：\n${t.prompt}`
           const task = await rebyteJSON<{ id: string }>('/tasks', {
             method: 'POST',

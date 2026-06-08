@@ -15,6 +15,10 @@ export interface Env {
   REBYTE_API_KEY: string
   /** rebyte relay base; defaults to https://api.rebyte.ai/v1 when unset. */
   REBYTE_API_URL?: string
+  /** Shared embed gate key (secret: `wrangler secret put EMBED_KEY`). When set, every
+   *  /api/app/* call must present it (X-Embed-Key header or ?k= query) or gets 401 — stops
+   *  strangers who only know the domain from spinning sandboxes. Unset → gate disabled. */
+  EMBED_KEY?: string
 
   // ── Cloudflare Access (Google login + email allowlist) ──────────────────
   /** Access team domain, e.g. `myteam.cloudflareaccess.com` (the JWT issuer). */
