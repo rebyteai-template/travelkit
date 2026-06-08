@@ -21,6 +21,8 @@ data/
 .claude/projects/
 .claude/settings.local.json
 
+# Per-IDE generated skill mirror
+.agents/
 
 # wrangler local secrets
 .dev.vars
