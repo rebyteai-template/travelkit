@@ -6,12 +6,16 @@ const BASE = '/api/app'
 // credential (seeded into their sandbox on first turn). Both ride as headers on every call.
 const _h = new URLSearchParams(location.hash.slice(1))
 const UID = _h.get('uid') || sessionStorage.getItem('td_uid') || ''
+// A user can belong to multiple orgs, so the tenant is (org, uid) — same person in two orgs =
+// two separate tenants (own sandbox + history). The Worker composes the key; we just carry org.
+const ORG = _h.get('org') || sessionStorage.getItem('td_org') || ''
 const TOKEN = _h.get('token') || sessionStorage.getItem('td_tk') || ''
 // Shared embed gate key (a global secret we hand the integrator). Blocks strangers who only
 // know the domain from spinning sandboxes — the API rejects any call without it. Not per-user
 // auth; the signed-handoff upgrade adds that later.
 const KEY = _h.get('k') || sessionStorage.getItem('td_k') || ''
 if (UID) sessionStorage.setItem('td_uid', UID)
+if (ORG) sessionStorage.setItem('td_org', ORG)
 if (TOKEN) sessionStorage.setItem('td_tk', TOKEN)
 if (KEY) sessionStorage.setItem('td_k', KEY)
 if (location.hash) history.replaceState(null, '', location.pathname + location.search)
@@ -19,14 +23,16 @@ if (location.hash) history.replaceState(null, '', location.pathname + location.s
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
   const h: Record<string, string> = { ...extra }
   if (UID) h['X-Tenant-Uid'] = UID
+  if (ORG) h['X-Tenant-Org'] = ORG
   if (TOKEN) h['X-Travelkit-Token'] = TOKEN
   if (KEY) h['X-Embed-Key'] = KEY
   return h
 }
-/** EventSource can't set headers, so the SSE stream carries uid + key as query params. */
+/** EventSource can't set headers, so the SSE stream carries uid + org + key as query params. */
 function withAuthQuery(path: string): string {
   const q = new URLSearchParams()
   if (UID) q.set('uid', UID)
+  if (ORG) q.set('org', ORG)
   if (KEY) q.set('k', KEY)
   const s = q.toString()
   return s ? `${path}${path.includes('?') ? '&' : '?'}${s}` : path

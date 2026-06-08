@@ -35,11 +35,16 @@ app.use('/api/app/*', async (c, next) => {
   const uid = c.req.header('X-Tenant-Uid') || c.req.query('uid') || env.DEV_EMAIL || ''
   const token = c.req.header('X-Travelkit-Token') || ''
   if (!uid) return c.json({ error: 'unauthorized' }, 401)
+  // Tenant = (org, uid): a user can be in multiple orgs, each its own tenant (own sandbox +
+  // history). Compose one opaque key; everything downstream stays keyed by this single string.
+  // org-less links (legacy) → bare uid, so existing tenants keep working.
+  const org = c.req.header('X-Tenant-Org') || c.req.query('org') || ''
+  const tenant = org ? `${org}:${uid}` : uid
   const store = createD1Store(env.DB)
-  c.set('userEmail', uid)
+  c.set('userEmail', tenant)
   c.set('store', store)
   c.set('runTurn', async (taskId, _projectId, promptId, prompt) => {
-    await env.TASK_DO.getByName(taskId).runTurn(taskId, promptId, prompt, uid, token)
+    await env.TASK_DO.getByName(taskId).runTurn(taskId, promptId, prompt, tenant, token)
   })
   c.set('cancelTurn', async (promptId) => {
     const p = await store.getPrompt(promptId)

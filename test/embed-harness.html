@@ -30,7 +30,8 @@
   <body>
     <header>
       <label>base<input id="base" class="wide" value="http://localhost:4000" /></label>
-      <label>uid (稳定租户键)<input id="uid" value="demo-emp-001" /></label>
+      <label>uid (员工稳定ID)<input id="uid" value="demo-emp-001" /></label>
+      <label>org (所属组织)<input id="org" value="demo-org" /></label>
       <label>token (员工 travelkit token)<input id="token" class="wide" placeholder="粘贴一个真实 travelkit token" /></label>
       <label>k (embed 门禁 key)<input id="k" placeholder="EMBED_KEY" /></label>
       <button id="go">载入 iframe</button>
@@ -41,16 +42,17 @@
       function load() {
         const base = $('base').value.replace(/\/+$/, '')
         const uid = encodeURIComponent($('uid').value)
+        const org = encodeURIComponent($('org').value)
         const token = encodeURIComponent($('token').value)
         const k = encodeURIComponent($('k').value)
-        const src = `${base}/#uid=${uid}&token=${token}&k=${k}`
+        const src = `${base}/#uid=${uid}&org=${org}&token=${token}&k=${k}`
         $('frame').src = src
         console.log('framing', src)
       }
       $('go').onclick = load
       // Remember the token across reloads of this harness (localStorage of the harness origin,
       // NOT of the iframe — keeps the real token out of the iframe's URL bar after handoff).
-      for (const k of ['base', 'uid', 'token', 'k']) {
+      for (const k of ['base', 'uid', 'org', 'token', 'k']) {
         const v = localStorage.getItem('eh_' + k); if (v) $(k).value = v
         $(k).oninput = () => localStorage.setItem('eh_' + k, $(k).value)
       }

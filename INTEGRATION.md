@@ -8,26 +8,29 @@
 宿主在 iframe URL 的 **片段（`#`，不是 `?`）** 里传当前登录员工身份：
 
 ```
-https://tripdesk.impo.ai/#uid=<员工稳定ID>&token=<该员工 travelkit token>&k=<embed key>
+https://tripdesk.impo.ai/#uid=<员工稳定ID>&org=<组织ID>&token=<该员工 travelkit token>&k=<embed key>
 ```
 
 | 参数 | 含义 | 稳定性 | 来源 |
 |------|------|--------|------|
-| `uid` | 员工唯一稳定标识（工号/user id），租户隔离键 | 不变 | 你方 |
-| `token` | 该员工的 travelkit token | 重登录即变 | 你方 |
+| `uid` | 员工唯一稳定标识（工号/user id） | 不变 | 你方 |
+| `org` | 该员工当前所属组织ID | 不变（同组织内） | 你方 |
+| `token` | 该员工在该 org 下的 travelkit token | 重登录即变 | 你方 |
 | `k` | embed 门禁 key | 固定 | 我方带外提供 |
+
+**租户 = `(org, uid)`**：一个员工可隶属多个 org，每个 `(org, uid)` 是独立租户（各自沙箱+历史+token）。同一 uid 切到另一个 org = 另一个工作台。
 
 ## 接入
 
 ```html
-<iframe src="https://tripdesk.impo.ai/#uid=EMP10086&token=TK_xxx&k=THE_KEY"
+<iframe src="https://tripdesk.impo.ai/#uid=EMP10086&org=ORG42&token=TK_xxx&k=THE_KEY"
         style="width:100%;height:100%;border:0" allow="clipboard-write"></iframe>
 ```
 
 ## 规则（必须遵守）
 
 - 用 `#` 片段，**禁止**用 `?` query —— `token`/`k` 会泄漏进服务端日志和 Referer。
-- token 变了（员工重登录）→ 用 **同 `uid` + 新 `token`** 重新渲染 iframe。**别换 `uid`**（换了该员工丢历史）。我方自动把新 token 刷进其沙箱，你方无需其他动作。
+- token 变了（员工重登录）→ 用 **同 `uid`+`org` + 新 `token`** 重新渲染 iframe。**别换 `uid`/`org`**（换了该租户丢历史）。我方自动把新 token 刷进其沙箱，你方无需其他动作。
 
 ## 行为
 
