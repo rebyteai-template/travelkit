@@ -55,6 +55,11 @@ app.use('/api/app/*', async (c, next) => {
   c.set('recoverPrompt', async (taskId, promptId) => {
     return env.TASK_DO.getByName(taskId).recoverPrompt(promptId)
   })
+  // Debug "new VM": route through a per-tenant DO (not a per-task one) so concurrent clicks for
+  // the same user serialize; it provisions + seeds a fresh sandbox and repoints the user's row.
+  c.set('newSandbox', async () => {
+    return env.TASK_DO.getByName(`vm:${tenant}`).reprovisionSandbox(tenant, token)
+  })
   await next()
 })
 

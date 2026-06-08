@@ -19,6 +19,8 @@ This skill uses Simplifly Flight OpenAPI over direct HTTP. Do not use TravelKit 
 
 ## Credentials
 
+In this sandbox the credential is at `/code/.simplifly.env` and is not pre-exported; load it first in the same bash command with `set -a; source /code/.simplifly.env; set +a`, after which the variables below are set.
+
 Read credentials only from environment variables or platform-managed secret storage:
 
 - `SIMPLIFLY_BASE_URL`

@@ -32,6 +32,9 @@ export interface RouteVars {
    *  (the stream may have stopped before it persisted). Returns true if it recovered
    *  something. See GET /tasks/:id/content. */
   recoverPrompt: (taskId: string, promptId: string) => Promise<boolean>
+  /** Debug action: provision a fresh sandbox for the caller and repoint their row at it
+   *  (abandons the old VM). Returns the new sandbox id. See POST /debug/new-sandbox. */
+  newSandbox: () => Promise<{ sandboxId?: string }>
 }
 
 export const app = new Hono<{ Variables: RouteVars }>()
@@ -135,6 +138,13 @@ app.get('/prompts/:id/stream', async (c) => {
       await sleep(150)
     }
   })
+})
+
+// Debug-only: spin a fresh VM for the caller (hidden behind a 10-click UI easter egg). Behind the
+// same embed-key + tenant auth as everything else, and spends sandbox quota, so it's not exposed
+// in the normal UI. The old VM is abandoned; the new one is used on the caller's next session.
+app.post('/debug/new-sandbox', async (c) => {
+  return c.json(await c.var.newSandbox())
 })
 
 app.post('/prompts/:id/cancel', async (c) => {

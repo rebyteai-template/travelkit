@@ -290,6 +290,19 @@ export class TaskDO extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(Date.now())
   }
 
+  /** Debug "new VM": provision + seed a FRESH sandbox for this user and repoint their
+   *  agent_computers row at it (upsert), abandoning the old VM (left running, never referenced
+   *  again). Reached via a per-tenant DO so concurrent clicks for one user serialize here.
+   *  The new VM is bound on the user's NEXT session (agentComputerFor reads the replaced row);
+   *  the current session keeps its old workspace until they start a new chat. */
+  async reprovisionSandbox(email: string, travelkitToken: string): Promise<{ sandboxId?: string }> {
+    const ac = await provisionComputer(this.rebyteConfig(), `tripdesk:${email || 'anon'}`)
+    await seedSandbox(ac, travelkitToken)
+    const tokenHash = travelkitToken ? await sha256Hex(travelkitToken) : ''
+    await this.store.replaceAgentComputer(email, ac.id, ac.sandboxId ?? null, tokenHash, SEED_VERSION)
+    return { sandboxId: ac.sandboxId ?? undefined }
+  }
+
   /** Append assistant text frames to a terminal prompt, computing seq locally rather
    *  than via the shared `frameSeq` (which belongs to the in-flight prompt). Targets
    *  only terminal prompts, so it never races the running turn's frame writer. */

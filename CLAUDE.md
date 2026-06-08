@@ -48,6 +48,7 @@ set -a; . ./cloudflare.env; set +a && pnpm run deploy
 - 每用户一个沙箱，首轮在 DO 里按需 provision + seed travelkit（纯 fetch，不用 SDK；`worker/seed.ts`），存 `agent_computers` 表。
 - 测试：`pnpm test:rebyte`（L0 存活+L1 鉴权+L2 manager 往返，秒级）；全链路回归 `pnpm test:rebyte:multiturn`。数据层卡片探针 `node --import tsx server/rebyte/cardprobe.ts`（开 VM/烧额度）。
 - **已知约束（REBYTE-ISSUE.md）**：经 agent-loop，结构化 `flight_search` 结果**到不了父任务**（含 `solutionId`），父级只拿到 manager 的中文散文表 → **搜索/验价卡渲染不出（数据层缺料，非前端 bug）**；聊天文本正常。`cardprobe.ts` 在数据层证实过。这是 rebyte 侧 issue，待解（直调路 / relay 不过滤子事件 / 用 `subPromptId` 捞子 agent 结果）。
+- **待 rebyte 平台支持（REBYTE-NEEDS.md）**：① 沙箱 env 注入——`settings.json` 的 `env` 不进 agent shell，现靠 seed 一个 `/code/.simplifly.env` + `SKILL.md` 加一句兜底；② skill 更新——envd 无 DELETE，老沙箱换不干净，现靠覆写废弃文件 / 换新 VM。**vendored 的 skill 别动**（只许那一句 Credentials 指引）。
 
 ## 约定（skill 红线）
 

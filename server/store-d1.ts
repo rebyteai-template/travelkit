@@ -58,6 +58,19 @@ export function createD1Store(db: D1Database): Store {
         .bind(tokenHash, seedVersion, userEmail)
         .run()
     },
+    async replaceAgentComputer(userEmail, acId, sandboxId, tokenHash, seedVersion) {
+      // Upsert: claim the row if absent, else overwrite it to name the new VM (user_email is PK).
+      await db
+        .prepare(
+          `INSERT INTO agent_computers (user_email, ac_id, sandbox_id, token_hash, seed_version)
+             VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(user_email) DO UPDATE SET
+             ac_id = excluded.ac_id, sandbox_id = excluded.sandbox_id,
+             token_hash = excluded.token_hash, seed_version = excluded.seed_version`,
+        )
+        .bind(userEmail, acId, sandboxId, tokenHash, seedVersion)
+        .run()
+    },
     async setTaskStatus(id, status) {
       await db.prepare(`UPDATE tasks SET status = ? WHERE id = ?`).bind(status, id).run()
     },

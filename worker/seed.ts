@@ -26,16 +26,29 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
  *  (just the base URL), so it's hardcoded here per deployment. ap-east-1 region. */
 const SIMPLIFLY_BASE_URL = 'https://api-ap-east-1.simplifly.tech'
 
-/** The per-user Simplifly credential + gateway, materialized into the sandbox as Claude Code
- *  project settings (`.claude/settings.json` `env`) so the headless agent's bash/curl sees
- *  SIMPLIFLY_BASE_URL / SIMPLIFLY_AUTH_TOKEN. The token is the per-user travelkit token from the
- *  iframe handoff. This is the single chokepoint for "where the token lives" — change ONLY this
- *  function + applyCredential; the iframe handoff / tenant logic stay put. */
+/** The per-user Simplifly credential, written to `.claude/settings.json` `env`. NOTE: the rebyte
+ *  sandbox does NOT export this `env` into the agent's shell (a live VM showed `env | grep SIMPLIFLY`
+ *  empty — a known rebyte gap, see REBYTE-NEEDS.md), so this is a secondary mirror; the agent gets
+ *  the credential by sourcing `.simplifly.env` (credentialsEnv). Keep both in sync — this +
+ *  credentialsEnv + applyCredential are the single chokepoint for "where the token lives". */
 function settingsJson(token: string): string {
   return JSON.stringify(
     { env: { SIMPLIFLY_BASE_URL, SIMPLIFLY_AUTH_TOKEN: token } },
     null,
     2,
+  )
+}
+
+/** Sourceable shell file (`/code/.simplifly.env`) with the per-user credential — the working
+ *  mechanism, since `.claude/settings.json` `env` isn't exported into the sandbox shell. SKILL.md
+ *  tells the agent to `source` this before API calls. TEMPORARY stopgap until rebyte injects env
+ *  natively (REBYTE-NEEDS.md). Single-quoted; the token is a JWT, so it never contains a quote. */
+function credentialsEnv(token: string): string {
+  return (
+    `# Simplifly credentials for the travelkit skill (per-user, written at sandbox seed time).\n` +
+    `# Load before each Simplifly API bash call:  set -a; source /code/.simplifly.env; set +a\n` +
+    `export SIMPLIFLY_BASE_URL='${SIMPLIFLY_BASE_URL}'\n` +
+    `export SIMPLIFLY_AUTH_TOKEN='${token}'\n`
   )
 }
 
@@ -100,9 +113,11 @@ export async function neutralizeStaleArtifacts(ac: ProvisionedComputer): Promise
   for (const [rel, content] of Object.entries(STALE_NEUTRALIZE)) await writeFile(ac, rel, content)
 }
 
-/** Overwrite ONLY the Simplifly credential (.claude/settings.json `env`) in an already-provisioned
- *  sandbox — used when the user's token rotates (re-login) so we refresh in place instead of
- *  rebuilding the VM. This is the single chokepoint for "where the token lives"; see settingsJson(). */
+/** Write the per-user Simplifly credential into an already-provisioned sandbox — used at seed time
+ *  and when the user's token rotates (re-login), refreshing in place instead of rebuilding the VM.
+ *  Writes both sinks: `.simplifly.env` (the file the skill sources) and `.claude/settings.json`
+ *  `env` (mirror). Single chokepoint for "where the token lives"; see credentialsEnv()/settingsJson(). */
 export async function applyCredential(ac: ProvisionedComputer, travelkitToken: string): Promise<void> {
+  await writeFile(ac, '.simplifly.env', credentialsEnv(travelkitToken))
   await writeFile(ac, '.claude/settings.json', settingsJson(travelkitToken))
 }

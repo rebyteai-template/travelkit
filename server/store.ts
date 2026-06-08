@@ -65,6 +65,10 @@ export interface Store {
   setAgentComputerTokenHash(userEmail: string, tokenHash: string): Promise<void>
   /** Update token hash + seed version together after re-seeding a stale sandbox in place. */
   setAgentComputerSeed(userEmail: string, tokenHash: string, seedVersion: string): Promise<void>
+  /** Force-REPLACE the row (upsert on user_email) to point at a freshly provisioned VM — unlike
+   *  saveAgentComputer's INSERT-OR-IGNORE, this overwrites an existing row. Used by the debug
+   *  "new VM" action: the old VM is abandoned and this row now names the new one. */
+  replaceAgentComputer(userEmail: string, acId: string, sandboxId: string | null, tokenHash: string, seedVersion: string): Promise<void>
 
   createPrompt(id: string, taskId: string, prompt: string): Promise<void>
   getPrompt(id: string): Promise<Prompt | undefined>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   createTask,
   followup,
@@ -6,6 +6,7 @@ import {
   streamPrompt,
   getMe,
   listSessions,
+  newSandbox,
   type PromptContent,
   type SessionSummary,
 } from './api.ts'
@@ -41,6 +42,11 @@ export function App() {
   const [orderDraft, setOrderDraft] = useState<PassengerDraft[]>([])
   const [navOpen, setNavOpen] = useState(false) // mobile session drawer
   const [pane, setPane] = useState<'chat' | 'bench'>('chat') // mobile: which pane is visible
+  // Hidden debug: tap the brand 10× to reveal a "new VM" button (test escape hatch — if a sandbox
+  // gets wedged, provision a fresh one). vmState drives the button label / disabled state.
+  const [debugOn, setDebugOn] = useState(false)
+  const brandTaps = useRef(0)
+  const [vmState, setVmState] = useState<'idle' | 'working' | string>('idle')
   const [theme, setTheme] = useState<'light' | 'dark'>(
     () => (typeof localStorage !== 'undefined' && localStorage.getItem('tripdesk-theme') === 'dark' ? 'dark' : 'light'),
   )
@@ -86,6 +92,28 @@ export function App() {
     setPrompts([])
     setOrderDraft([])
     setMode('auto')
+  }
+
+  // Hidden easter egg: 10 taps on the brand reveals the debug "new VM" control.
+  function tapBrand() {
+    if (debugOn) return
+    if (++brandTaps.current >= 10) setDebugOn(true)
+  }
+
+  // Debug "new VM": provision a fresh sandbox, then drop into a new session so the next message
+  // runs on it (the current session stays pinned to the old VM). Slow — the VM has to boot.
+  async function makeNewVm() {
+    if (vmState === 'working') return
+    setVmState('working')
+    try {
+      const { sandboxId } = await newSandbox()
+      newSession()
+      void refreshSessions()
+      setVmState(`✅ ${sandboxId ? sandboxId.slice(0, 8) : '已就绪'}`)
+    } catch (e) {
+      console.error(e)
+      setVmState('❌ 失败')
+    }
   }
 
   const view = useMemo(() => derive(prompts), [prompts])
@@ -139,8 +167,18 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <button className="hamburger" onClick={() => setNavOpen(true)} aria-label="会话列表">☰</button>
-        <span className="brand">TripDesk</span>
+        <span className="brand" onClick={tapBrand}>TripDesk</span>
         <span className="tag">沙箱模式</span>
+        {debugOn && (
+          <button
+            className="ghost debug-vm"
+            onClick={makeNewVm}
+            disabled={vmState === 'working'}
+            title="调试：为当前用户新建一个沙箱 VM（旧的弃用）"
+          >
+            {vmState === 'working' ? '🔧 新建中…' : vmState !== 'idle' ? `🔧 ${vmState}` : '🔧 新 VM'}
+          </button>
+        )}
         <div className="pane-toggle">
           <button className={pane === 'chat' ? 'active' : ''} onClick={() => setPane('chat')}>对话</button>
           <button className={pane === 'bench' ? 'active' : ''} onClick={() => setPane('bench')}>看板</button>
