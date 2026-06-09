@@ -62,3 +62,43 @@ mint 出来的 `X-Access-Token` 等网关头，在 rebyte envd 上**反而 401**
 **残留的小建议（非阻塞）**：若 rebyte 想让 SDK 可用，可① 给 envd 网关的 gRPC 路同样接受
 `X-API-KEY`（或修正 `X-Access-Token` minting 不需 team_id）；② SDK 拆一个不含 Template 的
 fs-free 入口。但 TripDesk 侧已无需求。
+
+---
+
+## 3. manager（front-line agent-loop）没有 per-workspace/org 的指令钩子 — 开放项
+
+**现象**：rebyte 的请求经过**两层 agent**——① **manager**（agent-loop / dust-loop，拿到我们
+POST 的 prompt，手里有 `web_search` / `sandbox` / `coding_agent` 三个工具，**决定**是 web 搜还是
+委派进沙箱）；② **沙箱里的 Claude Code 子 agent**（真正干活，读 `/code/CLAUDE.md` + skill）。
+我们 seed 的 `/code/CLAUDE.md`（VM system prompt）只管得了**②**；但**决定要不要走 skill 的是①**，
+而 manager 的 system prompt 是**硬编码** `AUX_TRADER_SYSTEM_PROMPT`
+（cctools `relay/src/agent-framework/cctools-impl/repos/workspace_as_agent.ts`：
+`instructions: SYSTEM_INSTRUCTIONS`，写死；`workspaces.instructions` 列存在但**没接线**，
+`org_custom_prompts` 只喂 system_prompt.md = 沙箱子 agent）。
+
+**后果**：把领域指令从用户 prompt 里完全移走后，manager 对「搜索机票」没有路由依据 →
+默认调 `web_search` 并**编造**航班/价格（实测：6 次 websearch、答案是「~S$110 / 建议去携程查」
+的假数据，完全没碰 skill）。即「VM system prompt 解决不了 manager 的路由」。
+
+**当前做法（临时旁路）**：在**首轮** relay prompt 前拼**一行** `MANAGER_ROUTE_HINT`
+（`worker/task-do.ts`）——只做路由：「机票一律委派沙箱 travelkit-pro skill，禁用 web search」，
+**不含**任何业务/安全红线（那些在 `/code/CLAUDE.md` + skill）。会随 relay task 上下文带到后续轮。
+multiturn 测试加了断言：任一轮出现 `web_search` 即判失败，防回归。
+
+**期望 rebyte 支持**：给 manager 一个 **per-workspace/org 的 instructions 钩子**——例如
+`getWorkspaceAsAgent()` 把 `org_custom_prompts`（或接线 `workspaces.instructions`）追加到
+`AUX_TRADER_SYSTEM_PROMPT` 之后。这样路由指令也能像 system prompt 一样配置，**用户 prompt 零污染**，
+就能把那一行 `MANAGER_ROUTE_HINT` 也去掉。**待 cctools 侧决定怎么做（用户后续跟进）。**
+
+**还观察到的两个 rebyte 侧抖动（待跟进，2026-06-09，验证 MANAGER_ROUTE_HINT 时撞到）**：
+- **coding_agent 委派偶发挂起/超长**：路由提示生效后 manager 走 `coding_agent__run_claude_code_in_sandbox`，
+  但有一次委派后 **240s 内父流零事件**（连 manager 的总结文本都没有）→ turn 超时。今早同路径
+  ~140s 能回（manager 先用轻量 `sandbox` 工具读 skill 文档再委派），所以「直奔 coding_agent」这条
+  路要么冷启动太慢要么挂。怀疑也可能与「我们用 `/code/CLAUDE.md` 整个替换 cctools 默认
+  system_prompt.md，移除了子 agent 需要的操作脚手架」有关——待查（可能要改成「在默认之上追加」而非
+  整替）。`TURN_TIMEOUT_MS=240s`，若 coding_agent 合法需要更久，生产 task-do 也会超时。
+- **envd 文件写偶发 409 Conflict**：复用一台可能已 hibernate 的旧 VM 时，`POST /files` 写
+  `.simplifly.env` 返回 409。疑似 VM 非运行态 / 文件锁，非我们逻辑问题。
+
+> 结论：`MANAGER_ROUTE_HINT` 已让**路由**正确（不再 web_search/编造），但**端到端**受上面两个
+> rebyte 侧行为影响未跑出稳定绿。代码改动已落分支，**暂不 deploy**（线上仍是 working 的 preamble 版）。

@@ -23,22 +23,19 @@ const WINDOW_MS = 20_000
 const TURN_TIMEOUT_MS = 240_000
 const TERMINAL = new Set(['completed', 'succeeded', 'failed', 'canceled', 'cancelled'])
 
-const INSTRUCTION = [
-  '你是 TripDesk 的机票预订助手。对所有机票相关请求，必须使用沙箱 /code 里的 travelkit skill，',
-  '按 skill 文档直连 Simplifly Flight OpenAPI 的 HTTP 接口完成（搜索/验价/下单/支付/退改等）；',
-  '严禁用网页搜索或凭记忆编造航班、价格、时刻——只认 Simplifly OpenAPI 返回的真实数据。',
-  '红线：先搜索→实时验价→验价通过后再收乘客证件；下单/支付/退改等写操作必须经用户明确确认；',
-  '绝不向用户暴露 solutionId / orderKey / PNR / 票号等内部字段。默认用简体中文回复。',
-  '沙箱/演示模式：可搜索、验价、下单、发起支付（发起支付会返回第三方支付链接给用户自行完成）；',
-  '绝不替用户在第三方平台完成付款，也绝不谎称已支付。',
-].join('')
+// Mirror of worker/task-do.ts MANAGER_ROUTE_HINT: ONE routing line on the first prompt that makes
+// the front-line manager delegate flight work to the sandbox skill instead of web-searching. All
+// domain rules live in /code/CLAUDE.md + the travelkit-pro skill, not here. Keep in sync with task-do.
+const MANAGER_ROUTE_HINT =
+  '【路由】本工作区是 TripDesk 机票预订场景：所有机票相关请求一律委派沙箱里的 travelkit-pro skill ' +
+  '处理（用 sandbox / coding_agent 工具进沙箱执行），严禁用 web search 或凭记忆作答机票信息。'
 
 interface WindowResult { terminal: boolean; status?: string; finalResult?: string }
 
 /** Mirror of TaskDO.streamWindow. `state.lastSeq` is PER-TURN (starts at 0). */
 async function streamWindow(
   relayTaskId: string,
-  state: { lastSeq: number; sawText: boolean; text: string[] },
+  state: { lastSeq: number; sawText: boolean; text: string[]; tools: string[] },
   label: string,
 ): Promise<WindowResult> {
   const abort = new AbortController()
@@ -75,7 +72,9 @@ async function streamWindow(
         const t = String(p.content ?? p.text ?? '')
         if (t.trim()) { state.sawText = true; state.text.push(t); console.log(`    [${label}] 💬 seq=${seq} ${t.slice(0, 80)}`) }
       } else if (type === 'tool_use') {
-        console.log(`    [${label}] 🔧 seq=${seq} ${String(p.name ?? p.tool_name ?? '?')}`)
+        const name = String(p.name ?? p.tool_name ?? '?')
+        state.tools.push(name)
+        console.log(`    [${label}] 🔧 seq=${seq} ${name}`)
       } else if (type === 'tool_result') {
         console.log(`    [${label}] 📦 seq=${seq} tool_result`)
       } else {
@@ -95,8 +94,8 @@ const MAX_TERMINAL_DRAINS = 4
 /** Drive one full turn to terminal, mirroring the FIXED TaskDO.alarm() loop: when
  *  GET /tasks reports terminal but we haven't drained the trailing text + `done`,
  *  drain a few more windows so the agent's final summary isn't dropped. */
-async function driveTurn(relayTaskId: string, turnNo: number): Promise<{ status: string; text: string }> {
-  const state = { lastSeq: 0, sawText: false, text: [] as string[] }
+async function driveTurn(relayTaskId: string, turnNo: number): Promise<{ status: string; text: string; tools: string[] }> {
+  const state = { lastSeq: 0, sawText: false, text: [] as string[], tools: [] as string[] }
   const deadline = Date.now() + TURN_TIMEOUT_MS
   let win = 0
   let terminalDrains = 0
@@ -106,7 +105,7 @@ async function driveTurn(relayTaskId: string, turnNo: number): Promise<{ status:
     if (done.terminal) {
       const status = done.status || 'completed'
       console.log(`  → turn ${turnNo} TERMINAL via stream done: ${status} (drains=${terminalDrains})`)
-      return { status, text: done.finalResult || state.text.join('') }
+      return { status, text: done.finalResult || state.text.join(''), tools: state.tools }
     }
     const st = await rebyteJSON<{ status?: string; finalResult?: string }>(`/tasks/${relayTaskId}`).catch(() => ({} as { status?: string; finalResult?: string }))
     if (st.status && TERMINAL.has(st.status)) {
@@ -118,9 +117,9 @@ async function driveTurn(relayTaskId: string, turnNo: number): Promise<{ status:
         continue
       }
       console.log(`  → turn ${turnNo} TERMINAL via GET /tasks status=${st.status} (drains=${terminalDrains})`)
-      return { status: st.status, text: st.finalResult || state.text.join('') }
+      return { status: st.status, text: st.finalResult || state.text.join(''), tools: state.tools }
     }
-    if (Date.now() >= deadline) { console.log(`  → turn ${turnNo} TIMEOUT`); return { status: 'timeout', text: state.text.join('') } }
+    if (Date.now() >= deadline) { console.log(`  → turn ${turnNo} TIMEOUT`); return { status: 'timeout', text: state.text.join(''), tools: state.tools } }
     await new Promise((r) => setTimeout(r, 100))
   }
 }
@@ -148,7 +147,7 @@ async function main() {
   console.log('[multiturn] 3/3 turn 1: POST /tasks (model resolved org-wide by relay)')
   const task = await rebyteJSON<{ id: string; status?: string }>('/tasks', {
     method: 'POST',
-    body: JSON.stringify({ prompt: `${INSTRUCTION}\n\n用户需求：\n${turns[0]}`, workspaceId: ac.id }),
+    body: JSON.stringify({ prompt: `${MANAGER_ROUTE_HINT}\n\n${turns[0]}`, workspaceId: ac.id }),
   })
   console.log(`[multiturn]     relayTask=${task.id}`)
 
@@ -161,7 +160,7 @@ async function main() {
       await rebyteJSON(`/tasks/${task.id}/prompts`, { method: 'POST', body: JSON.stringify({ prompt }) })
     }
     const r = await driveTurn(task.id, i + 1)
-    console.log(`\n=== TURN ${i + 1} RESULT status=${r.status} textLen=${r.text.length} ===`)
+    console.log(`\n=== TURN ${i + 1} RESULT status=${r.status} textLen=${r.text.length} tools=[${r.tools.join(', ')}] ===`)
     console.log(r.text.slice(0, 600))
     console.log('==========================================')
 
@@ -169,6 +168,11 @@ async function main() {
     if (r.status === 'timeout' || r.status === 'failed') failures.push(`turn ${i + 1}: status=${r.status}`)
     else if (!r.text.trim()) failures.push(`turn ${i + 1}: 空回复（finalize 早于 text+done）`)
     else if (want && !r.text.includes(want)) failures.push(`turn ${i + 1}: 回复未含 "${want}"（阶段可能不对）`)
+    // Skill-routing guard: the manager MUST delegate flight work to the sandbox, never web-search /
+    // fabricate. A web_search tool on any turn means the routing hint failed (REBYTE-NEEDS.md §3).
+    if (r.tools.some((t) => /web_search|websearch|browse/i.test(t))) {
+      failures.push(`turn ${i + 1}: 用了 web search（${r.tools.join(',')}）——没走 travelkit-pro skill`)
+    }
     console.log(failures.find((f) => f.startsWith(`turn ${i + 1}:`)) ? `❌ turn ${i + 1} FAIL` : `✅ turn ${i + 1} OK`)
   }
 

@@ -11,7 +11,7 @@
  * The envd file API takes a multipart `file` field, auth via the sandbox's own X-API-KEY, and
  * auto-creates parent dirs — all verified against a live sandbox.
  */
-import { SEED_FILES, SEED_VERSION } from './seed-assets.generated.ts'
+import { SEED_FILES, SEED_CLAUDE_MD, SEED_VERSION } from './seed-assets.generated.ts'
 import { rebyteJSON, type RebyteConfig } from '../server/rebyte/client.ts'
 
 export { SEED_VERSION }
@@ -83,11 +83,23 @@ export async function seedSandbox(ac: ProvisionedComputer, travelkitToken: strin
   await applyCredential(ac, travelkitToken)
 }
 
-/** Re-push ONLY the skill tree (SEED_FILES), not the credential — used to refresh an existing
- *  sandbox after the skill changed (seed_version bump) when no token is at hand. Idempotent
- *  overwrites via the envd file API; no reprovision. */
+/** Re-push the static seed content (skill tree + the CLAUDE.md VM system prompt), not the
+ *  credential — used to refresh an existing sandbox after the skill changed (seed_version bump)
+ *  when no token is at hand. Idempotent overwrites via the envd file API; no reprovision. */
 export async function pushSeedFiles(ac: ProvisionedComputer): Promise<void> {
   for (const [rel, content] of Object.entries(SEED_FILES)) await writeFile(ac, rel, content)
+  await writeClaudeMd(ac)
+}
+
+/** Write /code/CLAUDE.md — the VM system prompt (Claude Code's native project memory) that forces
+ *  flight work through the travelkit-pro skill and defers safety/business red-lines to the skill's
+ *  Core Boundaries. This REPLACES cctools' default system_prompt.md, whose generic guidance steers
+ *  the agent to web search instead of our skill. We seed /code at agent-computer provision, BEFORE
+ *  the relay's `/tasks` runs its conditional symlink seeding (`test -e /code/CLAUDE.md || ln -s`),
+ *  so cctools sees our file already present and never links its own — a plain overwrite, no symlink
+ *  to write through. NOT in SEED_FILES so the skill-tree write loop can't touch it. */
+export async function writeClaudeMd(ac: ProvisionedComputer): Promise<void> {
+  await writeFile(ac, 'CLAUDE.md', SEED_CLAUDE_MD)
 }
 
 /** Paths (relative to /code) an earlier seed version created that the current design no longer

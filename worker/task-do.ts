@@ -41,6 +41,16 @@ const WINDOW_MS = 20_000 // per-alarm streaming window — short enough to never
 const DEFAULT_API_URL = 'https://api.rebyte.ai/v1'
 const TERMINAL = new Set(['completed', 'succeeded', 'failed', 'canceled', 'cancelled'])
 
+/** ONE line, prepended to the first relay prompt, that steers the front-line MANAGER (agent-loop)
+ *  to delegate flight work into the sandbox instead of using its web_search tool. The manager has a
+ *  hardcoded system prompt + no per-workspace instruction hook in cctools, so this is the only lever
+ *  (REBYTE-NEEDS.md §3). Everything else — workflow, red-lines, credential handling — lives in the VM
+ *  system prompt (/code/CLAUDE.md) + the travelkit-pro skill, which the sandbox agent reads once
+ *  delegated. Keep this to pure routing; do NOT re-add domain rules here. */
+const MANAGER_ROUTE_HINT =
+  '【路由】本工作区是 TripDesk 机票预订场景：所有机票相关请求一律委派沙箱里的 travelkit-pro skill ' +
+  '处理（用 sandbox / coding_agent 工具进沙箱执行），严禁用 web search 或凭记忆作答机票信息。'
+
 /** Relay event envelope (live /events + /content?include=events): {seq,eventType,payload}. */
 interface RelayEvent {
   seq?: number
@@ -79,19 +89,6 @@ interface TurnState {
   fetchedSubPrompts: string[]
   deadline: number
 }
-
-/** Prepended to the relay prompt so the hosted agent uses the travelkit skill (direct Simplifly
- *  OpenAPI HTTP, no MCP) instead of web search / fabrication, and follows the booking red-lines.
- *  The UI shows only the user's original prompt (stored separately by routes). */
-const REBYTE_INSTRUCTION = [
-  '你是 TripDesk 的机票预订助手。对所有机票相关请求，必须使用沙箱 /code 里的 travelkit skill，',
-  '按 skill 文档直连 Simplifly Flight OpenAPI 的 HTTP 接口完成（搜索/验价/下单/支付/退改等）；',
-  '严禁用网页搜索或凭记忆编造航班、价格、时刻——只认 Simplifly OpenAPI 返回的真实数据。',
-  '红线：先搜索→实时验价→验价通过后再收乘客证件；下单/支付/退改等写操作必须经用户明确确认；',
-  '绝不向用户暴露 solutionId / orderKey / PNR / 票号等内部字段。默认用简体中文回复。',
-  '沙箱/演示模式：可搜索、验价、下单、发起支付（发起支付会返回第三方支付链接给用户自行完成）；',
-  '绝不替用户在第三方平台完成付款，也绝不谎称已支付。',
-].join('')
 
 /** Hex sha256 — lets us detect a rotated travelkit token without storing the raw token. */
 async function sha256Hex(s: string): Promise<string> {
@@ -382,21 +379,26 @@ export class TaskDO extends DurableObject<Env> {
         if (!relayTaskId) relayTaskId = (await this.store.getTask(t.taskId))?.relay_task_id ?? undefined
 
         if (!relayTaskId) {
-          // First turn: provision the per-user sandbox and create the relay task.
+          // First turn: provision the per-user sandbox and create the relay task. The booking
+          // red-lines, credential handling and skill workflow live in the VM system prompt
+          // (/code/CLAUDE.md, seeded by seed.ts) + the travelkit-pro skill — the sandbox agent
+          // reads those. But the front-line MANAGER (agent-loop) has a hardcoded prompt + a
+          // web_search tool and NO per-workspace instruction hook (cctools workspace_as_agent.ts,
+          // see REBYTE-NEEDS.md §3), so without one routing line it web-searches + fabricates
+          // flights instead of delegating to the sandbox. This single line is the minimum to make
+          // the manager route into the skill; persists in the relay task's context for follow-ups.
           const ac = await this.agentComputerFor(t.userEmail, t.travelkitToken)
-          const relayPrompt = `${REBYTE_INSTRUCTION}\n\n用户需求：\n${t.prompt}`
           const task = await rebyteJSON<{ id: string }>('/tasks', {
             method: 'POST',
-            body: JSON.stringify({ prompt: relayPrompt, workspaceId: ac.id }),
+            body: JSON.stringify({ prompt: `${MANAGER_ROUTE_HINT}\n\n${t.prompt}`, workspaceId: ac.id }),
             config,
           })
           relayTaskId = task.id
           await this.ctx.storage.put('relayTaskId', relayTaskId)
           await this.store.setTaskRelayId(t.taskId, relayTaskId)
         } else {
-          // Follow-up turn: append this prompt to the existing relay task. The red-line
-          // instruction was already delivered on turn 1 and persists in the agent's context,
-          // so we send the user's prompt alone. /events then streams this latest prompt.
+          // Follow-up turn: append this prompt to the existing relay task. We send the
+          // user's prompt alone. /events then streams this latest prompt.
           await rebyteJSON(`/tasks/${relayTaskId}/prompts`, {
             method: 'POST',
             body: JSON.stringify({ prompt: t.prompt }),

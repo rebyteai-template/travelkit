@@ -37,6 +37,13 @@ for (const abs of walk(skillRoot)) {
   files[rel] = readFileSync(abs, 'utf8')
 }
 
+// The VM system prompt → written to /code/CLAUDE.md by worker/seed.ts (Claude Code's native project
+// memory). This REPLACES cctools' default system_prompt.md (whose generic guidance steers the agent
+// to web search instead of our travelkit-pro skill). NOT part of SEED_FILES — it's written via a
+// dedicated step (writeClaudeMd) so it can't be clobbered by the skill-tree write loop. Folded into
+// the hash below so editing it bumps SEED_VERSION and re-seeds existing sandboxes.
+const claudeMd = readFileSync(join(ROOT, 'seed', 'vm-system-prompt.md'), 'utf8')
+
 // Content stamp over the seeded tree (sorted rel paths + bytes). When the skill changes, this
 // changes — worker/task-do.ts compares it against each sandbox's recorded seed_version and
 // re-pushes the files into already-provisioned VMs (no reprovision). Bump CREDENTIAL_SCHEMA below
@@ -44,6 +51,7 @@ for (const abs of walk(skillRoot)) {
 const CREDENTIAL_SCHEMA = 'v3' // v3: force re-seed so the dir-recursive stale cleanup sweeps every existing sandbox
 const hash = createHash('sha256').update(CREDENTIAL_SCHEMA + '\0')
 for (const rel of Object.keys(files).sort()) hash.update(rel + '\0' + files[rel] + '\0')
+hash.update('CLAUDE.md\0' + claudeMd + '\0') // editing the VM system prompt bumps the version → re-seed
 const SEED_VERSION = hash.digest('hex').slice(0, 16)
 
 const out =
@@ -51,6 +59,7 @@ const out =
   `// (no secrets; the per-user Simplifly token is injected at runtime, not baked). The Worker\n` +
   `// writes these into each per-user sandbox's /code via fetch.\n` +
   `export const SEED_VERSION = ${JSON.stringify(SEED_VERSION)}\n` +
+  `export const SEED_CLAUDE_MD = ${JSON.stringify(claudeMd)}\n` +
   `export const SEED_FILES: Record<string, string> = ${JSON.stringify(files, null, 2)}\n`
 
 writeFileSync(join(ROOT, 'worker', 'seed-assets.generated.ts'), out)
