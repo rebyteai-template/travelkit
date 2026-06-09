@@ -94,12 +94,31 @@ export async function pushSeedFiles(ac: ProvisionedComputer): Promise<void> {
 /** Write /code/CLAUDE.md — the VM system prompt (Claude Code's native project memory) that forces
  *  flight work through the travelkit-pro skill and defers safety/business red-lines to the skill's
  *  Core Boundaries. This REPLACES cctools' default system_prompt.md, whose generic guidance steers
- *  the agent to web search instead of our skill. We seed /code at agent-computer provision, BEFORE
- *  the relay's `/tasks` runs its conditional symlink seeding (`test -e /code/CLAUDE.md || ln -s`),
- *  so cctools sees our file already present and never links its own — a plain overwrite, no symlink
- *  to write through. NOT in SEED_FILES so the skill-tree write loop can't touch it. */
+ *  the agent to web search instead of our skill.
+ *
+ *  CRITICAL ordering bug we MUST defeat: the relay seeds /code/CLAUDE.md as a SYMLINK
+ *  → /home/user/system_prompt.md during VM creation (cctools `seedClaudeMdSymlink`, called inside
+ *  `provisionVM` → `createNew`). That runs BEFORE we ever write — `sandbox_id` only surfaces to our
+ *  poll AFTER the relay's create transaction (which contains the symlink seeding) commits. So by the
+ *  time we have a sandbox to write to, /code/CLAUDE.md is ALREADY that symlink, and BOTH envd file
+ *  ops FOLLOW it: a plain write lands in system_prompt.md (which the relay's `writeSystemPrompt`
+ *  re-clobbers with its generic meta.md on EVERY prompt → our VM system prompt is silently lost and
+ *  the agent web-searches), and a single gRPC Remove deletes the symlink's TARGET, leaving a
+ *  DANGLING symlink at /code/CLAUDE.md (verified against a live sandbox: after one Remove both
+ *  CLAUDE.md and system_prompt.md 404). A subsequent write would then re-follow the dangling link
+ *  and recreate system_prompt.md — same trap.
+ *
+ *  So we Remove TWICE: the 1st follows the link and deletes the target (link goes dangling); the 2nd
+ *  finds a dangling link with no target to follow and deletes the LINK ITSELF. Only then is the path
+ *  clear for a REAL regular file that envd can't follow anywhere. The relay only seeds the symlink in
+ *  `createNew` (never on reconnect) and `writeSystemPrompt` only ever touches system_prompt.md, so a
+ *  real file here can no longer be clobbered. removeFile treats absent (grpc-status 5) as a no-op, so
+ *  the 2nd Remove is harmless when the 1st already cleared everything, making this safe on fresh,
+ *  re-seed, and reused sandboxes alike. NOT in SEED_FILES so the skill-tree write loop can't touch it. */
 export async function writeClaudeMd(ac: ProvisionedComputer): Promise<void> {
-  await writeFile(ac, 'CLAUDE.md', SEED_CLAUDE_MD)
+  await removeFile(ac, 'CLAUDE.md') // 1st: follows the relay's symlink, deletes its target → link dangles
+  await removeFile(ac, 'CLAUDE.md') // 2nd: dangling link has no target to follow → deletes the link itself
+  await writeFile(ac, 'CLAUDE.md', SEED_CLAUDE_MD) // path is clear → lands as a real file
 }
 
 /** Paths (relative to /code) an earlier seed version created that the current design no longer

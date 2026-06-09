@@ -48,7 +48,7 @@ const claudeMd = readFileSync(join(ROOT, 'seed', 'vm-system-prompt.md'), 'utf8')
 // changes — worker/task-do.ts compares it against each sandbox's recorded seed_version and
 // re-pushes the files into already-provisioned VMs (no reprovision). Bump CREDENTIAL_SCHEMA below
 // to also force a re-seed when the credential FORMAT changes (credentialsEnv) without skill edits.
-const CREDENTIAL_SCHEMA = 'v3' // v3: force re-seed so the dir-recursive stale cleanup sweeps every existing sandbox
+const CREDENTIAL_SCHEMA = 'v5' // v5: force re-seed so writeClaudeMd's CORRECTED double-Remove (envd Remove follows the symlink, so one Remove only deletes the target; two removes kill the dangling link) replaces the relay's CLAUDE.md symlink with a real file on every existing sandbox (v4's single Remove left a dangling symlink that writeSystemPrompt re-clobbered → still rebyte's prompt)
 const hash = createHash('sha256').update(CREDENTIAL_SCHEMA + '\0')
 for (const rel of Object.keys(files).sort()) hash.update(rel + '\0' + files[rel] + '\0')
 hash.update('CLAUDE.md\0' + claudeMd + '\0') // editing the VM system prompt bumps the version → re-seed
