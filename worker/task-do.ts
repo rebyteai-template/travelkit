@@ -249,7 +249,7 @@ export class TaskDO extends DurableObject<Env> {
             if (seedStale) {
               if (travelkitToken) await seedSandbox(ac, travelkitToken)
               else await pushSeedFiles(ac) // no token at hand → refresh files only, keep credential
-              await removeStaleArtifacts(ac) // really delete legacy files (e.g. .mcp.json) via SDK Filesystem RPC
+              await removeStaleArtifacts(ac) // really delete legacy files (old skill tree, .mcp.json, settings.json) via envd gRPC Remove
               await this.store.setAgentComputerSeed(email, travelkitToken ? tokenHash : (existing.tokenHash ?? ''), SEED_VERSION)
             } else {
               await applyCredential(ac, travelkitToken)

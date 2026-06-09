@@ -4,8 +4,8 @@
  * Run before build/deploy: `pnpm gen:seed`.
  *
  * No credential is baked here: the per-user Simplifly token is injected at runtime into
- * .claude/settings.json `env` by worker/seed.ts (applyCredential). The output is gitignored as
- * a rebuilt artifact.
+ * /code/.simplifly.env (a dotenv file the skill reads) by worker/seed.ts (applyCredential). The
+ * output is gitignored as a rebuilt artifact.
  */
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
@@ -25,26 +25,23 @@ function walk(dir: string): string[] {
 
 const files: Record<string, string> = {}
 
-// NOTE: .mcp.json is intentionally NOT baked here. The travelkit token is per-user and comes
-// from the iframe handoff at runtime — worker/seed.ts writes .mcp.json into each sandbox with
-// that user's token. Keeps the build artifact free of any credential.
+// NOTE: no credential file is baked here. The per-user Simplifly token comes from the iframe
+// handoff at runtime — worker/seed.ts writes /code/.simplifly.env (a dotenv file the travelkit-pro
+// skill reads directly; it no longer relies on shell env vars). Keeps this artifact credential-free.
 
-// NOTE: .claude/settings.json is intentionally NOT baked here — it carries the per-user Simplifly
-// credential (SIMPLIFLY_AUTH_TOKEN) in its `env` block, so worker/seed.ts writes it per-user at
-// runtime via applyCredential. Keeps the build artifact credential-free.
-
-// The travelkit skill tree.
-const skillRoot = join(ROOT, '.claude', 'skills', 'travelkit')
+// The travelkit-pro skill tree (renamed from `travelkit`; the old tree is removed from each sandbox
+// at re-seed via worker/seed.ts STALE_FILES).
+const skillRoot = join(ROOT, '.claude', 'skills', 'travelkit-pro')
 for (const abs of walk(skillRoot)) {
-  const rel = '.claude/skills/travelkit/' + abs.slice(skillRoot.length + 1).split('\\').join('/')
+  const rel = '.claude/skills/travelkit-pro/' + abs.slice(skillRoot.length + 1).split('\\').join('/')
   files[rel] = readFileSync(abs, 'utf8')
 }
 
 // Content stamp over the seeded tree (sorted rel paths + bytes). When the skill changes, this
 // changes — worker/task-do.ts compares it against each sandbox's recorded seed_version and
 // re-pushes the files into already-provisioned VMs (no reprovision). Bump CREDENTIAL_SCHEMA below
-// to also force a re-seed when the credential FORMAT changes (settingsJson) without skill edits.
-const CREDENTIAL_SCHEMA = 'v1' // settings.json env { SIMPLIFLY_BASE_URL, SIMPLIFLY_AUTH_TOKEN }
+// to also force a re-seed when the credential FORMAT changes (credentialsEnv) without skill edits.
+const CREDENTIAL_SCHEMA = 'v3' // v3: force re-seed so the dir-recursive stale cleanup sweeps every existing sandbox
 const hash = createHash('sha256').update(CREDENTIAL_SCHEMA + '\0')
 for (const rel of Object.keys(files).sort()) hash.update(rel + '\0' + files[rel] + '\0')
 const SEED_VERSION = hash.digest('hex').slice(0, 16)
