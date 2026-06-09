@@ -97,17 +97,15 @@ export async function pushSeedFiles(ac: ProvisionedComputer): Promise<void> {
  *     server Claude Code would otherwise try to load.
  *   · `.claude/settings.json` — legacy per-user credential mirror; no longer written (the skill
  *     reads `.simplifly.env` directly), so the old copy must be purged to not leave a stale token.
- *   · `.claude/skills/travelkit/**` — the old skill tree, renamed to `travelkit-pro`. The new tree
- *     has different paths so it never overwrites these; without deletion both skills would coexist. */
+ *   · `.claude/skills/travelkit` — the old skill DIR, renamed to `travelkit-pro`. The new tree has
+ *     different paths so it never overwrites these; without deletion both skills coexist and the
+ *     agent loads two travelkit skills. Listed as the directory (not its files): envd `Remove` is
+ *     recursive (verified — one call nukes the subtree + the dir), so this is robust to whatever
+ *     files an older seed version left under it, and leaves no empty dir behind. */
 const STALE_FILES: string[] = [
   '.mcp.json',
   '.claude/settings.json',
-  '.claude/skills/travelkit/SKILL.md',
-  '.claude/skills/travelkit/references/api-map.md',
-  '.claude/skills/travelkit/references/requirement-analysis.md',
-  '.claude/skills/travelkit/references/agent-direct-http.md',
-  '.claude/skills/travelkit/references/post-sale.md',
-  '.claude/skills/travelkit/references/flight-workflows.md',
+  '.claude/skills/travelkit', // recursive: whole old skill subtree
 ]
 
 /** Wrap a protobuf message in a gRPC-Web data frame: 1 flag byte (0) + 4-byte big-endian length.
@@ -128,13 +126,14 @@ function varint(n: number): number[] {
   return b
 }
 
-/** Delete a file (path relative to /code) via the envd Filesystem gRPC-Web service. The REST /files
- *  endpoint has no DELETE (405, allow: GET,HEAD,POST), but `filesystem.Filesystem/Remove` does — and
- *  takes the SAME auth as our writes (X-API-KEY + Basic `user:`), no JWT/team_id. Hand-rolled (pure
- *  fetch, no SDK: the SDK's transport adds gateway headers that 401 here, and drags node fs into the
- *  Worker bundle). RemoveRequest is `{ string path = 1 }`. gRPC-Web always returns HTTP 200; the real
- *  status is in a trailer frame — 0 = ok, 5 = NotFound (treated as success: idempotent). All verified
- *  against a live sandbox (Remove → grpc-status:0). */
+/** Delete a file OR directory (path relative to /code) via the envd Filesystem gRPC-Web service.
+ *  Directory removal is RECURSIVE — one call deletes the whole subtree and the dir itself (verified
+ *  against a live sandbox). The REST /files endpoint has no DELETE (405, allow: GET,HEAD,POST), but
+ *  `filesystem.Filesystem/Remove` does — and takes the SAME auth as our writes (X-API-KEY + Basic
+ *  `user:`), no JWT/team_id. Hand-rolled (pure fetch, no SDK: the SDK's transport adds gateway
+ *  headers that 401 here, and drags node fs into the Worker bundle). RemoveRequest is
+ *  `{ string path = 1 }`. gRPC-Web always returns HTTP 200; the real status is in a trailer frame —
+ *  0 = ok, 5 = NotFound (treated as success: idempotent). */
 export async function removeFile(ac: ProvisionedComputer, rel: string): Promise<void> {
   const host = `https://49983-${ac.sandboxId}.${new URL(ac.sandboxBaseUrl).host}`
   const pathBytes = new TextEncoder().encode('/code/' + rel)
@@ -159,9 +158,9 @@ export async function removeFile(ac: ProvisionedComputer, rel: string): Promise<
   if (status !== 0 && status !== 5) throw new Error(`remove ${rel}: grpc-status ${status}`)
 }
 
-/** Really delete stale artifacts (not overwrite-inert). Only meaningful on re-seed of a sandbox built
- *  by an older seed version; on a clean sandbox the files are absent (grpc-status 5) and removeFile
- *  no-ops. Best-effort per file so one failure doesn't block the rest. */
+/** Really delete stale artifacts (files or whole dirs — see STALE_FILES). Only meaningful on re-seed
+ *  of a sandbox built by an older seed version; on a clean sandbox the paths are absent (grpc-status
+ *  5) and removeFile no-ops. Best-effort per entry so one failure doesn't block the rest. */
 export async function removeStaleArtifacts(ac: ProvisionedComputer): Promise<void> {
   for (const rel of STALE_FILES) {
     try {

@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { env } from '../env.ts'
 import type { AgentComputer } from './provision.ts'
 import { writeFile } from './sandbox.ts'
+import { removeStaleArtifacts } from '../../worker/seed.ts'
 
 const CODE = '/code'
 
@@ -47,5 +48,10 @@ export async function seedTravelkit(ac: AgentComputer): Promise<string[]> {
     await writeFile(ac, `${CODE}/.claude/skills/travelkit-pro/${rel}`, readFileSync(join(skillRoot, rel), 'utf8'))
     written.push(`.claude/skills/travelkit-pro/${rel}`)
   }
+
+  // Same cleanup as the Worker re-seed path: really delete the old `travelkit` skill dir + legacy
+  // credential files, else a probe VM seeded across versions shows two travelkit skills.
+  await removeStaleArtifacts(ac)
+  written.push('(removed stale: old skill dir + legacy creds)')
   return written
 }

@@ -41,7 +41,7 @@ for (const abs of walk(skillRoot)) {
 // changes — worker/task-do.ts compares it against each sandbox's recorded seed_version and
 // re-pushes the files into already-provisioned VMs (no reprovision). Bump CREDENTIAL_SCHEMA below
 // to also force a re-seed when the credential FORMAT changes (credentialsEnv) without skill edits.
-const CREDENTIAL_SCHEMA = 'v2' // /code/.simplifly.env dotenv { SIMPLIFLY_BASE_URL, SIMPLIFLY_AUTH_TOKEN }
+const CREDENTIAL_SCHEMA = 'v3' // v3: force re-seed so the dir-recursive stale cleanup sweeps every existing sandbox
 const hash = createHash('sha256').update(CREDENTIAL_SCHEMA + '\0')
 for (const rel of Object.keys(files).sort()) hash.update(rel + '\0' + files[rel] + '\0')
 const SEED_VERSION = hash.digest('hex').slice(0, 16)
