@@ -79,7 +79,7 @@ export const followup = (taskId: string, prompt: string): Promise<{ promptId: st
   postJson(`/tasks/${taskId}/prompts`, { prompt })
 
 /** Debug-only: provision a fresh sandbox VM for the caller (old one abandoned). Slow — it waits
- *  for the VM to boot. Hidden behind the topbar 10-click easter egg in App.tsx. */
+ *  for the VM to boot. Hidden behind the sidebar-brand 10-click easter egg in App.tsx. */
 export const newSandbox = (): Promise<{ sandboxId?: string }> => postJson('/debug/new-sandbox', {})
 
 export async function loadContent(

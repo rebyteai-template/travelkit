@@ -13,9 +13,9 @@ import {
 import { derive } from './frames.ts'
 import { passengersFromFare, buildOrderPrompt, type PassengerDraft } from './booking.ts'
 import { ChatPanel } from './components/ChatPanel.tsx'
-import { Composer } from './components/Composer.tsx'
+import { Composer, type ComposerHandle } from './components/Composer.tsx'
 import { Bench, type BenchMode } from './components/Bench.tsx'
-import { SessionList } from './components/SessionList.tsx'
+import { Sidebar } from './components/Sidebar.tsx'
 import { Unauthorized } from './components/Unauthorized.tsx'
 
 /** Current session lives in the URL (?t=…) so refresh/deep-link restores it. Identity
@@ -40,6 +40,7 @@ export function App() {
   const [busy, setBusy] = useState(false)
   const [mode, setMode] = useState<BenchMode>('auto')
   const [orderDraft, setOrderDraft] = useState<PassengerDraft[]>([])
+  const composerRef = useRef<ComposerHandle>(null)
   const [navOpen, setNavOpen] = useState(false) // mobile session drawer
   const [pane, setPane] = useState<'chat' | 'bench'>('chat') // mobile: which pane is visible
   // Hidden debug: tap the brand 10× to reveal a "new VM" button (test escape hatch — if a sandbox
@@ -92,6 +93,7 @@ export function App() {
     setPrompts([])
     setOrderDraft([])
     setMode('auto')
+    setNavOpen(false) // close the mobile drawer after starting a new session
   }
 
   // Hidden easter egg: 10 taps on the brand reveals the debug "new VM" control.
@@ -152,6 +154,11 @@ export function App() {
     }
   }
 
+  // Suggestion chip → drop the text into the composer (editable, not sent).
+  function pickSuggestion(text: string) {
+    composerRef.current?.fill(text)
+  }
+
   // fare card → passenger form (pure UI transition; nothing sent yet)
   function continueToPassengers() {
     if (!view.fare) return
@@ -165,51 +172,46 @@ export function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
+      {/* Desktop has no header — controls live in the sidebar. This slim bar only
+          shows on mobile, where the sidebar collapses into a drawer. */}
+      <div className="mobilebar">
         <button className="hamburger" onClick={() => setNavOpen(true)} aria-label="会话列表">☰</button>
-        <span className="brand" onClick={tapBrand}>TripDesk</span>
-        <span className="tag">沙箱模式</span>
-        {debugOn && (
-          <button
-            className="ghost debug-vm"
-            onClick={makeNewVm}
-            disabled={vmState === 'working'}
-            title="调试：为当前用户新建一个沙箱 VM（旧的弃用）"
-          >
-            {vmState === 'working' ? '🔧 新建中…' : vmState !== 'idle' ? `🔧 ${vmState}` : '🔧 新 VM'}
-          </button>
-        )}
+        <span className="brand">Kitty</span>
         <div className="pane-toggle">
           <button className={pane === 'chat' ? 'active' : ''} onClick={() => setPane('chat')}>对话</button>
           <button className={pane === 'bench' ? 'active' : ''} onClick={() => setPane('bench')}>看板</button>
         </div>
-        <button
-          className="ghost theme-toggle"
-          onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
-          aria-label={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
-          title={theme === 'dark' ? '浅色' : '深色'}
-        >
-          {theme === 'dark' ? (
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
-          ) : (
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
-          )}
-        </button>
-        <button className="ghost" onClick={newSession}>新会话</button>
-      </header>
+      </div>
       <div className="workspace">
-        <SessionList
+        <Sidebar
           email={email}
           sessions={sessions}
           currentId={taskId}
           onSelect={openSession}
+          onNew={newSession}
           open={navOpen}
           onClose={() => setNavOpen(false)}
-        />
+          theme={theme}
+          onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+          onTapBrand={tapBrand}
+        >
+          {/* Hidden debug control (revealed by 10× brand tap) — kept in App so the
+              sandbox-VM plumbing stays out of the presentational sidebar. */}
+          {debugOn && (
+            <button
+              className="sidebar-vm"
+              onClick={makeNewVm}
+              disabled={vmState === 'working'}
+              title="调试：为当前用户新建一个沙箱 VM（旧的弃用）"
+            >
+              {vmState === 'working' ? '🔧 新建中…' : vmState !== 'idle' ? `🔧 ${vmState}` : '🔧 新 VM'}
+            </button>
+          )}
+        </Sidebar>
         <div className={`split pane-${pane}`}>
           <section className="left">
-            <ChatPanel chat={view.chat} busy={busy} />
-            <Composer onSend={send} busy={busy} />
+            <ChatPanel chat={view.chat} busy={busy} onPick={pickSuggestion} />
+            <Composer onSend={send} busy={busy} ref={composerRef} />
           </section>
           <section className="right">
             <Bench
