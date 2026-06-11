@@ -29,17 +29,18 @@ import type { Store } from '../server/store.ts'
 import { isObj, parseSSE } from '../server/rebyte/sse.ts'
 import { rebyteJSON, rebyteFetch, type RebyteConfig } from '../server/rebyte/client.ts'
 import { provisionComputer, seedSandbox, pushSeedFiles, removeStaleArtifacts, applyCredential, SEED_VERSION, type ProvisionedComputer } from './seed.ts'
-import { shouldDrainTerminal } from './turn-finalize.ts'
+import { shouldDrainTerminal, shouldRetryWindowError, turnExpired, TERMINAL_STATUSES } from './turn-finalize.ts'
 import { framesHaveAssistantText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
 import type { Env } from './env.ts'
 
 // No model/executor here on purpose: POST /v1/tasks IGNORES both (cctools relay
 // `void input.model; void input.executor`). The agent-loop model is resolved org-wide
 // from org_settings.agent_loop_model — switch it in the rebyte admin, not in code.
-const TURN_TIMEOUT_MS = 240_000 // hard ceiling for a whole turn
+const TURN_TIMEOUT_MS = 240_000 // soft ceiling: past this, only a relay that REPORTS itself alive keeps the turn going
+const TURN_HARD_CAP_MS = 900_000 // absolute ceiling, even with the relay alive — a hung task can't pin 'running' forever
 const WINDOW_MS = 20_000 // per-alarm streaming window — short enough to never risk eviction
 const DEFAULT_API_URL = 'https://api.rebyte.ai/v1'
-const TERMINAL = new Set(['completed', 'succeeded', 'failed', 'canceled', 'cancelled'])
+const TERMINAL = TERMINAL_STATUSES
 
 /** ONE line, prepended to the first relay prompt, that steers the front-line MANAGER (agent-loop)
  *  to delegate flight work into the sandbox instead of using its web_search tool. The manager has a
@@ -88,6 +89,10 @@ interface TurnState {
    *  pulled + replayed into this prompt's frames (so we fetch each once). */
   fetchedSubPrompts: string[]
   deadline: number
+  /** Absolute cap — even an alive relay can't run the turn past this. */
+  hardDeadline: number
+  /** Consecutive alarm-window failures (reset on any successful window). */
+  errors: number
 }
 
 /** Hex sha256 — lets us detect a rotated travelkit token without storing the raw token. */
@@ -282,6 +287,8 @@ export class TaskDO extends DurableObject<Env> {
       terminalDrains: 0,
       fetchedSubPrompts: [],
       deadline: Date.now() + TURN_TIMEOUT_MS,
+      hardDeadline: Date.now() + TURN_HARD_CAP_MS,
+      errors: 0,
     }
     await this.ctx.storage.put('turn', t)
     await this.ctx.storage.setAlarm(Date.now())
@@ -326,6 +333,7 @@ export class TaskDO extends DurableObject<Env> {
     const pending = unrenderedResultTexts(frames)
     if (pending.length) {
       await this.backfillText(promptId, pending)
+      await this.unfailRecovered(p)
       return true
     }
     // Case 2: nothing rendered at all → recover from the relay's retained response.
@@ -351,7 +359,19 @@ export class TaskDO extends DurableObject<Env> {
     if (!text) return false
 
     await this.backfillText(promptId, [text])
+    await this.unfailRecovered(p)
     return true
+  }
+
+  /** A 'failed' verdict was premature if the answer later proved recoverable (seen in prod:
+   *  the 240s timeout finalized the turn, then the relay's result still landed). Flip the
+   *  prompt back to 'completed'; the task too, but only when this is its LATEST turn — a
+   *  newer turn's status must keep owning the sidebar. Canceled prompts stay canceled. */
+  private async unfailRecovered(p: { id: string; task_id: string; status: string }): Promise<void> {
+    if (p.status !== 'failed') return
+    await this.store.setPromptStatus(p.id, 'completed')
+    const all = await this.store.listPrompts(p.task_id)
+    if (all[all.length - 1]?.id === p.id) await this.store.setTaskStatus(p.task_id, 'completed')
   }
 
   /** Cancel the in-flight turn. The running alarm sees 'turn' gone and stops. */
@@ -414,6 +434,7 @@ export class TaskDO extends DurableObject<Env> {
       }
 
       const done = await this.streamWindow(t, config)
+      t.errors = 0 // the window ran — whatever failed before, the relay is reachable again
       if (done.terminal) {
         if (done.finalResult) await this.emitTurnText(t, done.finalResult, true)
         return this.finalize(t, this.mapStatus(done.status ?? 'completed'))
@@ -442,14 +463,29 @@ export class TaskDO extends DurableObject<Env> {
         return this.finalize(t, this.mapStatus(st.status))
       }
 
-      if (Date.now() >= t.deadline) {
-        await this.emit(t.promptId, { __error: `relay 超时（${TURN_TIMEOUT_MS / 1000}s 未结束）` })
+      // Two-tier expiry: past the soft deadline a relay that POSITIVELY reports the task
+      // alive keeps the turn going (delegated turns routinely run past 4 min); the hard
+      // cap bounds everything. An unreachable relay gets no extension.
+      if (turnExpired({ now: Date.now(), deadline: t.deadline, hardDeadline: t.hardDeadline ?? t.deadline, relayStatus: st.status })) {
+        await this.emit(t.promptId, { __error: '处理超时，已停止等待。结果可能稍后就绪——刷新页面可找回。' })
         return this.finalize(t, 'failed')
       }
 
       await this.ctx.storage.put('turn', t) // persist lastRelaySeq / sawText / terminalDrains
       await this.ctx.storage.setAlarm(Date.now() + 100) // continue promptly
     } catch (e: unknown) {
+      // A transient hiccup (relay fetch, D1 write) must not kill a turn whose agent is
+      // still running — finalizing 'failed' here tells the browser `done`, the loading
+      // bubble vanishes, and the late answer has no push channel (only a manual refresh
+      // recovers it via /content's self-heal). Retry with backoff; give up only after
+      // MAX_WINDOW_ERRORS consecutive failures or past the hard deadline.
+      const errors = (t.errors ?? 0) + 1
+      if (shouldRetryWindowError({ errors, now: Date.now(), hardDeadline: t.hardDeadline ?? t.deadline })) {
+        t.errors = errors
+        await this.ctx.storage.put('turn', t)
+        await this.ctx.storage.setAlarm(Date.now() + 1500 * errors)
+        return
+      }
       await this.emit(t.promptId, { __error: e instanceof Error ? e.message : String(e) })
       await this.finalize(t, 'failed')
     }

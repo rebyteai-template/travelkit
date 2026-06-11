@@ -38,8 +38,8 @@ export function ChatPanel({ chat, busy, onPick }: { chat: ChatBubble[]; busy: bo
               ↗ 在 rebyte 查看本次运行
             </a>
           ) : (
-            <div key={b.key} className={`bubble ${b.role}`}>
-              {b.role === 'assistant' ? <Markdown text={b.text} /> : b.text}
+            <div key={b.key} className={`bubble ${b.role}${b.error ? ' error' : ''}`}>
+              {b.role === 'assistant' && !b.error ? <Markdown text={b.text} /> : b.text}
             </div>
           ),
         )

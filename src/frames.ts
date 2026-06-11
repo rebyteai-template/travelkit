@@ -98,6 +98,8 @@ export interface ChatBubble {
   text: string
   /** When set, the bubble renders as a link to this turn's rebyte run. */
   runUrl?: string
+  /** Turn-level failure (DO `__error` frame) — rendered in the error palette. */
+  error?: boolean
 }
 
 export type Stage = 'idle' | 'search' | 'verify' | 'order' | 'payment'
@@ -155,6 +157,13 @@ export function derive(prompts: PromptContent[]): DerivedView {
       // rebyte run link for this turn (emitted by the DO when the relay task starts)
       if (typeof data.__rebyte_run === 'string') {
         chat.push({ key: `r-${p.id}-${f.seq}`, role: 'assistant', text: '', runUrl: `https://app.rebyte.ai/run/${data.__rebyte_run}` })
+        continue
+      }
+
+      // turn failure (timeout / relay error) — without this bubble a failed turn is
+      // indistinguishable from a blank chat once the loading indicator clears
+      if (typeof data.__error === 'string' && data.__error.trim()) {
+        chat.push({ key: `e-${p.id}-${f.seq}`, role: 'assistant', text: data.__error, error: true })
         continue
       }
 

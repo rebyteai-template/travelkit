@@ -74,6 +74,9 @@ export interface Store {
   getPrompt(id: string): Promise<Prompt | undefined>
   listPrompts(taskId: string): Promise<Prompt[]>
   finishPrompt(id: string, status: string): Promise<void>
+  /** Unconditional status write (unlike finishPrompt's running-only guard) — used to flip a
+   *  prematurely-failed prompt back to 'completed' when its answer is recovered late. */
+  setPromptStatus(id: string, status: string): Promise<void>
 
   appendFrame(promptId: string, seq: number, data: unknown): Promise<void>
   framesSince(promptId: string, fromSeq: number): Promise<Frame[]>

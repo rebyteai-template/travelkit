@@ -81,7 +81,9 @@ body {
 .session:hover { background: var(--panel-2); }
 .session.active { background: var(--accent-soft); }
 .session-title { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.session-meta { font-size: 11px; color: var(--muted); }
+.session-meta { font-size: 11px; color: var(--muted); display: inline-flex; align-items: center; gap: 5px; }
+.session-spinner { width: 9px; height: 9px; border: 1.5px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: session-spin 0.8s linear infinite; }
+@keyframes session-spin { to { transform: rotate(360deg); } }
 
 /* account + theme, pinned to the bottom of the rail */
 .sidebar-foot { display: flex; align-items: center; gap: 8px; padding: 10px 6px 4px; margin-top: 8px; border-top: 1px solid var(--border); }
@@ -145,6 +147,7 @@ body {
 .bubble.user { align-self: flex-end; background: var(--accent); color: var(--on-accent); border-bottom-right-radius: 4px; }
 .bubble.assistant { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
 .bubble.typing { color: var(--muted); }
+.bubble.error { background: var(--err-soft); border-color: var(--err-border); color: var(--err); white-space: pre-wrap; }
 
 /* assistant Markdown (.md = react-markdown output inside an assistant bubble) */
 .bubble.assistant { white-space: normal; }   /* Markdown 自己控制间距,不要 pre-wrap */

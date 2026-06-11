@@ -14,6 +14,33 @@
 /** Extra windows to drain the relay's trailing text+done after status flips terminal. */
 export const MAX_TERMINAL_DRAINS = 4
 
+/** Relay task statuses that mean the turn is over (mirrors the relay's vocabulary). */
+export const TERMINAL_STATUSES = new Set(['completed', 'succeeded', 'failed', 'canceled', 'cancelled'])
+
+/** Consecutive failed alarm windows tolerated before the turn is declared dead. One
+ *  relay/D1 hiccup between windows must NOT kill a turn whose agent is still running —
+ *  that's the "正在处理 disappears, chat stays blank until refresh" bug: the premature
+ *  'failed' finalize sends `done` to the browser (loading bubble gone) while the relay
+ *  keeps working, and nothing ever pushes the late answer. */
+export const MAX_WINDOW_ERRORS = 3
+
+/** True → the window error is worth another alarm; false → give up and finalize 'failed'. */
+export function shouldRetryWindowError(i: { errors: number; now: number; hardDeadline: number }): boolean {
+  return i.errors < MAX_WINDOW_ERRORS && i.now < i.hardDeadline
+}
+
+/**
+ * Turn expiry is two-tier: past the soft deadline we only keep waiting when the relay
+ * POSITIVELY reports the task alive (a fresh non-terminal status) — delegated turns
+ * routinely outlive the soft window. An unreachable/unknown relay gets no benefit of
+ * the doubt, and the hard deadline caps everything so a hung relay can't pin the
+ * prompt at 'running' forever.
+ */
+export function turnExpired(i: { now: number; deadline: number; hardDeadline: number; relayStatus?: string }): boolean {
+  const alive = !!i.relayStatus && !TERMINAL_STATUSES.has(i.relayStatus)
+  return i.now >= (alive ? i.hardDeadline : i.deadline)
+}
+
 export interface DrainInput {
   /** Did we already stream assistant text this turn? */
   sawText: boolean

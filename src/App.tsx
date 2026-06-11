@@ -13,6 +13,7 @@ import { useSessions } from './hooks/useSessions.ts'
 import { useConversation } from './hooks/useConversation.ts'
 import { useSendMessage } from './hooks/useSendMessage.ts'
 import { useNewSandbox } from './hooks/useNewSandbox.ts'
+import { busyTasksAtom } from './store/conversation.ts'
 import {
   taskIdAtom,
   benchModeAtom,
@@ -37,6 +38,7 @@ export function App() {
   const newVm = useNewSandbox()
 
   const taskId = useAtomValue(taskIdAtom)
+  const busyTasks = useAtomValue(busyTasksAtom)
   const openSession = useSetAtom(openSessionAtom)
   const newSession = useSetAtom(newSessionAtom)
   const [mode, setMode] = useAtom(benchModeAtom)
@@ -102,6 +104,7 @@ export function App() {
           email={me.data?.email ?? ''}
           sessions={sessions}
           currentId={taskId}
+          busyIds={busyTasks}
           onSelect={openSession}
           onNew={newSession}
           open={navOpen}

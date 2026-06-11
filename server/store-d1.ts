@@ -97,6 +97,9 @@ export function createD1Store(db: D1Database): Store {
         .bind(status, id)
         .run()
     },
+    async setPromptStatus(id, status) {
+      await db.prepare(`UPDATE prompts SET status = ? WHERE id = ?`).bind(status, id).run()
+    },
 
     async appendFrame(promptId, seq, data) {
       await db

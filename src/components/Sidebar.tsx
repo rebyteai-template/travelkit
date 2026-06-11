@@ -1,6 +1,16 @@
 import type { ReactNode } from 'react'
 import type { SessionSummary } from '../api.ts'
 
+/** D1 timestamps come from SQLite `datetime('now')`: UTC with no zone suffix
+ *  ("YYYY-MM-DD HH:MM:SS"), so mark them as UTC before converting to the
+ *  viewer's local time. Rendered as "MM-DD HH:mm". */
+function formatLocalTime(utc: string): string {
+  const d = new Date(utc.replace(' ', 'T') + 'Z')
+  if (Number.isNaN(d.getTime())) return utc.slice(5, 16)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 /** ChatGPT-style left rail: brand + "new chat" button up top, scrollable history
  *  below, account/theme footer. Static column on desktop; a slide-in drawer on
  *  mobile (toggled by the mobile bar's hamburger, dismissed by the backdrop).
@@ -10,6 +20,7 @@ export function Sidebar({
   email,
   sessions,
   currentId,
+  busyIds,
   onSelect,
   onNew,
   open,
@@ -22,6 +33,7 @@ export function Sidebar({
   email: string
   sessions: SessionSummary[]
   currentId: string | null
+  busyIds: Set<string>
   onSelect: (id: string) => void
   onNew: () => void
   open: boolean
@@ -60,7 +72,14 @@ export function Sidebar({
               title={s.title}
             >
               <span className="session-title">{s.title || '新会话'}</span>
-              <span className="session-meta">{s.created_at.slice(5, 16)}</span>
+              <span className="session-meta">
+                {/* busyIds = this tab's in-flight turns; status 'running' covers
+                    turns still going after a reload or from another device. */}
+                {(busyIds.has(s.id) || s.status === 'running') && (
+                  <span className="session-spinner" aria-label="进行中" />
+                )}
+                {formatLocalTime(s.created_at)}
+              </span>
             </button>
           ))}
         </div>

@@ -6,7 +6,13 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { shouldDrainTerminal, MAX_TERMINAL_DRAINS } from './turn-finalize.ts'
+import {
+  shouldDrainTerminal,
+  shouldRetryWindowError,
+  turnExpired,
+  MAX_TERMINAL_DRAINS,
+  MAX_WINDOW_ERRORS,
+} from './turn-finalize.ts'
 
 const T0 = 1_000_000
 const DEADLINE = T0 + 240_000
@@ -62,6 +68,37 @@ test('past the turn deadline → finalize regardless', () => {
     shouldDrainTerminal({ sawText: false, finalResult: '', terminalDrains: 0, now: DEADLINE + 1, deadline: DEADLINE }),
     false,
   )
+})
+
+const HARD = T0 + 900_000
+
+test('THE BUG: one transient window error must NOT finalize the turn → retry', () => {
+  // A single relay/D1 hiccup used to finalize 'failed' immediately: the browser got
+  // `done`, the 正在处理 bubble vanished, and the still-running agent's answer had no
+  // way back in until a manual refresh.
+  assert.equal(shouldRetryWindowError({ errors: 1, now: T0, hardDeadline: HARD }), true)
+  assert.equal(shouldRetryWindowError({ errors: MAX_WINDOW_ERRORS - 1, now: T0, hardDeadline: HARD }), true)
+})
+
+test('window errors are bounded: give up after MAX consecutive or past the hard deadline', () => {
+  assert.equal(shouldRetryWindowError({ errors: MAX_WINDOW_ERRORS, now: T0, hardDeadline: HARD }), false)
+  assert.equal(shouldRetryWindowError({ errors: 1, now: HARD + 1, hardDeadline: HARD }), false)
+})
+
+test('soft deadline: an alive relay keeps the turn going, an unreachable one does not', () => {
+  const past = DEADLINE + 1
+  // relay positively reports the task alive → extend up to the hard cap
+  assert.equal(turnExpired({ now: past, deadline: DEADLINE, hardDeadline: HARD, relayStatus: 'running' }), false)
+  // status query failed / unknown → no benefit of the doubt
+  assert.equal(turnExpired({ now: past, deadline: DEADLINE, hardDeadline: HARD, relayStatus: undefined }), true)
+  // terminal status is handled elsewhere — for expiry it counts as not-alive
+  assert.equal(turnExpired({ now: past, deadline: DEADLINE, hardDeadline: HARD, relayStatus: 'completed' }), true)
+})
+
+test('hard deadline caps even an alive relay', () => {
+  assert.equal(turnExpired({ now: HARD, deadline: DEADLINE, hardDeadline: HARD, relayStatus: 'running' }), true)
+  // and before the soft deadline nothing expires
+  assert.equal(turnExpired({ now: T0, deadline: DEADLINE, hardDeadline: HARD, relayStatus: undefined }), false)
 })
 
 test('drain converges: a drained window that finally captures text stops the loop', () => {
