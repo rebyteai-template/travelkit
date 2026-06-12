@@ -42,6 +42,11 @@ Load only the smallest reference needed for the current user intent.
 
 ## Workflow Rules
 
+- For all agent-handled flight shopping/search requests, write a temporary JSON request file and run the bundled resource `scripts/flight_search.py` from the skill directory: `python3 scripts/flight_search.py --request-file <json>`. The simple CLI form (`--origin` / `--destination` / `--date`) is only for manual local smoke tests and is not an agent workflow entrypoint. Do not call the `shopping` endpoint directly unless the script cannot express the task or developer diagnostics require raw API behavior.
+- Treat `scripts/flight_search.py` stdout as agent-internal raw API input, not user-facing content. For ordinary search result summarization, pass that raw JSON through `scripts/flight_search_compact.py --input <raw-json>` before composing the reply, unless developer diagnostics require inspecting the raw envelope directly.
+- Treat `scripts/flight_search_compact.py` stdout as agent-internal compact input. Use its display fields to render the user-facing table according to `output-rules.md`; never paste the compact JSON directly to ordinary users.
+- When presenting search options, retain the compact `displayMapping` from the final user-visible option number to the private `solutionId`. For ordinary script-based shopping results, verify the selected option with `scripts/flight_verify_selected.py --compact-file <compact-json> --option <number>` so search display and verification stay on the same direct-HTTP channel. Use verification output as the source of the latest booking `orderKey`.
+- The local search/verify scripts apply to ordinary shopping/search option verification. Existing order detail lookup, payment, cancellation, refund, change, itinerary download, known-flight pricing, and order creation continue to use their existing workflow references and API rules.
 - Search or price first; verify the selected `solutionId` immediately before collecting passenger identity details or creating an order.
 - Use the latest verified `orderKey` for original order creation.
 - Collect passenger document and phone details, plus email when available, only after verification succeeds and the user confirms they want to proceed.
@@ -52,7 +57,8 @@ Load only the smallest reference needed for the current user intent.
 ## Output Rules
 
 - Summarize only API-returned commercial facts. Do not invent fare, tax, baggage, refund/change policy, ticketing, deadline, or status data.
-- Default flight search recommendations prioritize the lowest displayed total price unless the user states a stronger preference.
-- For ordinary search, request a bounded result set, summarize compact options, and keep raw `data` / `solutions` out of user-facing generation.
-- When the same itinerary is returned with multiple fare options, display the lowest sellable fare for that itinerary unless the user explicitly asks to compare fare products or rules.
+- If the user states flight display preferences, follow those preferences. If the user does not state preferences, use the default baggage-qualified recommendation policy in `flight-search.md`: direct flights by early/midday/evening/late-night groups, limited low-duration transfers, and one cheaper no-baggage reminder. Recommendation counts are maximums; show only the qualifying options that exist.
+- Before sending an ordinary or complex search reply with no explicit user display preference, self-check that the reply contains all four visible time sections `早 06:00-12:00`, `中 12:00-18:00`, `晚 18:00-24:00`, and `凌晨 24:00-06:00`, plus `低价提醒` and `下一步`. If any required section is missing, rewrite the reply before sending it. Do not merge default recommendations into one ungrouped table unless the user explicitly asks for another display order or filter.
+- For search, script stdout may contain raw `data` / `solutions`; summarize compact options and keep raw API data out of user-facing generation.
+- When the same itinerary is returned with multiple fare options, display the lowest sellable fare that satisfies the active user preference or default recommendation policy unless the user explicitly asks to compare fare products or rules.
 - Convert internal status data into user-safe wording. Keep raw JSON out of ordinary user replies unless the user asks for developer diagnostics.

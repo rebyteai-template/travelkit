@@ -6,17 +6,17 @@ Use this reference for verification, passenger collection, original order creati
 
 Verification is mandatory before collecting passenger identity details or creating an order.
 
-1. Use the selected displayed option's private `solutionId`.
-2. Call `verify_solution` via `POST /openapi/v3/flight/solutions/{solutionId}/verification` with body:
+1. For ordinary shopping results displayed from `flight_search.py` + `flight_search_compact.py`, call `scripts/flight_verify_selected.py --compact-file <compact-json> --option <number>` and let the script read the selected displayed option's private `solutionId`. Do not use MCP `flight_verify_solution` for these script-generated display options.
+2. The script calls `verify_solution` via `POST /openapi/v3/flight/solutions/{solutionId}/verification` with body:
    `{"solutionId":"...","passengerCount":{"adult":1,"child":0,"infant":0}}`.
 3. Always use `passengerCount: { adult, child, infant }`; explicitly pass `child: 0` and `infant: 0` when the user did not specify them.
 4. Do not use `passengers` in verification requests. `passengers` belongs to shopping/create-order style payloads, not verification.
-5. Compare returned route, times, cabin, and price against the selected displayed option, not the original raw array index.
-6. If the verified itinerary or price changed materially, ask the user to accept the new option and price before proceeding.
+5. Compare returned route, times, cabin, price, and baggage against the selected displayed option, not the original raw array index.
+6. If the verified itinerary, price, cabin, or baggage changed materially, ask the user to accept the verified option before proceeding.
 7. Store the returned `orderKey` as the only key to use for original order creation.
 8. Collect passenger and contact details only after verification succeeds and the user confirms they want to book.
 
-If verification fails, return to search/pricing. If a later order creation retry is needed, verify again instead of reusing a stale `orderKey`.
+If verification fails with an expired-search error such as `207013`, re-run the same `flight_search.py -> flight_search_compact.py` flow, present the refreshed options, and ask the user to choose again. Do not silently auto-select the old option number from refreshed results, and do not switch to another search/verification channel. If a later order creation retry is needed, verify again instead of reusing a stale `orderKey`.
 
 ## Passenger Collection
 

@@ -91,7 +91,8 @@ These appeared in generated OpenAPI with `x-backend-router-registered: false`. T
 
 Default request behavior:
 
-- Ordinary one-way search: include `maxResultCount: 50`.
+- Agent-handled shopping/search should normally run `scripts/flight_search.py --request-file <json>` for both simple and complex searches. The simple CLI form is manual-only. The script does not send `maxResultCount`; it returns raw API responses for agent-side sorting, redaction, and display.
+- Direct API fallback may include `maxResultCount` only when the script cannot express the task or developer diagnostics require raw shopping behavior.
 - Nonstop/direct request: include `maxSegments: 1`.
 - Price, airline, baggage, or duration preferences: send matching request filters before local ranking.
 
@@ -104,7 +105,11 @@ Default request behavior:
 - `passengers`: `{ adult, child, infant }`
 - Optional: `mustHaveBag`, `maxPrice`, `accountCode`, `itineraryRequired`, `maxWaitTime`
 
-Use the same full-name `cabinClass` rule as shopping.
+Use the same full-name `cabinClass` rule as shopping. `cabinClass` is a request field for broad cabin class only; concrete booking codes such as `Z`, `V`, `E`, or `Q` must not be sent as `cabinClass` or any other pricing request field.
+
+Pricing responses may include segment-level `cabinCode`, `subCabinCode`, and `fareBasisCode`. Use `cabinCode` and `subCabinCode` to match a user-requested concrete booking code after pricing returns. `fareBasisCode` may be displayed or used for diagnostics, but do not treat it as a substitute for `cabinCode` / `subCabinCode` unless a separate business rule explicitly says so.
+
+When baggage allowance is required for known-flight pricing, `mustHaveBag: true` may be sent on a follow-up pricing request for the same segments. The response must still be filtered by the requested `cabinCode` / `subCabinCode`; if the requested booking code is absent from the `mustHaveBag` response, report that baggage was not returned for that booking code rather than borrowing baggage rules from another fare.
 
 ### Verification
 
@@ -116,6 +121,8 @@ Body fields:
 - `passengerCount`: `{ adult, child, infant }`
 
 Always use `passengerCount`; do not use `passengers` in verification requests. Use returned `orderKey` for order creation.
+
+Verification confirms a selected `solutionId`; it does not accept concrete booking codes such as `Z`, `V`, `E`, or `Q`. When the user requested a booking code, select the matching priced solution first, then verify that solution.
 
 ### Create Original Order
 

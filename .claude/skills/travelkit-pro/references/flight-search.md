@@ -5,22 +5,23 @@ Use this reference for general shopping, complex comparisons, known-flight prici
 ## Search Workflow
 
 1. Collect only route, departure date, passenger counts, cabin, and search preferences. For complex, ambiguous, conflicting, flexible-date, round-trip, multi-city, conditional, or known-flight requests, first normalize the user's intent with `intent-analysis.md`.
-2. Call `shopping` with `journeys`, `passengers`, `cabinClass`, default `maxResultCount: 50`, and applicable optional filters. Send `maxSegments: 1` for nonstop/direct requests. Prefer request filters such as `maxPrice`, `includeAirlines`, `excludeAirlines`, `mustHaveBag`, and `maxDuration` when the user gives those preferences.
-3. Normalize returned solutions before summarizing. Read only compact fields needed for display and verification: flight numbers, route, dates/times, duration, transfer count, cabin, baggage summary, computed total price, and private `solutionId` / `orderKey`.
-4. Deduplicate identical itineraries to the lowest computed fare and keep a private displayed-option mapping to that exact `solutionId` / `orderKey`.
-5. Rank results by user preference, then present user-safe options using `output-rules.md`.
-6. Keep `solutionId` and `orderKey` internal.
-7. When the user selects an option, proceed to verification in `flight-booking.md`.
+2. For every agent-handled shopping/search, write a temporary JSON request file and run `python3 scripts/flight_search.py --request-file <path>` instead of calling `shopping` directly. The simple CLI form is only for manual local smoke tests, not agent workflow.
+3. Use this request-file shape for simple and complex searches alike: `{ "searches": [{ "label": "单程", "journeys": [{ "origin": "BJS", "destination": "SHA", "departureDate": "2026-06-20" }], "passengers": { "adult": 1, "child": 0, "infant": 0 }, "cabinClass": "economy", "filters": {} }] }`. Map nonstop/direct -> `filters.maxSegments: 1`, max price -> `filters.maxPrice`, max duration -> `filters.maxDuration`, included/excluded airlines -> `filters.includeAirlines` / `filters.excludeAirlines`, checked baggage required -> `filters.mustHaveBag`.
+4. Treat script stdout as agent-internal raw API input. Save it to a temporary JSON file, then run `python3 scripts/flight_search_compact.py --input <raw-json>` for ordinary search display preparation. Do not show raw envelopes to the user.
+5. Use the compact script output as the default normalized source for ordinary search replies. It deduplicates repeated itineraries, extracts flight/airport/time/baggage/price fields, groups default recommendations by time section, and emits a private `displayMapping`.
+6. When the user selects a displayed option, verify only the compact `displayMapping` entry's `solutionId` through `scripts/flight_verify_selected.py --compact-file <compact-json> --option <number>`, then proceed in `flight-booking.md`. Do not replace that selected script result with a solution from MCP `flight_search`, a fresh raw array index, or another shopping channel. Use verification output as the source of the latest booking `orderKey`.
+7. Keep `solutionId`, `orderKey`, raw `data`, raw `solutions`, credentials, PNR, and ticket numbers internal.
 
 ## Complex Search
 
-Handle these patterns by expanding into multiple shopping calls only when needed:
+Handle these patterns by creating a `--request-file` for the search script:
 
-- Explicit round trip: call `shopping` once with two `journeys` by default: outbound `origin -> destination` on the departure date, and return `destination -> origin` on the return date. Do not split into separate one-way shopping calls unless the user explicitly asks for separate one-way options, or the single round-trip shopping request returns no usable result and the fallback is explained.
-- Date range or flexible dates: run one shopping request per candidate date, then compare returned options.
-- Multi-airport city: use city code first, then common airport-code combinations if no results.
-- Time preferences: filter/rank returned journeys locally by departure or arrival windows.
-- Conditional searches: for example, "先查直飞，没有再看转机" means search nonstop first, then transfer options only if needed.
+- Simple one-way: create one `searches[]` entry with one `journeys[]` item.
+- Explicit round trip: create one `searches[]` entry with two `journeys`: outbound `origin -> destination` on the departure date, and return `destination -> origin` on the return date. Do not split fixed-date round trips into separate one-way searches unless the combined request returns no usable result and the fallback is explained.
+- Date range or flexible dates: create one `searches[]` entry per candidate date, with clear labels such as `6/20`, `6/21`, or `去程-6/20`.
+- Multi-airport city: use city code first. If no results return, create another request file with common airport-code combinations and summarize which routes were tried.
+- Time preferences: run the script first, then filter/rank normalized solutions locally by departure or arrival windows.
+- Conditional searches: for example, "先查直飞，没有再看转机" means create a request file with `filters.maxSegments: 1` first; run transfer-allowed searches only if direct search returns no usable result.
 
 When multiple calls are needed, summarize request assumptions, searched routes/dates, best 3-5 options, recommendation reason, and any routes/dates that returned no results. Fixed-date explicit round trips are not a multi-call case by default. If a single round-trip request returns no usable result and you fall back to separate outbound/return shopping calls, tell the user: `往返组合查询未返回可用结果，因此改为分别查去程/回程。` Keep every displayed option bound to its exact private solution mapping.
 
@@ -28,11 +29,15 @@ When multiple calls are needed, summarize request assumptions, searched routes/d
 
 Use when the user supplies known flight numbers instead of asking for general search.
 
-1. Collect flight number, origin, destination, date, cabin, journey index, and passenger counts.
-2. Default missing cabin to `economy`; never send fare-bucket shortcuts as `cabinClass`.
-3. Call `pricing`.
-4. Present priced options using `output-rules.md`.
-5. Keep returned `solutionId` internal and verify before booking.
+1. Collect flight number, origin, destination, date, cabin, journey index, passenger counts, and any requested booking code such as `Z`, `V`, `E`, `Q`, `T`, or `Y`.
+2. Parse a requested concrete booking/sub-cabin code into internal `requestedBookingCode`, normalized to uppercase. Default missing cabin to `economy`; never send fare-bucket shortcuts as `cabinClass`.
+3. Call `pricing` with only the full cabin class such as `economy`, `business`, or `first`; do not pass `requestedBookingCode` as an API request field or as `cabinClass`.
+4. If `requestedBookingCode` is present, filter returned solutions after pricing by matching the relevant returned segment's `cabinCode == requestedBookingCode` or `subCabinCode == requestedBookingCode`.
+5. If the user asks for checked baggage on a known flight and the matching priced solution has missing baggage rules, run a second `pricing` request for the same known flight with `mustHaveBag: true`, then filter the returned solutions by the same `requestedBookingCode`. Use baggage only from a matching cabin-code solution; never copy baggage allowance from another cabin code on the same flight.
+6. When multiple solutions match the requested booking code, sort by the user's stated preference; if none is stated, present the lowest sellable matching solution. Do not replace a requested-code result with the lowest fare from another booking code.
+7. If no solution matches the requested booking code, say the pricing response did not return the requested booking code, and do not infer airline inventory or availability outside the returned data. If a matching solution returns price but no baggage rules, say the price was returned but baggage was not returned or remains to be confirmed.
+8. Present priced options using `output-rules.md`.
+9. Keep returned `solutionId` internal and verify before booking.
 
 ## Baggage Transit
 
@@ -40,11 +45,21 @@ Use `baggage_transit` only when the user explicitly asks about baggage through-c
 
 ## Ranking and Lowest Fare
 
-- Default ranking is lowest total price unless the user states a stronger preference.
-- If the user states a clear preference such as shortest duration, nonstop, morning departure, airport, airline, baggage, or max price, filter/rank by that preference first.
+- If the user states a clear preference such as lowest price, shortest duration, nonstop, morning departure, airport, airline, baggage, max price, no baggage, or unlimited transfer duration, filter/rank by that preference first.
+- If the user does not state a display preference, use the default recommendation policy:
+  - Deduplicate candidate solutions by the same flight combination, route, departure time, and arrival time before display.
+  - Treat a solution as baggage-qualified only when the API returns checked baggage allowance for the itinerary. Missing baggage data is not baggage-qualified.
+  - Display only baggage-qualified solutions in the recommendation section.
+  - The default grouping is a user-visible output structure, not just an internal ranking detail. Ordinary and complex search replies must show four time sections in this order: `早 06:00-12:00`, `中 12:00-18:00`, `晚 18:00-24:00`, and `凌晨 24:00-06:00`.
+  - For nonstop/direct solutions, group by first departure time and show up to the two cheapest options per group. If a group has no qualifying options, show the group with `无符合默认推荐条件的方案`.
+  - For transfer solutions, show up to the two cheapest baggage-qualified options whose total itinerary duration is less than 8 hours in the group of their first departure time. If fewer qualifying options exist, show only the qualifying options that exist.
+  - For complex one-way searches, group by the first departure time. For round-trip or multi-city searches, group by the first journey's first departure time.
+  - If a no-checked-baggage or baggage-missing solution is cheaper than the cheapest baggage-qualified recommendation, show only the single cheapest such option as a low-price reminder, not as a recommendation.
+  - Do not backfill recommendation slots with non-qualifying options, and do not output non-qualifying options unless the user explicitly asks for them.
+- Explicit user preferences override the default time-section display. Examples include `只看最低价`, `只看下午`, `只要虹桥`, `不限行李`, `只看直飞`, and `只看转机`.
 - For large result sets, sort and deduplicate compact normalized options rather than raw solution payloads.
-- When the same flight combination, route, departure time, and arrival time appears with multiple fare options, display only the lowest sellable fare unless the user explicitly asks to compare fare products, rules, or cabin/fare-code differences.
-- The displayed price, private `solutionId`, private `orderKey`, and later verification must all refer to that same lowest fare solution.
+- When the same flight combination, route, departure time, and arrival time appears with multiple fare options, display only the lowest sellable fare that satisfies the active user preference or default policy unless the user explicitly asks to compare fare products, rules, or cabin/fare-code differences.
+- The displayed price, private `solutionId`, any returned private `orderKey`, and later verification must all refer to that same lowest fare solution.
 
 ## Fare Brand Presentation
 
@@ -58,16 +73,18 @@ Use this only when the API returns fare product fields such as `brandCode`, or w
 
 ## Large Result Handling
 
-- Ordinary search must request `maxResultCount: 50` by default and show Top 5 results.
+- `flight_search.py` stdout is raw; use `flight_search_compact.py` to normalize large ordinary search result sets before displaying results.
+- `flight_search_compact.py` stdout is still internal. Use `displayOptions`, `sections`, and `lowPriceReminder` to compose the reply, and retain `displayMapping` for later verification.
 - If the user asks for more, show the next compact batch, up to 10 options per reply.
-- Complex searches must apply `maxResultCount` to every shopping request, keep only each request's local Top 3-5 compact options, then merge those compact candidates.
+- Complex searches should keep the final user-visible output compact after agent-side merging, usually 3-10 options depending on the user request.
 - If more normalized candidates exist after the displayed list, say more options are available and invite filtering or the next batch.
 
 ## Selected Option Tracking
 
-Every displayed option number must stay bound to the same internal solution object that produced the displayed route, times, cabin, and price.
+Every displayed option number must stay bound to the same internal solution object that produced the displayed flight number, itinerary, time, cabin, price, and baggage allowance.
 
 - If options are sorted, filtered, grouped, or deduplicated before display, build the displayed mapping from the final displayed list.
-- When the user selects an option, verify only the `solutionId` from that displayed mapping.
+- When the user selects an option, verify only the `solutionId` from that displayed mapping through the same script/direct-HTTP channel.
 - Do not use the original raw `solutions[index]` after reordering, filtering, grouping, or deduplication.
-- Before verification, restate the selected displayed option with flight numbers, route, times, transfer count, and search price. Keep `solutionId` hidden.
+- Do not switch to MCP search/verification to satisfy a selection from a script-generated display table. If the selected script solution is expired, re-run the script search and compact flow, present the refreshed options, and ask the user to choose again.
+- Before verification, restate the selected displayed option with the user-visible ordinary search fields: flight number, itinerary, time, cabin, search price, and baggage allowance when returned. Keep `solutionId` hidden.
