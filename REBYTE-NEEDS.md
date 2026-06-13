@@ -65,16 +65,55 @@ fs-free 入口。但 TripDesk 侧已无需求。
 
 ---
 
-## 3. manager（front-line agent-loop）没有 per-workspace/org 的指令钩子 — 开放项
+## 3. manager（front-line agent-loop）没有 per-workspace/org 的指令钩子 — 机制已落地，剩 /v1 暴露 🟡
 
-**现象**：rebyte 的请求经过**两层 agent**——① **manager**（agent-loop / dust-loop，拿到我们
+> **更新 2026-06-13（重新核对 cctools `origin/main`，迁移 `20260531`～`20260612`）**：
+> 我们当初「期望 rebyte 支持」的那几样，cctools 这几天已经整体迁到 dust 的 **MCPServerView 模型**，
+> **机制层面基本都落地了**——只是公开 `/v1` API 还够不着。逐条对照：
+>
+> 1. **per-workspace instructions 钩子：已落地。** `workspace_as_agent.ts` 现在读
+>    `workspaces.agent_instructions`，非空就**追加**在 `AUX_TRADER_SYSTEM_PROMPT` 之后
+>    （`${SYSTEM_INSTRUCTIONS}\n\n${employeeInstructions}`，注释里叫它 "the employee's own
+>    system prompt"，出现了**数字员工**框架）。即我们要的「在默认 manager prompt 之上追加领域指令」
+>    已实现，且正是「追加」而非整替。
+> 2. **per-workspace 工具开关 + 领域 MCP 直挂：已落地。** 工具不再硬编码三件套，改从
+>    **`workspace_mcp_servers`** 表动态组装（每行 = 一个 MCPServerView，带 `enabled` 布尔）。
+>    注册表 `INTERNAL_MCP_SERVERS` 用 `availability` 三态：`auto`（默认开、可 per-workspace 关）
+>    **恰好就是 web_search / sandbox / coding_agent**；`manual` = ~40 个 opt-in 连接器。另有
+>    **`remote_mcp_servers`** 表（org 级注册）可 per-workspace **挂载自定义远程 MCP**。
+>    → 垂直 workspace 的配方现在物理上成立：写 `agent_instructions`（路由+人格）+ 把 web_search
+>    那行 `enabled=FALSE`（掐掉误路由）+ 留 coding_agent + **把 travelkit MCP 作为 remote 挂到
+>    manager 上**。最后这条若做了，还会**顺带解掉 `REBYTE-ISSUE.md`**——manager 直调 MCP，
+>    结构化 `tool_result` 原样进父任务事件流，搜索/验价卡立刻有料。
+> 3. **基座 prompt 没变**：`AUX_TRADER_SYSTEM_PROMPT` 一字未改，仍是通用「task routing /
+>    需要外部信息就用工具」措辞，垂直人格只是 append 上去——和「绝不编造航班」会轻微打架，是次要项。
+>
+> **仍未解（真正的开放项）**：上面这些 primitive **全锁在 Clerk 内部路由**后——`agent_instructions`
+> → `/api/workspaces`（clerkAuth）；workspace_mcp_servers 开关 + remote MCP 注册/挂载 →
+> `/api/mcp`、`/api/connectors`（clerkAuth）。**公开 `/v1` 一个都够不着**：`/v1/tasks` 依旧
+> `void` 掉 executor/model、不收 `agent_instructions`、自动建的 `api-task-*` workspace 拿通用 prompt
+> + 三件套 auto 工具；`/v1/workspaces` 只有 artifacts 读写，**无任何 workspace 配置写路由**。
+> TripDesk 只走 `rbk_*` API key 的 `/v1`，**无法纯 API 把 workspace 配成垂直 agent**。
+>
+> **因此对 rebyte 的诉求收窄为一件事**：把这套 per-workspace agent 配置（`agent_instructions`
+> + 工具 allowlist/禁用 + remote MCP 挂载）**开到公开 `/v1`**（如 POST/PATCH `/v1/workspaces`，
+> 或 `/v1/tasks` 内联同名字段），底层全部复用现成写逻辑。这件做了，下面的 `MANAGER_ROUTE_HINT`
+> 旁路就能彻底拿掉。**待 cctools 侧决定（用户后续跟进）。**
+>
+> 注：cctools 那边我们的 WIP 分支 `fix/agent-loop-file-upload` 落后 `origin/main` 25 个 commit，
+> 正好没含这次 MCP 重构；后续要动 manager 需基于最新 main。
+
+---
+
+**现象（历史记录，2026-06-09）**：rebyte 的请求经过**两层 agent**——① **manager**（agent-loop / dust-loop，拿到我们
 POST 的 prompt，手里有 `web_search` / `sandbox` / `coding_agent` 三个工具，**决定**是 web 搜还是
 委派进沙箱）；② **沙箱里的 Claude Code 子 agent**（真正干活，读 `/code/CLAUDE.md` + skill）。
 我们 seed 的 `/code/CLAUDE.md`（VM system prompt）只管得了**②**；但**决定要不要走 skill 的是①**，
-而 manager 的 system prompt 是**硬编码** `AUX_TRADER_SYSTEM_PROMPT`
+而当时 manager 的 system prompt 是**硬编码** `AUX_TRADER_SYSTEM_PROMPT`
 （cctools `relay/src/agent-framework/cctools-impl/repos/workspace_as_agent.ts`：
 `instructions: SYSTEM_INSTRUCTIONS`，写死；`workspaces.instructions` 列存在但**没接线**，
 `org_custom_prompts` 只喂 system_prompt.md = 沙箱子 agent）。
+〔↑ 这段已被顶部 2026-06-13 更新推翻：`agent_instructions` 现已接线并追加到基座之后。〕
 
 **后果**：把领域指令从用户 prompt 里完全移走后，manager 对「搜索机票」没有路由依据 →
 默认调 `web_search` 并**编造**航班/价格（实测：6 次 websearch、答案是「~S$110 / 建议去携程查」
