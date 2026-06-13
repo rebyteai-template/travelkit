@@ -13,31 +13,54 @@
  */
 import type { PromptContent } from './api.ts'
 
-// ── search (flight_search) ─────────────────────────────────────────────
-export interface FlightLeg {
-  departure: string
+// ── search (travelkit-pro compact JSON) ────────────────────────────────
+// The skill runs python scripts in the sandbox; the structured result we can parse
+// is the COMPACT JSON (flight_search_compact.py stdout), replayed into our frames from
+// the sub-session. `displayOptions` = the skill's curated recommendations, each fully
+// structured. `displayMapping` (which carries the private solutionId) stays agent-side
+// and is never read here. Cards mirror whatever the skill recommended — the real
+// filtering/refinement ("拉扯") happens conversationally in chat.
+export interface CompactSegment {
+  flightNo: string
+  departure: string        // IATA code
+  departureName: string    // e.g. "北京大兴(PKX)"
+  departureTerminal?: string
+  departureDate: string
   departureTime: string
-  departureDate?: string
   arrival: string
+  arrivalName: string
+  arrivalTerminal?: string
+  arrivalDate: string
   arrivalTime: string
-  arrivalDate?: string
-  arrivalTerminal?: string | null
-  departureTerminal?: string | null
+  cabin: string            // already display form, e.g. "经济舱 T舱"
+  checkedBaggage?: string  // e.g. "1件，20kg/件"
 }
-export interface FlightOption {
-  label: string
-  priceTotal: number
-  currency: string
+export interface CompactJourney {
+  origin: string
+  destination: string
+  departureDate: string
+  departureTime: string
+  arrivalDate: string
+  arrivalTime: string
   duration: string
-  transferNum: number
-  flights: string[]
-  route: FlightLeg[]
-  cabinClass: string
-  cabinCode?: string
+  transferCount: number
+  segments: CompactSegment[]
+}
+export interface CompactOption {
+  optionNumber: number     // the user-visible 序号; selection rides this, never solutionId
+  section?: string
+  journeyType: string      // "单程直飞" | "单程中转N次" | "多程"
+  duration: string         // "2h10m"
+  durationMinutes: number
+  cabin: string
+  baggage?: string
+  hasCheckedBaggage: boolean
+  price: { amount: number; currency: string; display: string }
+  journeys: CompactJourney[]
 }
 export interface SearchResult {
-  options: FlightOption[]
-  totalCount?: number
+  options: CompactOption[]
+  totalCount?: number       // unique candidates matched (skill curated down to options[])
 }
 
 // ── verify (flight_verify_solution) ────────────────────────────────────
@@ -100,6 +123,11 @@ export interface ChatBubble {
   runUrl?: string
   /** Turn-level failure (DO `__error` frame) — rendered in the error palette. */
   error?: boolean
+  /** Inline 方案 cards attached to this assistant turn (chat-stream): the travelkit-pro
+   *  compact search rendered as selectable cards, with the agent's redundant markdown
+   *  table stripped from `text`. Each search keeps its own bubble → full history. */
+  cards?: CompactOption[]
+  totalCount?: number
 }
 
 export type Stage = 'idle' | 'search' | 'verify' | 'order' | 'payment'
@@ -139,6 +167,14 @@ function stageOfTool(name: string): Stage | null {
   return null
 }
 
+/** Remove markdown table blocks from assistant text when the same options render as inline
+ *  cards — avoids showing the data twice. Deterministic, no agent cooperation: drop lines
+ *  shaped like table rows (`| … |`) and collapse the resulting gap. */
+function stripTables(text: string): string {
+  const kept = text.split('\n').filter((line) => !/^\s*\|.*\|\s*$/.test(line))
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
 export function derive(prompts: PromptContent[]): DerivedView {
   const chat: ChatBubble[] = []
   const toolNameById = new Map<string, string>()
@@ -146,9 +182,15 @@ export function derive(prompts: PromptContent[]): DerivedView {
   let fare: FareVerification | null = null
   let notice: string | null = null
   let stage: Stage = 'idle'
+  // Signature of the last rendered card set, so a re-surfaced identical compact (the verify
+  // turn re-reads the search compact file) doesn't render the same 方案 cards twice.
+  let lastCardsSig = ''
 
   for (const p of prompts) {
     chat.push({ key: `u-${p.id}`, role: 'user', text: p.prompt })
+    // Hold this prompt's latest search; attach it to the next assistant text (stripping that
+    // text's redundant table), else flush as a standalone card bubble at prompt end.
+    let pendingSearch: SearchResult | null = null
 
     for (const f of p.frames) {
       const data = f.data
@@ -178,28 +220,48 @@ export function derive(prompts: PromptContent[]): DerivedView {
             }
           }
         }
+        // Only a frame with real text consumes pendingSearch — a tool_use-only frame (e.g. the
+        // sub-agent's `Write`) has empty text and must NOT swallow the cards before the summary.
         const text = textFromContent(content)
         if (text.trim()) {
-          chat.push({ key: `a-${(data.message as Record<string, unknown>).id ?? f.seq}-${f.seq}`, role: 'assistant', text })
+          const key = `a-${(data.message as Record<string, unknown>).id ?? f.seq}-${f.seq}`
+          if (pendingSearch) {
+            chat.push({ key, role: 'assistant', text: stripTables(text), cards: pendingSearch.options, totalCount: pendingSearch.totalCount })
+            pendingSearch = null
+          } else {
+            chat.push({ key, role: 'assistant', text })
+          }
         }
       }
 
-      // user turn carrying tool_result: route by which travelkit tool produced it
+      // user turn carrying tool_result. Two shapes can drive the bench:
+      //  · travelkit-pro COMPACT search JSON (flight_search_compact.py stdout, replayed
+      //    from the sandbox sub-session) — a Bash result, so route by SHAPE not tool name.
+      //  · legacy MCP flight_verify_solution result — route by tool name.
       if (data.type === 'user' && isObj(data.message)) {
         const content = (data.message as Record<string, unknown>).content
         if (!Array.isArray(content)) continue
         for (const block of content) {
           if (!isObj(block) || block.type !== 'tool_result') continue
-          const name = typeof block.tool_use_id === 'string' ? toolNameById.get(block.tool_use_id) ?? '' : ''
-          const toolStage = stageOfTool(name)
-          if (!toolStage) continue
-          const payload = parseToolJson(textFromContent(block.content))
-          if (!payload) continue
+          const raw = textFromContent(block.content)
 
-          if (toolStage === 'search') {
-            const parsed = parseSearchResult(payload)
-            if (parsed) { search = parsed; fare = null; notice = null; stage = 'search' }
-          } else if (toolStage === 'verify') {
+          // compact search — cheap signature gate before parsing the (large) JSON
+          if (raw.includes('"displayOptions"') && raw.includes('"displayMapping"')) {
+            const payload = parseToolJson(raw)
+            const parsed = payload && parseCompactSearch(payload)
+            if (parsed) {
+              search = parsed; fare = null; notice = null; stage = 'search'
+              const sig = parsed.options.map((o) => `${o.optionNumber}:${o.price.amount}:${o.journeys[0]?.segments[0]?.flightNo ?? ''}`).join('|')
+              if (sig !== lastCardsSig) { pendingSearch = parsed; lastCardsSig = sig }
+              continue
+            }
+          }
+
+          // legacy MCP verify (fare card) — by tool name
+          const name = typeof block.tool_use_id === 'string' ? toolNameById.get(block.tool_use_id) ?? '' : ''
+          if (stageOfTool(name) === 'verify') {
+            const payload = parseToolJson(raw)
+            if (!payload) continue
             if (payload.success === false) {
               notice = errorMessage(payload) ?? '该价格方案已失效，请重新选择其他方案。'
             } else {
@@ -211,13 +273,18 @@ export function derive(prompts: PromptContent[]): DerivedView {
         }
       }
     }
+
+    // search with no trailing summary text → standalone card bubble (keeps it visible)
+    if (pendingSearch) {
+      chat.push({ key: `cards-${p.id}`, role: 'assistant', text: '', cards: pendingSearch.options, totalCount: pendingSearch.totalCount })
+    }
   }
 
-  // de-dupe consecutive identical assistant bubbles (full message can repeat)
+  // de-dupe consecutive identical assistant bubbles; never drop a card-bearing bubble
   const deduped: ChatBubble[] = []
   for (const b of chat) {
     const prev = deduped[deduped.length - 1]
-    if (prev && prev.role === b.role && prev.text === b.text && prev.runUrl === b.runUrl) continue
+    if (!b.cards && prev && prev.role === b.role && prev.text === b.text && prev.runUrl === b.runUrl && !prev.cards) continue
     deduped.push(b)
   }
   return { chat: deduped, stage, search, fare, notice }
@@ -239,11 +306,79 @@ function errorMessage(payload: Record<string, unknown>): string | null {
   return null
 }
 
-function parseSearchResult(json: Record<string, unknown>): SearchResult | null {
-  const data = isObj(json.data) ? json.data : null
-  const options = data && Array.isArray(data.displayOptions) ? (data.displayOptions as FlightOption[]) : null
-  if (!options) return null
-  return { options, totalCount: data && typeof data.totalCount === 'number' ? data.totalCount : undefined }
+/** travelkit-pro compact search JSON → bench search model. Tool-name agnostic: this is
+ *  a Bash result (python script stdout), recognised by its `displayOptions`/`displayMapping`
+ *  shape. We read only the public `displayOptions`; `displayMapping.solutionId` stays private. */
+function parseCompactSearch(json: Record<string, unknown>): SearchResult | null {
+  if (!Array.isArray(json.displayOptions) || !isObj(json.displayMapping)) return null
+  const options: CompactOption[] = []
+  for (const raw of json.displayOptions) {
+    const o = toCompactOption(raw)
+    if (o) options.push(o)
+  }
+  if (!options.length) return null
+  const sr = Array.isArray(json.searchedRequests) && isObj(json.searchedRequests[0]) ? json.searchedRequests[0] : null
+  const totalCount = sr && typeof sr.uniqueCandidateCount === 'number' ? sr.uniqueCandidateCount : undefined
+  return { options, totalCount }
+}
+
+function toCompactOption(raw: unknown): CompactOption | null {
+  if (!isObj(raw)) return null
+  const optionNumber = num(raw.optionNumber)
+  if (!optionNumber) return null
+
+  const journeys: CompactJourney[] = []
+  for (const j of Array.isArray(raw.journeys) ? raw.journeys : []) {
+    if (!isObj(j)) continue
+    const segments: CompactSegment[] = []
+    for (const s of Array.isArray(j.segments) ? j.segments : []) {
+      if (!isObj(s)) continue
+      segments.push({
+        flightNo: str(s.flightNo),
+        departure: str(s.departure),
+        departureName: str(s.departureName) || str(s.departure),
+        departureTerminal: str(s.departureTerminal) || undefined,
+        departureDate: str(s.departureDate),
+        departureTime: str(s.departureTime),
+        arrival: str(s.arrival),
+        arrivalName: str(s.arrivalName) || str(s.arrival),
+        arrivalTerminal: str(s.arrivalTerminal) || undefined,
+        arrivalDate: str(s.arrivalDate),
+        arrivalTime: str(s.arrivalTime),
+        cabin: str(s.cabin),
+        checkedBaggage: str(s.checkedBaggage) || undefined,
+      })
+    }
+    if (!segments.length) continue
+    journeys.push({
+      origin: str(j.origin),
+      destination: str(j.destination),
+      departureDate: str(j.departureDate),
+      departureTime: str(j.departureTime),
+      arrivalDate: str(j.arrivalDate),
+      arrivalTime: str(j.arrivalTime),
+      duration: str(j.duration),
+      transferCount: num(j.transferCount),
+      segments,
+    })
+  }
+  if (!journeys.length) return null
+
+  const firstTransfer = journeys[0]?.transferCount ?? 0
+  const price = isObj(raw.price) ? raw.price : {}
+  const amount = num(price.amount)
+  return {
+    optionNumber,
+    section: str(raw.section) || undefined,
+    journeyType: str(raw.journeyType) || (firstTransfer === 0 ? '直飞' : `中转${firstTransfer}次`),
+    duration: str(raw.duration),
+    durationMinutes: num(raw.durationMinutes),
+    cabin: str(raw.cabin),
+    baggage: str(raw.baggage) || undefined,
+    hasCheckedBaggage: raw.hasCheckedBaggage === true,
+    price: { amount, currency: str(price.currency) || 'CNY', display: str(price.display) || `¥${amount}` },
+    journeys,
+  }
 }
 
 /** coreSegmentId looks like `20260605-PKX-SHA-CZ8899`; the raw id is hidden, but

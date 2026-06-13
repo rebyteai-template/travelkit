@@ -82,6 +82,11 @@ export function App() {
         ? `🔧 ✅ ${newVm.data?.sandboxId ? newVm.data.sandboxId.slice(0, 8) : '已就绪'}`
         : '🔧 新 VM'
 
+  // Chat-stream: search 方案 render inline in chat. The right bench only appears for the
+  // booking write-flow (passenger form / confirm gate); otherwise chat spans full width.
+  const showBench = mode === 'passengers' || mode === 'confirm'
+  const selectOption = (label: string) => send(`我选序号 ${label}，请帮我验价`)
+
   if (me.isError) return <Unauthorized />
   if (me.isPending) return <div className="app-booting" aria-busy="true" />
 
@@ -126,25 +131,27 @@ export function App() {
             </button>
           )}
         </Sidebar>
-        <div className={`split pane-${pane}`}>
+        <div className={`split pane-${pane}${showBench ? '' : ' no-bench'}`}>
           <section className="left">
-            <ChatPanel chat={view.chat} busy={busy} onPick={pickSuggestion} />
+            <ChatPanel chat={view.chat} busy={busy} onPick={pickSuggestion} onBook={selectOption} />
             <Composer onSend={send} busy={busy} ref={composerRef} />
           </section>
-          <section className="right">
-            <Bench
-              view={view}
-              mode={mode}
-              orderDraft={orderDraft}
-              onBook={(label) => send(`预订选项 ${label}，先帮我验价`)}
-              onContinue={continueToPassengers}
-              onSubmitPassengers={(passengers) => { setOrderDraft(passengers); setMode('confirm') }}
-              onBackFromForm={() => setMode('auto')}
-              onConfirmOrder={() => { if (view.fare) send(buildOrderPrompt(orderDraft, view.fare)) }}
-              onCancelConfirm={() => setMode('passengers')}
-              busy={busy}
-            />
-          </section>
+          {showBench ? (
+            <section className="right">
+              <Bench
+                view={view}
+                mode={mode}
+                orderDraft={orderDraft}
+                onBook={selectOption}
+                onContinue={continueToPassengers}
+                onSubmitPassengers={(passengers) => { setOrderDraft(passengers); setMode('confirm') }}
+                onBackFromForm={() => setMode('auto')}
+                onConfirmOrder={() => { if (view.fare) send(buildOrderPrompt(orderDraft, view.fare)) }}
+                onCancelConfirm={() => setMode('passengers')}
+                busy={busy}
+              />
+            </section>
+          ) : null}
         </div>
       </div>
     </div>

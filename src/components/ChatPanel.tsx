@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { ChatBubble } from '../frames.ts'
 import { Markdown } from './Markdown.tsx'
+import { FlightCompareCards } from './FlightCompareCards.tsx'
 
 // Cold-start quick actions. The travelkit-pro skill's only sensible entry point is
 // flight search (order/refund/PNR all need prior context), so each is a one-tap search
@@ -12,7 +13,17 @@ const SUGGESTIONS = [
   '查后天杭州飞北京、下午出发的航班，2 人',
 ]
 
-export function ChatPanel({ chat, busy, onPick }: { chat: ChatBubble[]; busy: boolean; onPick: (text: string) => void }) {
+export function ChatPanel({
+  chat,
+  busy,
+  onPick,
+  onBook,
+}: {
+  chat: ChatBubble[]
+  busy: boolean
+  onPick: (text: string) => void
+  onBook: (label: string) => void
+}) {
   const endRef = useRef<HTMLDivElement>(null)
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chat.length, busy])
 
@@ -32,17 +43,30 @@ export function ChatPanel({ chat, busy, onPick }: { chat: ChatBubble[]; busy: bo
           </div>
         </div>
       ) : (
-        chat.map((b) =>
-          b.runUrl ? (
-            <a key={b.key} className="run-link" href={b.runUrl} target="_blank" rel="noreferrer">
-              ↗ 在 rebyte 查看本次运行
-            </a>
-          ) : (
+        chat.map((b) => {
+          if (b.runUrl) {
+            return (
+              <a key={b.key} className="run-link" href={b.runUrl} target="_blank" rel="noreferrer">
+                ↗ 在 rebyte 查看本次运行
+              </a>
+            )
+          }
+          // Inline 方案 cards: render the (table-stripped) assistant prose, then the
+          // selectable cards right below it — kept next to the turn that produced them.
+          if (b.cards) {
+            return (
+              <div key={b.key} className="chat-cards">
+                {b.text.trim() ? <div className="bubble assistant"><Markdown text={b.text} /></div> : null}
+                <FlightCompareCards options={b.cards} totalCount={b.totalCount} onBook={onBook} busy={busy} />
+              </div>
+            )
+          }
+          return (
             <div key={b.key} className={`bubble ${b.role}${b.error ? ' error' : ''}`}>
               {b.role === 'assistant' && !b.error ? <Markdown text={b.text} /> : b.text}
             </div>
-          ),
-        )
+          )
+        })
       )}
       {busy ? <div className="bubble assistant typing">正在处理…</div> : null}
       <div ref={endRef} />

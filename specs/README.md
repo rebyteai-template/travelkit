@@ -15,6 +15,7 @@
 | [rebyte-edge-sdk.md](rebyte-edge-sdk.md) | TODO | 【改 cctools】两个 edge-native client(`@rebyte/relay` 控制面 / `@rebyte/sandbox` 基质面)+ edge checklist + typed 可续迭代器;我们手搓的可 upstream 成参考实现 |
 | [rebyte-protocol-asks.md](rebyte-protocol-asks.md) | TODO | 【改 cctools/relay】递给 Rebyte 的 6 条平台行为改动(按杠杆排序),每条注明 kit 删掉啥 = REBYTE-ISSUE/NEEDS 的"平台需求"版 |
 | [streaming-experience-contract.md](streaming-experience-contract.md) | TODO | 【改 travelkit/kit】streaming 皇冠层:可测不变量 I0–I4(frames 为源/可续/刷新重建/后端独立跑)+ load-bearing race R1–R4 + 硬化 todo(收敛重复 translate、回流 replaySubPrompt) |
+| [chat-stream-cards.md](chat-stream-cards.md) | In progress | 搜索方案卡入聊天流(L1,已落地)+ 交互UI选型:砍 R1(`ask_user_question` api 来源不可用)、L1 解析 compact 家族富卡、R2 HTML报告→PDF 北极星;待接 验价卡/写流/R2 |
 
 ## 约定
 - 新增一篇 = 建 `specs/<kebab-name>.md` + 在上表加一行。

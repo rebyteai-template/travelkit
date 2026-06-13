@@ -1,6 +1,6 @@
 import type { DerivedView, FareVerification, FareJourney } from '../frames.ts'
 import { PAX_LABELS, passengerName, docLabel, amountLine, journeyFacts, lowStockWarning, type PassengerDraft } from '../booking.ts'
-import { SearchResultsTable } from './SearchResultsTable.tsx'
+import { FlightCompareCards } from './FlightCompareCards.tsx'
 import { FareDetailCard } from './FareDetailCard.tsx'
 import { PassengerForm } from './PassengerForm.tsx'
 import { ConfirmGate, type ConfirmRow } from './ConfirmGate.tsx'
@@ -76,7 +76,7 @@ export function Bench({
   } else if (stage === 'verify' && fare) {
     body = <FareDetailCard fare={fare} onContinue={onContinue} busy={busy} />
   } else if (search) {
-    body = <SearchResultsTable options={search.options} totalCount={search.totalCount} onBook={onBook} busy={busy} />
+    body = <FlightCompareCards options={search.options} totalCount={search.totalCount} onBook={onBook} busy={busy} />
   }
 
   return (

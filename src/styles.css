@@ -218,6 +218,45 @@ tr.cheapest td { background: var(--good-soft); }
 .results button:disabled { opacity: .5; cursor: default; }
 .hint { color: var(--muted); font-size: 12px; margin-top: 12px; }
 
+/* flight compare cards (search stage) — each card = one OP-presentable 方案/报价 */
+.flight-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(248px, 1fr)); gap: 12px; }
+.flight-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0;
+}
+.flight-card.cheapest { border-color: var(--good); }
+.fc-top { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.fc-badge {
+  font-size: 11px; font-weight: 600; color: var(--muted); background: var(--panel-2);
+  border-radius: var(--radius-pill); padding: 2px 9px;
+}
+.fc-badge.fc-low { color: var(--good); background: var(--good-soft); }
+.fc-price { font-size: 22px; font-weight: 700; color: var(--good); line-height: 1; }
+.fc-journeys { display: flex; flex-direction: column; gap: 8px; }
+.fc-journey { display: flex; flex-direction: column; gap: 3px; }
+.fc-journey + .fc-journey { padding-top: 8px; border-top: 1px dashed var(--border); }
+.fc-journey-tag { font-size: 11px; font-weight: 600; color: var(--accent); }
+.fc-seg { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; font-size: 13px; }
+.fc-flightno { font-size: 12px; color: var(--muted); }
+.fc-port { font-weight: 600; }
+.fc-time { color: var(--accent); font-weight: 600; }
+.fc-arrow { color: var(--muted); }
+.fc-plus1 { color: var(--warn); font-size: 10px; margin-left: 1px; }
+.fc-meta { font-size: 12px; }
+.fc-cta {
+  margin-top: auto; background: var(--accent); color: var(--on-accent); border: none;
+  border-radius: var(--radius-md); padding: 9px 14px; cursor: pointer; font-weight: 600;
+}
+.fc-cta:hover:not(:disabled) { background: var(--accent-deep); }
+.fc-cta:disabled { opacity: .5; cursor: default; }
+
+/* inline 方案 cards in the chat stream (search results sit next to their turn) */
+.chat-cards { display: flex; flex-direction: column; gap: 10px; align-self: stretch; }
+.chat-cards .bubble { max-width: 100%; }
+/* chat-stream layout: with no active write-form, chat spans the whole width (centered) */
+.split.no-bench { grid-template-columns: 1fr; }
+.split.no-bench .chat { max-width: 960px; width: 100%; margin: 0 auto; }
+
 /* org low-credit banner (spans the app top; warn palette like .bench-notice) */
 .credit-banner {
   display: flex; align-items: center; gap: 10px;
