@@ -1,18 +1,15 @@
 import { useCallback } from 'react'
 import { getDefaultStore, useAtomValue, useSetAtom } from 'jotai'
 import { useQueryClient } from '@tanstack/react-query'
-import { createTask, followup, streamPrompt } from '../api.ts'
+import { createTask, followup } from '../api.ts'
 import { queryKeys } from '../lib/queryKeys.ts'
+import { attachStream } from '../lib/stream.ts'
 import { flowModeAtom, creatingAtom, navEpochAtom, taskIdAtom } from '../store/ui.ts'
-import { addTurnAtom, appendFrameAtom, busyTasksAtom, markBusyAtom } from '../store/conversation.ts'
+import { addTurnAtom, busyTasksAtom, markBusyAtom } from '../store/conversation.ts'
 
 // The Provider-less default store — lets us read live atom values AFTER an await
 // (closures captured stale values at call time).
 const store = getDefaultStore()
-
-// Active SSE closers, keyed by promptId, so a stream can be closed on done (and
-// could be closed on teardown) instead of leaking an open EventSource.
-const activeStreams = new Map<string, () => void>()
 
 /**
  * Returns `send(text)` — the one turn-driver. New session → createTask, otherwise
@@ -32,7 +29,6 @@ export function useSendMessage() {
   const setMode = useSetAtom(flowModeAtom)
   const setCreating = useSetAtom(creatingAtom)
   const addTurn = useSetAtom(addTurnAtom)
-  const appendFrame = useSetAtom(appendFrameAtom)
   const markBusy = useSetAtom(markBusyAtom)
 
   return useCallback(
@@ -65,20 +61,9 @@ export function useSendMessage() {
         }
         const ttid = tid
         addTurn({ taskId: ttid, prompt: { id: pid, prompt: text, frames: [] } })
-        markBusy({ taskId: ttid, on: true })
-        const stop = streamPrompt(
-          pid,
-          (seq, data) => appendFrame({ taskId: ttid, promptId: pid, seq, data }),
-          () => {
-            markBusy({ taskId: ttid, on: false })
-            activeStreams.delete(pid)
-            void qc.invalidateQueries({ queryKey: queryKeys.sessions() })
-            void qc.invalidateQueries({ queryKey: queryKeys.taskContent(ttid) })
-            // A turn just burned credit — refresh the balance so the banner reacts promptly.
-            void qc.invalidateQueries({ queryKey: queryKeys.credit() })
-          },
-        )
-        activeStreams.set(pid, stop)
+        // Open the live stream (busy + frame append + on-done refetch). Shared with the
+        // reload-reattach path (useConversation) via lib/stream.ts so it's never doubled.
+        attachStream(qc, ttid, pid)
       } catch (e) {
         console.error(e)
         if (tid) markBusy({ taskId: tid, on: false })
@@ -88,6 +73,6 @@ export function useSendMessage() {
         setCreating(false)
       }
     },
-    [taskId, busyTasks, creating, qc, setTaskId, setMode, setCreating, addTurn, appendFrame, markBusy],
+    [taskId, busyTasks, creating, qc, setTaskId, setMode, setCreating, addTurn, markBusy],
   )
 }

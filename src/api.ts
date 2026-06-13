@@ -36,8 +36,8 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
 /** EventSource can't set headers, so the SSE stream carries uid + org + token + key as query
  *  params. token rides in the query (not just a header) only here — test-phase tradeoff, gated
  *  by `k`; see worker/index.ts. */
-function withAuthQuery(path: string): string {
-  const q = new URLSearchParams()
+function withAuthQuery(path: string, extra?: Record<string, string>): string {
+  const q = new URLSearchParams(extra)
   if (UID) q.set('uid', UID)
   if (ORG) q.set('org', ORG)
   if (TOKEN) q.set('token', TOKEN)
@@ -111,8 +111,12 @@ export function streamPrompt(
   promptId: string,
   onFrame: (seq: number, data: unknown) => void,
   onDone: (status: string) => void,
+  fromSeq = 0,
 ): () => void {
-  const es = new EventSource(withAuthQuery(`${BASE}/prompts/${promptId}/stream`))
+  // fromSeq resumes after frames already loaded (reload-reattach): the SSE endpoint streams only
+  // seq > fromSeq. EventSource can't set Last-Event-ID on a fresh connect, so it rides as a query
+  // param (withAuthQuery merges it with the auth params); auto-reconnects then send Last-Event-ID.
+  const es = new EventSource(withAuthQuery(`${BASE}/prompts/${promptId}/stream`, fromSeq ? { fromSeq: String(fromSeq) } : undefined))
   es.onmessage = (e) => {
     const seq = Number(e.lastEventId) || 0
     try { onFrame(seq, JSON.parse(e.data)) } catch { /* ignore malformed */ }
@@ -121,6 +125,11 @@ export function streamPrompt(
     es.close()
     try { onDone(JSON.parse((e as MessageEvent).data).status) } catch { onDone('completed') }
   })
-  es.onerror = () => { /* EventSource auto-reconnects with Last-Event-ID */ }
+  es.onerror = () => {
+    // Transient drop → EventSource auto-reconnects (readyState CONNECTING). A terminal failure
+    // (CLOSED — 4xx / prompt gone, no retry) would otherwise leave busy stuck + the stream entry
+    // open, blocking reload-reattach — so finish it, freeing the entry for a later reattach.
+    if (es.readyState === EventSource.CLOSED) onDone('error')
+  }
   return () => es.close()
 }
