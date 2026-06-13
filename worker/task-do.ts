@@ -27,7 +27,7 @@ import { DurableObject } from 'cloudflare:workers'
 import { createD1Store } from '../server/db.ts'
 import type { Store } from '../server/store.ts'
 import { isObj, parseSSE } from '../server/rebyte/sse.ts'
-import { rebyteJSON, rebyteFetch, type RebyteConfig } from '../server/rebyte/client.ts'
+import { rebyteJSON, rebyteFetch, RebyteError, type RebyteConfig } from '../server/rebyte/client.ts'
 import { provisionComputer, seedSandbox, pushSeedFiles, removeStaleArtifacts, applyCredential, SEED_VERSION, type ProvisionedComputer } from './seed.ts'
 import { shouldDrainTerminal, shouldRetryWindowError, turnExpired, TERMINAL_STATUSES } from './turn-finalize.ts'
 import { framesHaveAssistantText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
@@ -486,7 +486,12 @@ export class TaskDO extends DurableObject<Env> {
         await this.ctx.storage.setAlarm(Date.now() + 1500 * errors)
         return
       }
-      await this.emit(t.promptId, { __error: e instanceof Error ? e.message : String(e) })
+      // A relay 5xx / gateway outage is transient and not the user's fault — show a calm retry
+      // message, not a raw `HTTP 503` (or, pre-fix, the gateway's HTML page).
+      const friendly = e instanceof RebyteError && e.status >= 500
+        ? `上游服务暂时不可用（${e.status}），请稍后重试。`
+        : e instanceof Error ? e.message : String(e)
+      await this.emit(t.promptId, { __error: friendly })
       await this.finalize(t, 'failed')
     }
   }

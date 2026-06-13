@@ -51,8 +51,13 @@ export async function rebyteJSON<T = unknown>(path: string, opts: RebyteInit = {
   const res = await rebyteFetch(path, opts)
   const text = await res.text()
   if (!res.ok) {
-    let msg: string
-    try { msg = (JSON.parse(text)?.error?.message as string) ?? text } catch { msg = text || `HTTP ${res.status}` }
+    // Prefer a structured relay error message; for a non-JSON body (e.g. a gateway's HTML 503
+    // page) DON'T surface the raw markup — fall back to a clean `HTTP <status>`.
+    let msg = `HTTP ${res.status}`
+    try {
+      const j = JSON.parse(text) as { error?: { message?: string }; message?: string; realMessage?: string }
+      msg = j?.error?.message || j?.message || j?.realMessage || msg
+    } catch { /* non-JSON body (gateway HTML, etc.) → keep the clean status */ }
     throw new RebyteError(res.status, msg)
   }
   if (!text) return {} as T
