@@ -1,7 +1,7 @@
 /**
- * Turns raw stream-json frames into the booking-domain state the bench renders.
+ * Turns raw stream-json frames into the booking-domain state the chat stream renders.
  *
- * The bench is a mirror of the agent's TravelKit tool_results (DESIGN §4.1): we
+ * The UI is a mirror of the agent's TravelKit tool_results (DESIGN §4.1): we
  * walk the frames, recognise which travelkit tool produced each tool_result, and
  * derive a per-stage view model. The most recent successful domain tool decides
  * the active stage (a fresh search after a verify drops back to results).
@@ -63,7 +63,13 @@ export interface SearchResult {
   totalCount?: number       // unique candidates matched (skill curated down to options[])
 }
 
-// ── verify (flight_verify_solution) ────────────────────────────────────
+// ── verify (travelkit-pro compact: flight_verify_selected.py) ──────────
+// The verify result is COMPACT family too — a Bash result recognised by shape
+// (`selectedOption`+`verifiedOption`), NOT an MCP tool by name. `verifiedOption` re-states the
+// chosen option re-priced; `comparison` flags any change. Internal ids (solutionId/orderKey) stay
+// in the script's private fields and are never read here. FareVerification is the booking fare
+// model the write-flow consumes; compact fills what it has and leaves the rest empty (the card
+// hides those) rather than faking per-pax splits / structured rules / availability.
 export interface FareLeg {
   flightNo: string
   departure: string
@@ -112,6 +118,12 @@ export interface FareVerification {
   baggage: BaggageInfo[]
   fareRules: FareRuleInfo[]
   minAvailability: number | null
+  /** Compact verify gives the price split as a ready display string ("票价 ¥X + 税费 ¥Y"), not
+   *  structured base/tax numbers — carried here so the card and order prompt show it verbatim. */
+  priceBreakdownDisplay?: string
+  /** Set when the re-priced solution differs from what the user picked (price/baggage/etc changed)
+   *  — a Chinese advisory the card surfaces before the user continues to passenger collection. */
+  changeNotice?: string
 }
 
 // ── chat + combined view ───────────────────────────────────────────────
@@ -128,6 +140,10 @@ export interface ChatBubble {
    *  table stripped from `text`. Each search keeps its own bubble → full history. */
   cards?: CompactOption[]
   totalCount?: number
+  /** Inline verify (fare) card attached to the verify turn — same chat-stream treatment as
+   *  `cards`. The latest verify's fare is the SAME object as `DerivedView.fare`, so the panel
+   *  shows the "继续预订" CTA only on that one (`b.fare === view.fare`). */
+  fare?: FareVerification
 }
 
 export type Stage = 'idle' | 'search' | 'verify' | 'order' | 'payment'
@@ -157,16 +173,6 @@ function textFromContent(content: unknown): string {
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 
-/** travelkit tool short-name → which stage it drives. */
-function stageOfTool(name: string): Stage | null {
-  if (name.endsWith('flight_search')) return 'search'
-  if (name.endsWith('flight_verify_solution')) return 'verify'
-  if (name.endsWith('flight_create_order') || name.endsWith('flight_order_detail') ||
-      name.endsWith('flight_order_detail_by_external_id')) return 'order'
-  if (name.endsWith('flight_pay_order')) return 'payment'
-  return null
-}
-
 /** Remove markdown table blocks from assistant text when the same options render as inline
  *  cards — avoids showing the data twice. Deterministic, no agent cooperation: drop lines
  *  shaped like table rows (`| … |`) and collapse the resulting gap. */
@@ -177,7 +183,6 @@ function stripTables(text: string): string {
 
 export function derive(prompts: PromptContent[]): DerivedView {
   const chat: ChatBubble[] = []
-  const toolNameById = new Map<string, string>()
   let search: SearchResult | null = null
   let fare: FareVerification | null = null
   let notice: string | null = null
@@ -188,9 +193,10 @@ export function derive(prompts: PromptContent[]): DerivedView {
 
   for (const p of prompts) {
     chat.push({ key: `u-${p.id}`, role: 'user', text: p.prompt })
-    // Hold this prompt's latest search; attach it to the next assistant text (stripping that
-    // text's redundant table), else flush as a standalone card bubble at prompt end.
+    // Hold this prompt's latest search / verify; attach to the next assistant text (stripping its
+    // redundant markdown table), else flush as a standalone card bubble at prompt end.
     let pendingSearch: SearchResult | null = null
+    let pendingFare: FareVerification | null = null
 
     for (const f of p.frames) {
       const data = f.data
@@ -209,35 +215,27 @@ export function derive(prompts: PromptContent[]): DerivedView {
         continue
       }
 
-      // assistant turn: collect text bubbles + remember tool_use ids → names
+      // assistant turn: collect text bubbles
       if (data.type === 'assistant' && isObj(data.message)) {
         const content = (data.message as Record<string, unknown>).content
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (!isObj(block)) continue
-            if (block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string') {
-              toolNameById.set(block.id, block.name)
-            }
-          }
-        }
         // Only a frame with real text consumes pendingSearch — a tool_use-only frame (e.g. the
         // sub-agent's `Write`) has empty text and must NOT swallow the cards before the summary.
         const text = textFromContent(content)
         if (text.trim()) {
           const key = `a-${(data.message as Record<string, unknown>).id ?? f.seq}-${f.seq}`
-          if (pendingSearch) {
-            chat.push({ key, role: 'assistant', text: stripTables(text), cards: pendingSearch.options, totalCount: pendingSearch.totalCount })
-            pendingSearch = null
-          } else {
-            chat.push({ key, role: 'assistant', text })
-          }
+          // A search / verify card attaches to this turn's prose, with the redundant markdown
+          // table stripped (the card shows the same data). Both can ride one bubble.
+          const bubble: ChatBubble = { key, role: 'assistant', text }
+          if (pendingSearch || pendingFare) bubble.text = stripTables(text)
+          if (pendingSearch) { bubble.cards = pendingSearch.options; bubble.totalCount = pendingSearch.totalCount; pendingSearch = null }
+          if (pendingFare) { bubble.fare = pendingFare; pendingFare = null }
+          chat.push(bubble)
         }
       }
 
-      // user turn carrying tool_result. Two shapes can drive the bench:
-      //  · travelkit-pro COMPACT search JSON (flight_search_compact.py stdout, replayed
-      //    from the sandbox sub-session) — a Bash result, so route by SHAPE not tool name.
-      //  · legacy MCP flight_verify_solution result — route by tool name.
+      // user turn carrying a tool_result. Both card-driving shapes are travelkit-pro COMPACT
+      // family (Bash results — the skill talks direct HTTP, never MCP), so we route by SHAPE, not
+      // tool name: search by `displayOptions`+`displayMapping`, verify by `selectedOption`+`verifiedOption`.
       if (data.type === 'user' && isObj(data.message)) {
         const content = (data.message as Record<string, unknown>).content
         if (!Array.isArray(content)) continue
@@ -257,26 +255,30 @@ export function derive(prompts: PromptContent[]): DerivedView {
             }
           }
 
-          // legacy MCP verify (fare card) — by tool name
-          const name = typeof block.tool_use_id === 'string' ? toolNameById.get(block.tool_use_id) ?? '' : ''
-          if (stageOfTool(name) === 'verify') {
+          // compact verify (fare card) — shape gate; on expiry/failure surface a notice and keep
+          // the prior stage so the user re-picks from the agent's refreshed (inline) search.
+          if (raw.includes('"verifiedOption"') && raw.includes('"selectedOption"')) {
             const payload = parseToolJson(raw)
             if (!payload) continue
-            if (payload.success === false) {
-              notice = errorMessage(payload) ?? '该价格方案已失效，请重新选择其他方案。'
+            if (payload.ok !== true) {
+              notice = verifyErrorNotice(payload)
             } else {
-              const parsed = parseVerify(payload)
-              if (parsed) { fare = parsed; notice = null; stage = 'verify' }
+              const parsed = parseCompactVerify(payload)
+              if (parsed) { fare = parsed; pendingFare = parsed; notice = null; stage = 'verify' }
             }
+            continue
           }
           // order / payment stages parsed in a later milestone
         }
       }
     }
 
-    // search with no trailing summary text → standalone card bubble (keeps it visible)
+    // a search / verify with no trailing summary text → standalone card bubble (keeps it visible)
     if (pendingSearch) {
       chat.push({ key: `cards-${p.id}`, role: 'assistant', text: '', cards: pendingSearch.options, totalCount: pendingSearch.totalCount })
+    }
+    if (pendingFare) {
+      chat.push({ key: `fare-${p.id}`, role: 'assistant', text: '', fare: pendingFare })
     }
   }
 
@@ -284,7 +286,7 @@ export function derive(prompts: PromptContent[]): DerivedView {
   const deduped: ChatBubble[] = []
   for (const b of chat) {
     const prev = deduped[deduped.length - 1]
-    if (!b.cards && prev && prev.role === b.role && prev.text === b.text && prev.runUrl === b.runUrl && !prev.cards) continue
+    if (!b.cards && !b.fare && prev && prev.role === b.role && prev.text === b.text && prev.runUrl === b.runUrl && !prev.cards && !prev.fare) continue
     deduped.push(b)
   }
   return { chat: deduped, stage, search, fare, notice }
@@ -300,13 +302,7 @@ function parseToolJson(raw: string): Record<string, unknown> | null {
   }
 }
 
-function errorMessage(payload: Record<string, unknown>): string | null {
-  const err = payload.error
-  if (isObj(err) && typeof err.message === 'string') return err.message
-  return null
-}
-
-/** travelkit-pro compact search JSON → bench search model. Tool-name agnostic: this is
+/** travelkit-pro compact search JSON → search view model. Tool-name agnostic: this is
  *  a Bash result (python script stdout), recognised by its `displayOptions`/`displayMapping`
  *  shape. We read only the public `displayOptions`; `displayMapping.solutionId` stays private. */
 function parseCompactSearch(json: Record<string, unknown>): SearchResult | null {
@@ -381,72 +377,26 @@ function toCompactOption(raw: unknown): CompactOption | null {
   }
 }
 
-/** coreSegmentId looks like `20260605-PKX-SHA-CZ8899`; the raw id is hidden, but
- *  the airports + flight number it encodes are all safe to display. */
-function parseCoreSegment(id: string): { departure: string; arrival: string; flightNo: string } {
-  const parts = id.split('-')
-  return { departure: parts[1] ?? '', arrival: parts[2] ?? '', flightNo: parts[3] ?? '' }
-}
+/** travelkit-pro compact verify JSON (flight_verify_selected.py stdout) → fare view model.
+ *  Recognised by shape (`selectedOption`+`verifiedOption`), like the compact search. We read the
+ *  curated `verifiedOption` summary only; solutionId/orderKey stay in the script's private fields.
+ *  Compact carries no per-passenger price split, structured fare rules, or seat availability — those
+ *  stay empty (the card hides them) rather than being faked. */
+function parseCompactVerify(json: Record<string, unknown>): FareVerification | null {
+  const verified = isObj(json.verifiedOption) ? json.verifiedOption : null
+  if (!verified) return null
 
-function parseVerify(json: Record<string, unknown>): FareVerification | null {
-  const data = isObj(json.data) ? json.data : null
-  if (!data) return null
-
-  // price breakdown (sum across passenger types)
-  const priceDetail = isObj(data.priceDetail) ? data.priceDetail : null
-  const priceList = priceDetail && Array.isArray(priceDetail.priceList) ? priceDetail.priceList : []
-  const passengers: FarePassengerLine[] = []
-  let total = 0, baseFare = 0, tax = 0, publishTotal = 0, currency = 'CNY'
-  for (const row of priceList) {
-    if (!isObj(row)) continue
-    const n = num(row.num) || 1
-    const fare = num(row.price)
-    const t = num(row.tax)
-    const sale = num(row.salePrice) || fare + t
-    const pub = num(row.publishPrice) || sale
-    if (typeof row.currency === 'string') currency = row.currency
-    passengers.push({ passengerType: str(row.passengerType) || 'adult', baseFare: fare, tax: t, salePrice: sale, num: n })
-    total += sale * n
-    baseFare += fare * n
-    tax += t * n
-    publishTotal += pub * n
-  }
-
-  // journeys → legs (parse coreSegmentId for airports + flight number)
   const journeys: FareJourney[] = []
-  const baggage: BaggageInfo[] = []
-  const seenBaggage = new Set<string>()
-  let minAvailability: number | null = null
-  const rawJourneys = Array.isArray(data.journeys) ? data.journeys : []
-  for (const j of rawJourneys) {
+  for (const j of Array.isArray(verified.journeys) ? verified.journeys : []) {
     if (!isObj(j)) continue
     const legs: FareLeg[] = []
-    const segs = Array.isArray(j.segments) ? j.segments : []
-    for (const s of segs) {
+    for (const s of Array.isArray(j.segments) ? j.segments : []) {
       if (!isObj(s)) continue
-      const core = parseCoreSegment(str(s.coreSegmentId))
-      const avail = typeof s.availability === 'number' ? s.availability : undefined
-      if (avail !== undefined) minAvailability = minAvailability === null ? avail : Math.min(minAvailability, avail)
-      legs.push({
-        flightNo: core.flightNo,
-        departure: core.departure,
-        arrival: core.arrival,
-        cabinClass: str(s.cabinClass),
-        cabinCode: str(s.cabinCode) || undefined,
-        availability: avail,
-      })
-      // baggage rules (already human-readable descriptions), dedup per passenger type
-      const rules = Array.isArray(s.baggageRules) ? s.baggageRules : []
-      for (const r of rules) {
-        if (!isObj(r)) continue
-        const ptype = str(r.passengerType) || 'adult'
-        if (seenBaggage.has(ptype)) continue
-        seenBaggage.add(ptype)
-        const carryOn = isObj(r.carryOn) ? str(r.carryOn.description) : ''
-        const checked = isObj(r.checked) ? str(r.checked.description) : ''
-        if (carryOn || checked) baggage.push({ passengerType: ptype, carryOn: carryOn || undefined, checked: checked || undefined })
-      }
+      // compact `cabin` is already a display string ("经济舱 T舱"); carry it as cabinClass so
+      // cabinLabel() falls through to it unchanged (there is no separate cabinCode to split here).
+      legs.push({ flightNo: str(s.flightNo), departure: str(s.departure), arrival: str(s.arrival), cabinClass: str(s.cabin) })
     }
+    if (!legs.length) continue
     journeys.push({
       origin: str(j.origin),
       destination: str(j.destination),
@@ -455,24 +405,62 @@ function parseVerify(json: Record<string, unknown>): FareVerification | null {
       arrivalDate: str(j.arrivalDate) || undefined,
       arrivalTime: str(j.arrivalTime) || undefined,
       duration: str(j.duration),
-      transferNum: num(j.transferNum),
+      transferNum: num(j.transferCount),
       legs,
     })
   }
+  if (!journeys.length) return null
 
-  // fare rules (descriptions are already plain Chinese)
-  const fareRules: FareRuleInfo[] = []
-  const rawRules = Array.isArray(data.fareRules) ? data.fareRules : []
-  for (const r of rawRules) {
-    if (!isObj(r)) continue
-    fareRules.push({
-      passengerType: str(r.passengerType) || 'adult',
-      canVoid: r.canVoid === true,
-      refundDescription: str(r.refundDescription) || undefined,
-      changeDescription: str(r.changeDescription) || undefined,
-    })
+  const price = isObj(verified.price) ? verified.price : {}
+  const total = num(price.amount)
+  const currency = str(price.currency) || 'CNY'
+
+  // passenger rows from the verify request's counts (compact has no per-type price split) — enough
+  // to seed the right number of form rows; salePrice stays 0 so the card hides the per-pax table.
+  const passengers: FarePassengerLine[] = []
+  const reqCount = isObj(json.request) && isObj(json.request.passengerCount) ? json.request.passengerCount : null
+  for (const t of ['adult', 'child', 'infant'] as const) {
+    const n = reqCount ? num(reqCount[t]) : 0
+    if (n > 0) passengers.push({ passengerType: t, baseFare: 0, tax: 0, salePrice: 0, num: n })
   }
+  if (!passengers.length) passengers.push({ passengerType: 'adult', baseFare: 0, tax: 0, salePrice: 0, num: 1 })
 
-  if (!journeys.length && !passengers.length) return null
-  return { currency, total, baseFare, tax, publishTotal, journeys, passengers, baggage, fareRules, minAvailability }
+  // solution-level baggage string; only surfaced when the fare actually includes checked baggage.
+  const baggage: BaggageInfo[] = []
+  const bagStr = str(verified.baggage)
+  if (verified.hasCheckedBaggage === true && bagStr) baggage.push({ passengerType: 'adult', checked: bagStr })
+
+  return {
+    currency,
+    total,
+    baseFare: 0,
+    tax: 0,
+    publishTotal: total,
+    journeys,
+    passengers,
+    baggage,
+    fareRules: [],
+    minAvailability: null,
+    priceBreakdownDisplay: str(verified.priceBreakdownDisplay) || undefined,
+    changeNotice: buildChangeNotice(json.comparison),
+  }
+}
+
+/** A successful verify whose re-priced solution differs from the user's pick → a short Chinese
+ *  advisory the card shows before continuing. Undefined when nothing material changed. */
+function buildChangeNotice(comparison: unknown): string | undefined {
+  if (!isObj(comparison) || comparison.changed !== true) return undefined
+  const labels: Record<string, string> = { flights: '航班', price: '价格', cabin: '舱位', baggage: '行李额', hasCheckedBaggage: '是否含托运' }
+  const fields = (Array.isArray(comparison.changedFields) ? comparison.changedFields : [])
+    .map((f) => labels[str(f)])
+    .filter((x): x is string => Boolean(x))
+  if (!fields.length) return undefined
+  return `验价后${fields.join('、')}较所选有变化，请确认后再继续预订。`
+}
+
+/** Verify failed (expired search / rejected) → a user-facing notice. The agent re-runs search on
+ *  expiry, so we point the user back to the refreshed options rather than the dead solution. */
+function verifyErrorNotice(payload: Record<string, unknown>): string {
+  if (str(payload.errorType) === 'expired_search') return '该方案价格/库存可能已过期，请从最新搜索结果中重新选择。'
+  return str(payload.message) || '实时验价未通过，请稍后重试或重新选择其他方案。'
 }

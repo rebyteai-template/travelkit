@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-AI 机票预订工作台（TripDesk）：左聊天、右 bench 渲染订票领域状态。agent 走完整在线机票流程（搜索→验价→下单→支付→售后），数据来自 **TravelKit MCP**（`https://mcp.travelkit.ai/mcp`）。产品定位/用户/原则见 **PRODUCT.md**；视觉设计系统（色板/字体/组件，kami house style）见 **DESIGN.md**。
+AI 机票预订工作台（TripDesk）：左聊天、右 bench 渲染订票领域状态。agent 走完整在线机票流程（搜索→验价→下单→支付→售后），数据来自 **travelkit-pro skill**（vendored 在 `.claude/skills/travelkit-pro`，python 脚本**直连 Simplifly Flight OpenAPI**，非 MCP）。产品定位/用户/原则见 **PRODUCT.md**；视觉设计系统（色板/字体/组件，kami house style）见 **DESIGN.md**。
 
 ## 这是什么：Rebyte 能力的模板 demo（先读这条）
 
@@ -36,18 +36,18 @@ set -a; . ./cloudflare.env; set +a && pnpm run deploy
 - **全栈 Workers**：`worker/index.ts`（Hono，组合根）挂 `server/routes.ts`（`/api/app/*`），其余落 SPA（`build/`）。Access JWT 校验在 `worker/auth.ts`（jose）。
 - **存储 = D1**：`server/store-d1.ts` 实现异步 `Store`（`server/store.ts`），`server/db.ts` 唯一出口 `createD1Store(env.DB)`。`wrangler dev` 给本地 D1，所以 dev 也是它，无单独 sqlite 驱动。三表 `tasks/prompts/frames`。pg/mysql（AWS/GCP）= 加同接口的 `store-<driver>.ts`，call site 不变。
 - **每任务一个 Durable Object** `TaskDO`（`worker/task-do.ts`）：turn 跑在 `alarm()` 里（`ctx.waitUntil` 长 turn 会被驱逐），分 20s 窗口流式推进，进度持久化（relayTaskId/lastSeq）可幂等续。**一个 session 复用同一个 relay task**：首轮 `POST /tasks`，续轮 `POST /tasks/:tid/prompts`——这样 agent 保留多轮上下文。
-- **领域状态机** `src/frames.ts`：把 relay 事件翻译成的 stream-json frame 里的 travelkit `tool_result` 解析成 `stage`(search/verify/order/payment) + 各阶段数据 + `notice`。**UI 是工具结果的镜像**，agent 不额外写文件。
+- **领域状态机** `src/frames.ts`：把 relay 事件里 travelkit-pro 脚本的 compact JSON `tool_result`（Bash 结果，**按 shape 认**而非工具名）解析成 `stage`(search/verify/order/payment) + 各阶段数据 + `notice`。**UI 是工具结果的镜像**，agent 不额外写文件。
 - **bench 卡片**（`src/components/`）：`SearchResultsTable`/`FareDetailCard`/`PassengerForm`/`ConfirmGate` 已有；订单卡/支付/售后待做。`Bench.tsx` 按 stage 切视图，`Composer.tsx` 把 UI 手势拼成下一句 prompt。
 - **内部 ID（solutionId/orderKey/PNR/票号）全留 agent 侧**，永不进 UI/URL/chip。
 
 ## rebyte 集成
 
-- `POST /v1/tasks` 走 **agent-loop**：manager 不直连 travelkit MCP，而是**委派**沙箱子 agent（`coding_agent__run_claude_code_in_sandbox`）去调 `flight_search`；父任务事件流只见委派 + manager 散文总结。鉴权用 `API_KEY` 头（非 Bearer），client 见 `server/rebyte/client.ts`。
+- `POST /v1/tasks` 走 **agent-loop**：manager 不自己跑机票流程，而是**委派**沙箱子 agent（`coding_agent__run_claude_code_in_sandbox`）去跑 travelkit-pro skill（`flight_search.py` 等直连 HTTP）；父任务事件流只见委派 + manager 散文总结。鉴权用 `API_KEY` 头（非 Bearer），client 见 `server/rebyte/client.ts`。
 - **不传 `model` / `executor`**：`/v1/tasks` 直接 `void` 掉这俩字段（cctools `relay/src/routes/v1/tasks.ts`，仅为旧客户端向后兼容保留）。模型是 **org 级**的（`org_settings.agent_loop_model`，默认 `claude-sonnet-4.6`，可选含 `deepseek-v4-pro`），**在 rebyte 管理台切，不在代码里传**。所以 POST 体只发 `{prompt, workspaceId}`，自动跟随 org 当前模型。
 - 取结果：`/tasks/:id/events`（SSE，`Accept: text/event-stream`），信封 `{seq,eventType,payload}`，eventType ∈ thinking/tool_use/tool_result/text/result，末 `event:done {status,finalResult}`。**注意空 done 竞态**：连得太早 relay 回个无前置事件的空 done（非终止），要按"本连接收到过事件才算 done"判（`task-do.ts streamWindow`、smoke/multiturn 都这么守）。
-- 每用户一个沙箱，首轮在 DO 里按需 provision + seed travelkit（纯 fetch，不用 SDK；`worker/seed.ts`），存 `agent_computers` 表。
+- 每用户一个沙箱，首轮在 DO 里按需 provision + seed travelkit-pro skill + 凭证 `.simplifly.env`（纯 fetch，不用 SDK；`worker/seed.ts`），存 `agent_computers` 表。
 - 测试：`pnpm test:rebyte`（L0 存活+L1 鉴权+L2 manager 往返，秒级）；全链路回归 `pnpm test:rebyte:multiturn`。数据层卡片探针 `node --import tsx server/rebyte/cardprobe.ts`（开 VM/烧额度）。
-- **已知约束（REBYTE-ISSUE.md）**：经 agent-loop，结构化 `flight_search` 结果**到不了父任务**（含 `solutionId`），父级只拿到 manager 的中文散文表 → **搜索/验价卡渲染不出（数据层缺料，非前端 bug）**；聊天文本正常。`cardprobe.ts` 在数据层证实过。这是 rebyte 侧 issue，待解（直调路 / relay 不过滤子事件 / 用 `subPromptId` 捞子 agent 结果）。
+- **结构化结果回父任务（已解；REBYTE-ISSUE.md 留作历史）**：曾以为 agent-loop 下子 agent 的结构化结果（含 `solutionId` 的 compact JSON）到不了父任务、卡片渲染不出——**2026-06-13 实证推翻**。relay 用 `subPromptId` 标记委派结果，`task-do.ts` 的 `replaySubPrompt()` 把子 session 的真实 tool_result 回放进本轮 frames → compact JSON 到达 `frames.ts`、卡片正常渲染（搜索卡入聊天流、验价卡入右 bench 均已落地）。
 - **待 rebyte 平台支持（REBYTE-NEEDS.md）**：① 沙箱 env 注入——`settings.json` 的 `env` 不进 agent shell，现靠 seed 一个 `/code/.simplifly.env` + `SKILL.md` 加一句兜底；② skill 更新——envd 无 DELETE，老沙箱换不干净，现靠覆写废弃文件 / 换新 VM。**vendored 的 skill 别动**（只许那一句 Credentials 指引）。
 
 ## 约定（skill 红线）

@@ -6,11 +6,11 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 export const env = {
-  /** Root for per-session project working dirs (holds .mcp.json + the travelkit
-   *  skill the seed scripts upload to a sandbox). */
+  /** Root for per-session project working dirs (holds the travelkit-pro skill the
+   *  seed scripts upload to a sandbox). */
   DATA_DIR: process.env.TRIPDESK_DATA_DIR || join(homedir(), '.tripdesk'),
 
-  /** Repo root — source of the .mcp.json + skill the seed scripts read. */
+  /** Repo root — source of the travelkit-pro skill the seed scripts read. */
   REPO_ROOT: process.cwd(),
 
   /** Rebyte relay base. The relay runs tasks + streams stream-json events. */

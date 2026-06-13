@@ -25,7 +25,7 @@ const app = new Hono<{ Bindings: Env; Variables: RouteVars }>()
 // (uid also as a query param on the SSE stream, since EventSource can't set headers).
 // BARE-PASS for the test phase: whoever can construct the URL is authorized — no signature
 // yet (locked down before external integration). Falls back to DEV_EMAIL for local dev.
-// The token is consumed by the DO to seed that user's sandbox .mcp.json on first turn.
+// The token is consumed by the DO to seed that user's sandbox .simplifly.env on first turn.
 app.use('/api/app/*', async (c, next) => {
   const env = c.env
   // Gate 0: the shared embed key, checked before any tenant/VM work. Stops strangers who only

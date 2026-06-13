@@ -44,10 +44,6 @@ body {
 
 /* mobile-only controls (hidden on desktop) */
 .hamburger { display: none; background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 10px; font-size: 16px; line-height: 1; cursor: pointer; }
-.pane-toggle { display: none; margin-left: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
-.pane-toggle button { background: transparent; color: var(--muted); border: none; padding: 5px 12px; cursor: pointer; font: inherit; }
-.pane-toggle button.active { background: var(--accent-soft); color: var(--accent); }
-
 /* ── left rail (ChatGPT-style sidebar) ───────────────────────────────── */
 .workspace { display: flex; flex: 1; min-height: 0; }
 .sidebar {
@@ -91,15 +87,14 @@ body {
 .sidebar-foot .theme-toggle { flex-shrink: 0; }
 .sidebar-backdrop { display: none; }
 
-/* center (chat) + right (bench) split the remaining width 50/50 */
-.split { display: grid; grid-template-columns: 1fr 1fr; flex: 1; min-height: 0; }
+/* single-column chat stream (no side bench): one main column fills the workspace */
+.main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
 /* ── mobile ──────────────────────────────────────────────────────────── */
 @media (max-width: 820px) {
-  /* mobile gets a slim top bar back: hamburger opens the drawer, toggle picks a pane */
+  /* mobile gets a slim top bar back: the hamburger opens the session drawer */
   .mobilebar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel); }
   .hamburger { display: inline-flex; }
-  .pane-toggle { display: inline-flex; }
 
   /* sidebar → slide-in drawer */
   .sidebar {
@@ -111,26 +106,13 @@ body {
   .sidebar.open { transform: translateX(0); }
   .sidebar-backdrop { display: block; position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, .5); }
 
-  /* split → one pane at a time, chosen by the mobile bar toggle */
-  .split { grid-template-columns: 1fr; }
-  .left { border-right: none; }
-  .split .left, .split .right { display: none; min-height: 0; }
-  .split.pane-chat .left { display: flex; }
-  .split.pane-bench .right { display: block; }
-
-  .bench { padding: 14px; }
   .card { padding: 14px; }
   .hamburger { padding: 8px 10px; }          /* ≥40px touch targets */
-  .pane-toggle button { padding: 8px 12px; }
-  .results button { min-height: 40px; padding: 8px 14px; }
-  .results .table-scroll table { min-width: 640px; }         /* 7-列搜索结果表保持可读,横滚不挤压;别波及窄表(如票价拆分) */
   .pf-grid { grid-template-columns: 1fr; }   /* passenger form stacks */
 }
-.left { display: flex; flex-direction: column; border-right: 1px solid var(--border); min-height: 0; }
-.right { min-height: 0; overflow: auto; }
 
-/* chat */
-.chat { flex: 1; overflow: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+/* chat — the single conversation column, centered with a comfortable reading width */
+.chat { flex: 1; overflow: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 960px; margin: 0 auto; }
 .chat-welcome { color: var(--muted); margin-top: 12px; }
 .chat-welcome h1 { color: var(--text); margin: 0 0 4px; font-size: 22px; font-family: 'Newsreader', Georgia, 'Source Han Serif SC', serif; font-weight: 500; }
 /* cold-start quick actions — one tap fills the composer (editable) */
@@ -183,7 +165,7 @@ body {
 .run-link:hover { opacity: 1; text-decoration: underline; }
 
 /* composer */
-.composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--panel); }
+.composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--border); background: var(--panel); width: 100%; max-width: 960px; margin: 0 auto; }
 .composer textarea {
   flex: 1; resize: none; height: 44px; max-height: 140px; padding: 10px 12px;
   background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-md);
@@ -195,10 +177,6 @@ body {
 }
 .composer button:disabled { opacity: .5; cursor: default; }
 
-/* bench */
-.bench { padding: 20px; }
-.bench-empty { color: var(--muted); text-align: center; margin-top: 14vh; }
-.bench-empty-mark { font-size: 44px; opacity: .5; }
 .results-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
 .results-head h2 { margin: 0; font-size: 17px; }
 .muted { color: var(--muted); }
@@ -253,11 +231,7 @@ tr.cheapest td { background: var(--good-soft); }
 /* inline 方案 cards in the chat stream (search results sit next to their turn) */
 .chat-cards { display: flex; flex-direction: column; gap: 10px; align-self: stretch; }
 .chat-cards .bubble { max-width: 100%; }
-/* chat-stream layout: with no active write-form, chat spans the whole width (centered) */
-.split.no-bench { grid-template-columns: 1fr; }
-.split.no-bench .chat { max-width: 960px; width: 100%; margin: 0 auto; }
-
-/* org low-credit banner (spans the app top; warn palette like .bench-notice) */
+/* org low-credit banner (spans the app top; warn palette like .chat-notice) */
 .credit-banner {
   display: flex; align-items: center; gap: 10px;
   background: var(--warn-soft); border-bottom: 1px solid var(--warn-border);
@@ -270,10 +244,10 @@ tr.cheapest td { background: var(--good-soft); }
 }
 .credit-banner-close:hover { opacity: 1; }
 
-/* notice banner (e.g. price expired) */
-.bench-notice {
+/* notice banner (e.g. price expired) — inline at the chat tail */
+.chat-notice {
   background: var(--warn-soft); border: 1px solid var(--warn-border);
-  color: var(--warn); border-radius: var(--radius-md); padding: 10px 13px; margin-bottom: 16px; font-size: 13px;
+  color: var(--warn); border-radius: var(--radius-md); padding: 10px 13px; font-size: 13px; align-self: stretch;
 }
 
 /* domain cards */

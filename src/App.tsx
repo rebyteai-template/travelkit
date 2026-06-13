@@ -3,7 +3,7 @@ import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { passengersFromFare, buildOrderPrompt } from './booking.ts'
 import { ChatPanel } from './components/ChatPanel.tsx'
 import { Composer, type ComposerHandle } from './components/Composer.tsx'
-import { Bench } from './components/Bench.tsx'
+import { WriteFlow } from './components/WriteFlow.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Unauthorized } from './components/Unauthorized.tsx'
 import { CreditBanner } from './components/CreditBanner.tsx'
@@ -16,10 +16,9 @@ import { useNewSandbox } from './hooks/useNewSandbox.ts'
 import { busyTasksAtom } from './store/conversation.ts'
 import {
   taskIdAtom,
-  benchModeAtom,
+  flowModeAtom,
   orderDraftAtom,
   navOpenAtom,
-  paneAtom,
   themeAtom,
   debugAtom,
   openSessionAtom,
@@ -41,10 +40,9 @@ export function App() {
   const busyTasks = useAtomValue(busyTasksAtom)
   const openSession = useSetAtom(openSessionAtom)
   const newSession = useSetAtom(newSessionAtom)
-  const [mode, setMode] = useAtom(benchModeAtom)
+  const [mode, setMode] = useAtom(flowModeAtom)
   const [orderDraft, setOrderDraft] = useAtom(orderDraftAtom)
   const [navOpen, setNavOpen] = useAtom(navOpenAtom)
-  const [pane, setPane] = useAtom(paneAtom)
   const [theme, setTheme] = useAtom(themeAtom)
   const [debugOn, setDebugOn] = useAtom(debugAtom)
 
@@ -55,6 +53,12 @@ export function App() {
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
   }, [theme])
+
+  // A fresh search supersedes any half-finished write-flow: drop back to auto so the form/confirm
+  // step disappears from the stream and the new options take over.
+  useEffect(() => {
+    if (view.stage === 'search') setMode('auto')
+  }, [view.stage, setMode])
 
   function tapBrand() {
     if (debugOn) return
@@ -82,9 +86,9 @@ export function App() {
         ? `🔧 ✅ ${newVm.data?.sandboxId ? newVm.data.sandboxId.slice(0, 8) : '已就绪'}`
         : '🔧 新 VM'
 
-  // Chat-stream: search 方案 render inline in chat. The right bench only appears for the
-  // booking write-flow (passenger form / confirm gate); otherwise chat spans full width.
-  const showBench = mode === 'passengers' || mode === 'confirm'
+  // Single-column chat stream: search cards, verify card, and the write-flow (passenger form /
+  // confirm gate) all render inline. The verify card's entry CTA is offered only while no write-flow
+  // step is open (mode === 'auto'); ChatPanel further limits it to the latest fare card.
   const selectOption = (label: string) => send(`我选序号 ${label}，请帮我验价`)
 
   if (me.isError) return <Unauthorized />
@@ -99,10 +103,6 @@ export function App() {
       <div className="mobilebar">
         <button className="hamburger" onClick={() => setNavOpen(true)} aria-label="会话列表">☰</button>
         <span className="brand">Kitty</span>
-        <div className="pane-toggle">
-          <button className={pane === 'chat' ? 'active' : ''} onClick={() => setPane('chat')}>对话</button>
-          <button className={pane === 'bench' ? 'active' : ''} onClick={() => setPane('bench')}>看板</button>
-        </div>
       </div>
       <div className="workspace">
         <Sidebar
@@ -131,28 +131,29 @@ export function App() {
             </button>
           )}
         </Sidebar>
-        <div className={`split pane-${pane}${showBench ? '' : ' no-bench'}`}>
-          <section className="left">
-            <ChatPanel chat={view.chat} busy={busy} onPick={pickSuggestion} onBook={selectOption} />
-            <Composer onSend={send} busy={busy} ref={composerRef} />
-          </section>
-          {showBench ? (
-            <section className="right">
-              <Bench
-                view={view}
-                mode={mode}
-                orderDraft={orderDraft}
-                onBook={selectOption}
-                onContinue={continueToPassengers}
-                onSubmitPassengers={(passengers) => { setOrderDraft(passengers); setMode('confirm') }}
-                onBackFromForm={() => setMode('auto')}
-                onConfirmOrder={() => { if (view.fare) send(buildOrderPrompt(orderDraft, view.fare)) }}
-                onCancelConfirm={() => setMode('passengers')}
-                busy={busy}
-              />
-            </section>
-          ) : null}
-        </div>
+        <main className="main">
+          <ChatPanel
+            chat={view.chat}
+            busy={busy}
+            onPick={pickSuggestion}
+            onBook={selectOption}
+            fareLatest={view.fare}
+            onContinue={mode === 'auto' ? continueToPassengers : undefined}
+            notice={view.notice}
+          >
+            <WriteFlow
+              mode={mode}
+              fare={view.fare}
+              orderDraft={orderDraft}
+              onSubmitPassengers={(passengers) => { setOrderDraft(passengers); setMode('confirm') }}
+              onBackFromForm={() => setMode('auto')}
+              onConfirmOrder={() => { if (view.fare) send(buildOrderPrompt(orderDraft, view.fare)) }}
+              onCancelConfirm={() => setMode('passengers')}
+              busy={busy}
+            />
+          </ChatPanel>
+          <Composer onSend={send} busy={busy} ref={composerRef} />
+        </main>
       </div>
     </div>
   )

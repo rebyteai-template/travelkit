@@ -3,7 +3,7 @@ import { getDefaultStore, useAtomValue, useSetAtom } from 'jotai'
 import { useQueryClient } from '@tanstack/react-query'
 import { createTask, followup, streamPrompt } from '../api.ts'
 import { queryKeys } from '../lib/queryKeys.ts'
-import { benchModeAtom, creatingAtom, navEpochAtom, taskIdAtom } from '../store/ui.ts'
+import { flowModeAtom, creatingAtom, navEpochAtom, taskIdAtom } from '../store/ui.ts'
 import { addTurnAtom, appendFrameAtom, busyTasksAtom, markBusyAtom } from '../store/conversation.ts'
 
 // The Provider-less default store — lets us read live atom values AFTER an await
@@ -29,7 +29,7 @@ export function useSendMessage() {
   const busyTasks = useAtomValue(busyTasksAtom)
   const creating = useAtomValue(creatingAtom)
   const setTaskId = useSetAtom(taskIdAtom)
-  const setMode = useSetAtom(benchModeAtom)
+  const setMode = useSetAtom(flowModeAtom)
   const setCreating = useSetAtom(creatingAtom)
   const addTurn = useSetAtom(addTurnAtom)
   const appendFrame = useSetAtom(appendFrameAtom)
@@ -45,7 +45,7 @@ export function useSendMessage() {
         if (creating) return
         setCreating(true)
       }
-      setMode('auto') // any new turn returns the bench to following the agent's frames
+      setMode('auto') // any new turn closes a half-open write-flow step (form/confirm)
       let tid = sessionId
       try {
         let pid: string

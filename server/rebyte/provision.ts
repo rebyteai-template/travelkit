@@ -4,7 +4,7 @@
  * Ported from adits' rebyteFileStore.createProject, de-multi-tenant'd: TripDesk
  * has one default project, so we persist the provisioned VM config to a JSON
  * file under DATA_DIR instead of a Postgres `projects` row. The agent runs in
- * this VM's /code; seed.ts writes the TravelKit MCP config + skill there.
+ * this VM's /code; seed.ts writes the per-user Simplifly credential (.simplifly.env) + skill there.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'

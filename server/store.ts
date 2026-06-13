@@ -31,7 +31,7 @@ export interface TaskSummary {
 export interface AgentComputerRow {
   id: string
   sandboxId: string | null
-  /** sha256 of the travelkit token last written into this sandbox's .mcp.json; null for rows
+  /** sha256 of the travelkit token last written into this sandbox's .simplifly.env; null for rows
    *  created before token hot-refresh existed. Drives the "token rotated → rewrite" check. */
   tokenHash: string | null
   /** SEED_VERSION (content stamp) of the skill tree last pushed into this sandbox; null for rows

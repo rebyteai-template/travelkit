@@ -125,6 +125,7 @@ export function lowStockWarning(fare: FareVerification): string | null {
 /** Amount line per output-rules: total = fare + tax; mark splits 未返回 if absent. */
 export function amountLine(fare: FareVerification): string {
   const c = currencySymbol(fare)
+  if (fare.priceBreakdownDisplay) return `金额：${c}${fare.total}（${fare.priceBreakdownDisplay}）`
   if (fare.baseFare > 0 && fare.tax > 0) {
     return `金额：${c}${fare.total}（票面价 ${c}${fare.baseFare} + 税价 ${c}${fare.tax}）`
   }

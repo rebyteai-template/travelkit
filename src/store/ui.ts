@@ -1,6 +1,5 @@
 import { atom } from 'jotai'
 import { atomWithStorage } from 'jotai/utils'
-import type { BenchMode } from '../components/Bench.tsx'
 import type { PassengerDraft } from '../booking.ts'
 
 // The current session lives in the URL (?t=…) so refresh / deep-link restores it.
@@ -25,18 +24,16 @@ export const taskIdAtom = atom(
   },
 )
 
-/** Which bench view is showing. 'auto' follows the agent's frames; the others are
- *  driven by UI gestures (passenger form, confirm gate). */
-export const benchModeAtom = atom<BenchMode>('auto')
+/** Booking write-flow step. 'auto' = nothing active (the inline verify card shows its CTA);
+ *  the others are driven by UI gestures and render inline at the chat tail. */
+export type FlowMode = 'auto' | 'passengers' | 'confirm'
+export const flowModeAtom = atom<FlowMode>('auto')
 
 /** In-progress passenger details for the current order draft. */
 export const orderDraftAtom = atom<PassengerDraft[]>([])
 
 /** Mobile session drawer open/closed. */
 export const navOpenAtom = atom(false)
-
-/** Mobile: which pane (chat | bench) is visible. */
-export const paneAtom = atom<'chat' | 'bench'>('chat')
 
 // Light/dark, persisted as a raw string under the legacy key so existing users
 // keep their choice (default JSON storage would fail to parse the old raw value).
@@ -71,21 +68,21 @@ export const creatingAtom = atom(false)
 // the current view — so a slow POST can't yank the user back after they've moved on.
 export const navEpochAtom = atom(0)
 
-/** Reset to a brand-new session (clears the task + its draft/bench state). */
+/** Reset to a brand-new session (clears the task + its draft/write-flow state). */
 export const newSessionAtom = atom(null, (get, set) => {
   set(taskIdAtom, null)
   set(orderDraftAtom, [])
-  set(benchModeAtom, 'auto')
+  set(flowModeAtom, 'auto')
   set(navOpenAtom, false)
   set(creatingAtom, false) // a prior new-session createTask must not keep this slot busy
   set(navEpochAtom, get(navEpochAtom) + 1)
 })
 
-/** Open an existing session: switch task, reset transient bench state, close drawer. */
+/** Open an existing session: switch task, reset transient write-flow state, close drawer. */
 export const openSessionAtom = atom(null, (get, set, id: string) => {
   set(taskIdAtom, id)
   set(orderDraftAtom, [])
-  set(benchModeAtom, 'auto')
+  set(flowModeAtom, 'auto')
   set(navOpenAtom, false)
   set(creatingAtom, false)
   set(navEpochAtom, get(navEpochAtom) + 1)

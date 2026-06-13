@@ -16,7 +16,7 @@
  * (agent_computers table), falling back to the legacy single kv.agent_computer. Frame fidelity
  * matches src/frames.ts (assistant tool_use/text, user tool_result).
  *
- * Sub-session replay (REBYTE-ISSUE.md): the agent-loop delegates domain MCP calls to a sandbox
+ * Sub-session replay (REBYTE-ISSUE.md): the agent-loop delegates domain tool calls to a sandbox
  * sub-session and the parent stream carries only the manager's text summary — the structured
  * flight_search/verify JSON (with solutionId) stays in the sub-session. We recover it via the
  * relay's per-prompt events endpoint: each delegation result is tagged with `subPromptId`, and
@@ -174,7 +174,7 @@ export class TaskDO extends DurableObject<Env> {
       }
       case 'tool_result': {
         await this.emitToolResult(t.promptId, String(p.id ?? p.tool_id ?? ''), p.output)
-        // Agent-loop delegates domain MCP calls (flight_search / verify) to a sandbox
+        // Agent-loop delegates domain tool calls (flight_search / verify) to a sandbox
         // sub-session whose STRUCTURED tool_results never ride the parent stream — only
         // this delegation's text summary does (REBYTE-ISSUE.md). The relay tags the
         // delegation result with `subPromptId`; resolve it into the sub-session's real

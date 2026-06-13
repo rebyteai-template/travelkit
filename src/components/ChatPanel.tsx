@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react'
-import type { ChatBubble } from '../frames.ts'
+import { useEffect, useRef, type ReactNode } from 'react'
+import type { ChatBubble, FareVerification } from '../frames.ts'
 import { Markdown } from './Markdown.tsx'
 import { FlightCompareCards } from './FlightCompareCards.tsx'
+import { FareDetailCard } from './FareDetailCard.tsx'
 
 // Cold-start quick actions. The travelkit-pro skill's only sensible entry point is
 // flight search (order/refund/PNR all need prior context), so each is a one-tap search
@@ -18,14 +19,27 @@ export function ChatPanel({
   busy,
   onPick,
   onBook,
+  fareLatest,
+  onContinue,
+  notice,
+  children,
 }: {
   chat: ChatBubble[]
   busy: boolean
   onPick: (text: string) => void
   onBook: (label: string) => void
+  /** The current verified fare (DerivedView.fare). The inline verify card whose `b.fare` is this
+   *  exact object is the latest/actionable one; older verify cards render read-only. */
+  fareLatest: FareVerification | null
+  /** Entry CTA for the verify card. Undefined while a write-flow step is open (mode != 'auto') so
+   *  the CTA hides; when defined it shows only on the latest fare card. */
+  onContinue?: () => void
+  notice: string | null
+  /** The active write-flow step (passenger form / confirm gate), rendered at the chat tail. */
+  children?: ReactNode
 }) {
   const endRef = useRef<HTMLDivElement>(null)
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chat.length, busy])
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chat.length, busy, !!children])
 
   return (
     <div className="chat">
@@ -51,13 +65,16 @@ export function ChatPanel({
               </a>
             )
           }
-          // Inline 方案 cards: render the (table-stripped) assistant prose, then the
-          // selectable cards right below it — kept next to the turn that produced them.
-          if (b.cards) {
+          // Inline card turn: the (table-stripped) assistant prose, then the search cards or the
+          // verify fare card. The fare card shows its CTA only on the latest fare and only while no
+          // write-flow step is open (onContinue is undefined otherwise → the form is showing below).
+          if (b.cards || b.fare) {
             return (
               <div key={b.key} className="chat-cards">
                 {b.text.trim() ? <div className="bubble assistant"><Markdown text={b.text} /></div> : null}
-                <FlightCompareCards options={b.cards} totalCount={b.totalCount} onBook={onBook} busy={busy} />
+                {b.cards
+                  ? <FlightCompareCards options={b.cards} totalCount={b.totalCount} onBook={onBook} busy={busy} />
+                  : <FareDetailCard fare={b.fare!} busy={busy} onContinue={b.fare === fareLatest ? onContinue : undefined} />}
               </div>
             )
           }
@@ -68,6 +85,8 @@ export function ChatPanel({
           )
         })
       )}
+      {notice ? <div className="chat-notice">{notice}</div> : null}
+      {children}
       {busy ? <div className="bubble assistant typing">正在处理…</div> : null}
       <div ref={endRef} />
     </div>

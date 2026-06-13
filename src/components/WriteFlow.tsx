@@ -1,11 +1,8 @@
-import type { DerivedView, FareVerification, FareJourney } from '../frames.ts'
+import type { FareVerification, FareJourney } from '../frames.ts'
 import { PAX_LABELS, passengerName, docLabel, amountLine, journeyFacts, lowStockWarning, type PassengerDraft } from '../booking.ts'
-import { FlightCompareCards } from './FlightCompareCards.tsx'
-import { FareDetailCard } from './FareDetailCard.tsx'
 import { PassengerForm } from './PassengerForm.tsx'
 import { ConfirmGate, type ConfirmRow } from './ConfirmGate.tsx'
-
-export type BenchMode = 'auto' | 'passengers' | 'confirm'
+import type { FlowMode } from '../store/ui.ts'
 
 function journeyText(j: FareJourney): string {
   const { route, flights, stops } = journeyFacts(j)
@@ -26,41 +23,35 @@ function orderGate(fare: FareVerification, passengers: PassengerDraft[]): { rows
   return { rows, warning: lowStockWarning(fare) }
 }
 
-export function Bench({
-  view,
+/** The active booking write-flow step, rendered inline at the chat tail (no side bench): the
+ *  passenger form, then the confirm gate. Returns null when there's nothing to collect — `mode`
+ *  is 'auto' (the inline verify card carries the entry CTA) or no fare has been verified yet. */
+export function WriteFlow({
   mode,
+  fare,
   orderDraft,
-  onBook,
-  onContinue,
   onSubmitPassengers,
   onBackFromForm,
   onConfirmOrder,
   onCancelConfirm,
   busy,
 }: {
-  view: DerivedView
-  mode: BenchMode
+  mode: FlowMode
+  fare: FareVerification | null
   orderDraft: PassengerDraft[]
-  onBook: (label: string) => void
-  onContinue: () => void
   onSubmitPassengers: (passengers: PassengerDraft[]) => void
   onBackFromForm: () => void
   onConfirmOrder: () => void
   onCancelConfirm: () => void
   busy: boolean
 }) {
-  const { stage, search, fare, notice } = view
-  const hasAny = search || fare
-
-  let body: React.ReactNode = null
-  if (mode === 'passengers' && fare) {
-    body = (
-      <PassengerForm initial={orderDraft}
-        onSubmit={onSubmitPassengers} onBack={onBackFromForm} busy={busy} />
-    )
-  } else if (mode === 'confirm' && fare) {
+  if (!fare) return null
+  if (mode === 'passengers') {
+    return <PassengerForm initial={orderDraft} onSubmit={onSubmitPassengers} onBack={onBackFromForm} busy={busy} />
+  }
+  if (mode === 'confirm') {
     const { rows, warning } = orderGate(fare, orderDraft)
-    body = (
+    return (
       <ConfirmGate
         title="确认创建订单"
         rows={rows}
@@ -73,23 +64,6 @@ export function Bench({
         busy={busy}
       />
     )
-  } else if (stage === 'verify' && fare) {
-    body = <FareDetailCard fare={fare} onContinue={onContinue} busy={busy} />
-  } else if (search) {
-    body = <FlightCompareCards options={search.options} totalCount={search.totalCount} onBook={onBook} busy={busy} />
   }
-
-  return (
-    <div className="bench">
-      {notice ? <div className="bench-notice">{notice}</div> : null}
-      {body}
-      {!hasAny && !body ? (
-        <div className="bench-empty">
-          <div className="bench-empty-mark">✈</div>
-          <p>右侧是你的订票工作台。</p>
-          <p className="muted">在左侧告诉我出发地、目的地和日期，搜索结果会显示在这里。</p>
-        </div>
-      ) : null}
-    </div>
-  )
+  return null
 }

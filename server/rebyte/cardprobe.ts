@@ -154,7 +154,7 @@ async function main() {
       console.log('   · 没有任何 tool_result frame —— derive() 靠 user/tool_result 解析卡片，没有就一定是 null。')
     }
     console.log('   → 即「结构化结果困在子 agent，父任务只拿到散文总结」(REBYTE-ISSUE.md §2)。')
-    console.log('   → 这是接口层缺数据，不是前端渲染 bug：frames.ts 的 parseSearchResult/parseVerify 没东西可吃。')
+    console.log('   → 这是接口层缺数据，不是前端渲染 bug：frames.ts 的 parseCompactSearch/parseCompactVerify 没东西可吃。')
   } else {
     console.log('✅ 卡片能拿到数据 —— 结构化 tool_result 透到了父任务，frames.ts 映射成功。')
   }
