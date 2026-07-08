@@ -17,10 +17,12 @@ export const env = {
    *  (gitignored); never log it. */
   REBYTE_API_KEY: process.env.REBYTE_API_KEY ?? '',
 
-  /** Simplifly Flight OpenAPI gateway root (gateway root only — no endpoint path) + the
-   *  per-user auth token, for the local CLI seed path. Put both in .env.local; never log the
-   *  token. The deployed Worker hardcodes the URL + injects the token per-user (worker/seed.ts). */
+  /** Simplifly Flight OpenAPI gateway root (gateway root only — no endpoint path) + credentials
+   *  for the local CLI seed path. New skill auth uses code + api key; AUTH_TOKEN is retained only
+   *  for older probe VMs/skills during rollout. Put these in .env.local; never log them. */
   SIMPLIFLY_BASE_URL: process.env.SIMPLIFLY_BASE_URL ?? 'https://api-ap-east-1.simplifly.tech',
+  SIMPLIFLY_CODE: process.env.SIMPLIFLY_CODE ?? process.env.SIMPLIFLY_AGENCY_CODE ?? '',
+  SIMPLIFLY_API_KEY: process.env.SIMPLIFLY_API_KEY ?? process.env.SIMPLIFLY_AUTH_TOKEN ?? '',
   SIMPLIFLY_AUTH_TOKEN: process.env.SIMPLIFLY_AUTH_TOKEN ?? '',
 }
 

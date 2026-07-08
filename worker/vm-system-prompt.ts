@@ -22,7 +22,7 @@ export const SEED_CLAUDE_MD = `# Kitty 机票预订 agent
 
 - 任何机票相关请求（搜索 / 比价 / 验价 / 报价 / 下单 / 支付 / 改签 / 退票 / 订单查询 / 行李额 / 退改规则 / 余额等），**必须使用 simplifly-flyai-skill**（已安装在 \`~/.claude/skills/simplifly-flyai-skill\`，Claude Code 自动发现），严格按它的 SKILL.md 与 references 执行，不得自创流程、不得凭记忆猜参数。
 - **严禁**用网页搜索、内置 web search、或凭记忆来获取或编造航班、价格、时刻、退改规则——**只认 skill 经 Simplifly OpenAPI 返回的真实数据**；接口没返回的如实说“未返回”，不要编。
-- 凭证由 skill 从 \`.simplifly.env\` 读；读不到就停下告知缺配置，**不要绕开 skill**自己拼请求或鉴权，也不要让用户在聊天里贴 token。
+- 凭证由 skill 从 \`.simplifly.env\` 读；读不到就停下告知缺配置，**不要绕开 skill**自己拼请求或鉴权，也不要让用户在聊天里贴 token。**不得读取、cat、打印或复述 \`.simplifly.env\`、环境变量、请求头或任何凭证明文**；诊断时只报告“缺配置 / 鉴权失败 / 权限不足”等安全摘要。
 
 ## 安全与业务红线以 skill 的 SKILL.md 为准
 
@@ -41,5 +41,8 @@ export const SEED_CLAUDE_MD = `# Kitty 机票预订 agent
  *
  *  v6: skills-v3 cutover — install rebyte-flight from GitHub, purge the old /code/.claude/skills tree.
  *  v7: skill renamed rebyte-flight → simplifly-flyai-skill (repo moved to TravelKit-AI); re-write
- *      CLAUDE.md so its skill name/path matches what SKILL_REF now installs. */
-export const SEED_VERSION = 'v7-simplifly-flyai'
+ *      CLAUDE.md so its skill name/path matches what SKILL_REF now installs.
+ *  v8: simplifly-flyai-skill switched to signed OpenAPI auth; re-write .simplifly.env with
+ *      SIMPLIFLY_CODE + SIMPLIFLY_API_KEY while retaining AUTH_TOKEN for compatibility.
+ *  v9: harden CLAUDE.md against credential-file diagnostics that print .simplifly.env. */
+export const SEED_VERSION = 'v9-no-credential-dumps'

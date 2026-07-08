@@ -2,7 +2,7 @@
  * Seed the TravelKit per-user config into a sandbox VM's /code (CLI-probe path; mirrors
  * worker/seed.ts seedSandbox). Writes ONLY:
  *   /code/.simplifly.env   — dotenv with the per-user Simplifly credential
- *                            (SIMPLIFLY_BASE_URL / SIMPLIFLY_AUTH_TOKEN)
+ *                            (SIMPLIFLY_BASE_URL / SIMPLIFLY_CODE / SIMPLIFLY_API_KEY)
  *   /code/CLAUDE.md        — the VM system prompt (forces flight work through the skill)
  *
  * The SKILL itself is NOT seeded here anymore: the relay installs `simplifly-flyai-skill` from GitHub
@@ -30,6 +30,8 @@ export async function seedTravelkit(ac: AgentComputer): Promise<string[]> {
   const dotenv =
     `# Simplifly credentials for the simplifly-flyai-skill skill (probe seed).\n` +
     `SIMPLIFLY_BASE_URL=${env.SIMPLIFLY_BASE_URL}\n` +
+    `SIMPLIFLY_CODE=${env.SIMPLIFLY_CODE}\n` +
+    `SIMPLIFLY_API_KEY=${env.SIMPLIFLY_API_KEY}\n` +
     `SIMPLIFLY_AUTH_TOKEN=${env.SIMPLIFLY_AUTH_TOKEN}\n`
   await writeFile(ac, `${CODE}/.simplifly.env`, dotenv)
   written.push('.simplifly.env')
