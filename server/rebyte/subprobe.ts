@@ -73,7 +73,7 @@ async function main() {
   console.log('[subprobe] 3/5 POST /tasks…')
   const task = await rebyteJSON<{ id: string; url?: string }>('/tasks', {
     method: 'POST',
-    body: JSON.stringify({ prompt: PROMPT, workspaceId: ac.id, skills: [toSkillRef(SKILL_REF)] }), // skills → relay installs rebyte-flight from GitHub
+    body: JSON.stringify({ prompt: PROMPT, workspaceId: ac.id, skills: [toSkillRef(SKILL_REF)] }), // skills → relay installs simplifly-flyai-skill from GitHub
   })
   console.log(`[subprobe]     task=${task.id} ${task.url ?? ''}`)
 

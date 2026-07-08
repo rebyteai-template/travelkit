@@ -5,9 +5,9 @@
  *                            (SIMPLIFLY_BASE_URL / SIMPLIFLY_AUTH_TOKEN)
  *   /code/CLAUDE.md        — the VM system prompt (forces flight work through the skill)
  *
- * The SKILL itself is NOT seeded here anymore: the relay installs `rebyte-flight` from GitHub
+ * The SKILL itself is NOT seeded here anymore: the relay installs `simplifly-flyai-skill` from GitHub
  * (cctools skills v3) when a task is created with `skills: [toSkillRef(SKILL_REF)]` — the probes pass it on their
- * POST /tasks. The rebyte-flight skill reads .simplifly.env directly (not shell env vars). Keep the
+ * POST /tasks. The simplifly-flyai-skill skill reads .simplifly.env directly (not shell env vars). Keep the
  * credential format in sync with worker/seed.ts credentialsEnv().
  */
 import { env } from '../env.ts'
@@ -23,12 +23,12 @@ const CODE = '/code'
 export async function seedTravelkit(ac: AgentComputer): Promise<string[]> {
   const written: string[] = []
 
-  // Per-user Simplifly credential as a dotenv file the rebyte-flight skill reads directly (it
+  // Per-user Simplifly credential as a dotenv file the simplifly-flyai-skill skill reads directly (it
   // searches CWD upward for the nearest .simplifly.env; it does NOT use shell env vars). Plain
   // KEY=value (no `export`), matching worker/seed.ts credentialsEnv(). Locally these come from
   // .env.local (server/env.ts); the deployed Worker injects them per-user (worker/seed.ts).
   const dotenv =
-    `# Simplifly credentials for the rebyte-flight skill (probe seed).\n` +
+    `# Simplifly credentials for the simplifly-flyai-skill skill (probe seed).\n` +
     `SIMPLIFLY_BASE_URL=${env.SIMPLIFLY_BASE_URL}\n` +
     `SIMPLIFLY_AUTH_TOKEN=${env.SIMPLIFLY_AUTH_TOKEN}\n`
   await writeFile(ac, `${CODE}/.simplifly.env`, dotenv)
@@ -40,7 +40,7 @@ export async function seedTravelkit(ac: AgentComputer): Promise<string[]> {
 
   // Same cleanup as the Worker re-seed path: really delete the retired vendored skill dirs
   // (travelkit / travelkit-pro) + legacy credential files, else a probe VM seeded across versions
-  // shows the old skill alongside the skills-v3-installed rebyte-flight.
+  // shows the old skill alongside the skills-v3-installed simplifly-flyai-skill.
   await removeStaleArtifacts(ac)
   written.push('(removed stale: retired skill dirs + legacy creds)')
   return written

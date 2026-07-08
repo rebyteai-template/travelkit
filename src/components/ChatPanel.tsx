@@ -20,7 +20,7 @@ function MsgTime({ ts }: { ts?: string }) {
   )
 }
 
-// Cold-start quick actions. The rebyte-flight skill's only sensible entry point is
+// Cold-start quick actions. The simplifly-flyai-skill skill's only sensible entry point is
 // flight search (order/refund/PNR all need prior context), so each is a one-tap search
 // hitting a different facet: direct one-way, round-trip + multi-pax, time-window filter.
 // Clicking drops the text into the composer (editable) — App.pickSuggestion, not send.

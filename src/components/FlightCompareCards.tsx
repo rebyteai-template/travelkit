@@ -1,7 +1,7 @@
 import type { CompactOption, CompactJourney } from '../frames.ts'
 import { fmtDuration } from '../booking.ts'
 
-/** Search-stage bench: render the rebyte-flight skill's recommended options as side-by-side
+/** Search-stage bench: render the simplifly-flyai-skill skill's recommended options as side-by-side
  *  cards. Each card = one "方案" an OP can present/quote to a customer. The cards mirror what
  *  the skill curated; the real refinement (改时段/要转机/限价/往返…) happens in chat, and a
  *  fresh search just re-renders here. Selection rides the public 序号 (optionNumber) — the

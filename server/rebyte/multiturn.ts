@@ -146,7 +146,7 @@ async function main() {
   console.log('[multiturn] 3/3 turn 1: POST /tasks (model resolved org-wide by relay)')
   const task = await rebyteJSON<{ id: string; status?: string }>('/tasks', {
     method: 'POST',
-    // skills → relay installs rebyte-flight from GitHub into the VM before the manager runs (turn 1 only).
+    // skills → relay installs simplifly-flyai-skill from GitHub into the VM before the manager runs (turn 1 only).
     body: JSON.stringify({ prompt: turns[0], workspaceId: ac.id, skills: [toSkillRef(SKILL_REF)] }),
   })
   console.log(`[multiturn]     relayTask=${task.id}`)
@@ -171,7 +171,7 @@ async function main() {
     // Skill-routing guard: the manager MUST delegate flight work to the sandbox, never web-search /
     // fabricate. A web_search tool on any turn means the routing hint failed (REBYTE-NEEDS.md §3).
     if (r.tools.some((t) => /web_search|websearch|browse/i.test(t))) {
-      failures.push(`turn ${i + 1}: 用了 web search（${r.tools.join(',')}）——没走 rebyte-flight skill`)
+      failures.push(`turn ${i + 1}: 用了 web search（${r.tools.join(',')}）——没走 simplifly-flyai-skill skill`)
     }
     console.log(failures.find((f) => f.startsWith(`turn ${i + 1}:`)) ? `❌ turn ${i + 1} FAIL` : `✅ turn ${i + 1} OK`)
   }

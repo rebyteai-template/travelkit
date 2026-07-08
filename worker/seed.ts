@@ -3,7 +3,7 @@
  * pulls node fs/tar into the bundle, AND its gRPC transport sends gateway headers that 401 against
  * rebyte's envd — both verified, see removeFile).
  *
- * The SKILL is no longer seeded here: cctools skills v3 installs `rebyte-flight` from GitHub into the
+ * The SKILL is no longer seeded here: cctools skills v3 installs `simplifly-flyai-skill` from GitHub into the
  * VM (worker/task-do.ts `SKILL_REF` → POST /v1/tasks `skills`). This file now only writes the two
  * genuinely per-deployment/per-user things — the VM system prompt (/code/CLAUDE.md) and the per-user
  * `.simplifly.env` credential — plus one-time cleanup of the retired skill tree on reused sandboxes.
@@ -35,7 +35,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 const SIMPLIFLY_BASE_URL = 'https://api-ap-east-1.simplifly.tech'
 
 /** The per-user Simplifly credential as a standard dotenv file (`/code/.simplifly.env`). The
- *  rebyte-flight skill reads this file DIRECTLY — it searches from CWD upward for the nearest
+ *  simplifly-flyai-skill skill reads this file DIRECTLY — it searches from CWD upward for the nearest
  *  `.simplifly.env` and parses it as dotenv (see the skill's api-map.md); it does NOT rely on shell
  *  env vars. So this is the single source of the credential — no `.claude/settings.json` mirror, no
  *  `source` step. Plain `KEY=value` (no `export ` prefix — not every dotenv parser strips it). The
@@ -43,7 +43,7 @@ const SIMPLIFLY_BASE_URL = 'https://api-ap-east-1.simplifly.tech'
  *  single chokepoint for "where the token lives". */
 function credentialsEnv(token: string): string {
   return (
-    `# Simplifly credentials for the rebyte-flight skill (per-user, written at sandbox seed time).\n` +
+    `# Simplifly credentials for the simplifly-flyai-skill skill (per-user, written at sandbox seed time).\n` +
     `SIMPLIFLY_BASE_URL=${SIMPLIFLY_BASE_URL}\n` +
     `SIMPLIFLY_AUTH_TOKEN=${token}\n`
   )
@@ -82,7 +82,7 @@ async function writeFile(ac: ProvisionedComputer, rel: string, content: string):
 
 /** Seed the two per-deployment/per-user files into the sandbox /code — the VM system prompt
  *  (/code/CLAUDE.md, via writeClaudeMd) and the per-user Simplifly credential (/code/.simplifly.env,
- *  via applyCredential). The SKILL itself is NOT written here: the relay installs `rebyte-flight`
+ *  via applyCredential). The SKILL itself is NOT written here: the relay installs `simplifly-flyai-skill`
  *  from GitHub (skills v3). The token is NOT part of any build artifact — it comes per-user from the
  *  iframe handoff. */
 export async function seedSandbox(ac: ProvisionedComputer, travelkitToken: string): Promise<void> {
@@ -91,7 +91,7 @@ export async function seedSandbox(ac: ProvisionedComputer, travelkitToken: strin
 }
 
 /** Write /code/CLAUDE.md — the VM system prompt (Claude Code's native project memory) that forces
- *  flight work through the rebyte-flight skill and defers safety/business red-lines to the skill's
+ *  flight work through the simplifly-flyai-skill skill and defers safety/business red-lines to the skill's
  *  Core Boundaries. This REPLACES cctools' default system_prompt.md, whose generic guidance steers
  *  the agent to web search instead of our skill.
  *
@@ -128,8 +128,8 @@ export async function writeClaudeMd(ac: ProvisionedComputer): Promise<void> {
  *   · `.claude/settings.json` — legacy per-user credential mirror; no longer written (the skill
  *     reads `.simplifly.env` directly), so the old copy must be purged to not leave a stale token.
  *   · `.claude/skills/travelkit` + `.claude/skills/travelkit-pro` — retired vendored skill DIRs. The
- *     skill is now `rebyte-flight`, installed by the relay (skills v3) into
- *     `~/.claude/skills/rebyte-flight` — a DIFFERENT path, so without deletion the old vendored
+ *     skill is now `simplifly-flyai-skill`, installed by the relay (skills v3) into
+ *     `~/.claude/skills/simplifly-flyai-skill` — a DIFFERENT path, so without deletion the old vendored
  *     tree(s) under /code coexist and the agent loads two flight skills. Listed as directories (not
  *     files): envd `Remove` is recursive (verified — one call nukes the subtree + the dir), robust to
  *     whatever files an older seed version left under them, and leaves no empty dir behind. */
@@ -137,7 +137,7 @@ const STALE_FILES: string[] = [
   '.mcp.json',
   '.claude/settings.json',
   '.claude/skills/travelkit', // recursive: whole old (gen-1) skill subtree
-  '.claude/skills/travelkit-pro', // recursive: retired vendored skill (now rebyte-flight via skills v3)
+  '.claude/skills/travelkit-pro', // recursive: retired vendored skill (now simplifly-flyai-skill via skills v3)
 ]
 
 /** Wrap a protobuf message in a gRPC-Web data frame: 1 flag byte (0) + 4-byte big-endian length.
@@ -205,7 +205,7 @@ export async function removeStaleArtifacts(ac: ProvisionedComputer): Promise<voi
 
 /** Write the per-user Simplifly credential into an already-provisioned sandbox — used at seed time
  *  and when the user's token rotates (re-login), refreshing in place instead of rebuilding the VM.
- *  Writes the single sink `.simplifly.env` (the dotenv file the rebyte-flight skill reads directly).
+ *  Writes the single sink `.simplifly.env` (the dotenv file the simplifly-flyai-skill skill reads directly).
  *  Single chokepoint for "where the token lives"; see credentialsEnv(). */
 export async function applyCredential(ac: ProvisionedComputer, travelkitToken: string): Promise<void> {
   await writeFile(ac, '.simplifly.env', credentialsEnv(travelkitToken))

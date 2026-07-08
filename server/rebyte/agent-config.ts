@@ -7,7 +7,7 @@
  *   1. agent_instructions — the workspace's own system prompt. cctools getWorkspaceAsAgent()
  *      APPENDS it after the generic manager base prompt (AUX_TRADER_SYSTEM_PROMPT), so this is
  *      a thin domain overlay: route ALL flight work to the sandbox, never fabricate. It does NOT
- *      restate the skill flow — that lives in the sandbox /code/CLAUDE.md + rebyte-flight skill,
+ *      restate the skill flow — that lives in the sandbox /code/CLAUDE.md + simplifly-flyai-skill skill,
  *      which the delegated sub-agent reads.
  *   2. web_search view OFF — a hard capability cut. With no web_search tool the manager CANNOT
  *      web-search/fabricate flights; it must delegate. Belt-and-suspenders with the prompt.

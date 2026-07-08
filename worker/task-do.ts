@@ -416,7 +416,7 @@ export class TaskDO extends DurableObject<Env> {
           // OFF) so the front-line agent-loop delegates flight work to the sandbox instead of
           // web-searching/fabricating — no per-prompt routing line needed (REBYTE-NEEDS.md §3). The
           // booking red-lines, credential handling and skill workflow live in the VM system prompt
-          // (/code/CLAUDE.md, seeded by seed.ts) + the rebyte-flight skill, which the delegated
+          // (/code/CLAUDE.md, seeded by seed.ts) + the simplifly-flyai-skill skill, which the delegated
           // sandbox agent reads. So we POST the user's prompt verbatim.
           //
           // The GLOBAL debug config (one shared skill-ref + manager prompt, edited by the admin,

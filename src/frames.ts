@@ -13,7 +13,7 @@
  */
 import type { Attachment, PromptContent } from './api.ts'
 
-// ── search (rebyte-flight compact JSON) ────────────────────────────────
+// ── search (simplifly-flyai-skill compact JSON) ────────────────────────────────
 // The skill runs python scripts in the sandbox; the structured result we can parse
 // is the COMPACT JSON (flight_search_compact.py stdout), replayed into our frames from
 // the sub-session. `displayOptions` = the skill's curated recommendations, each fully
@@ -63,7 +63,7 @@ export interface SearchResult {
   totalCount?: number       // unique candidates matched (skill curated down to options[])
 }
 
-// ── verify (rebyte-flight compact: flight_verify_selected.py) ──────────
+// ── verify (simplifly-flyai-skill compact: flight_verify_selected.py) ──────────
 // The verify result is COMPACT family too — a Bash result recognised by shape
 // (`selectedOption`+`verifiedOption`), NOT an MCP tool by name. `verifiedOption` re-states the
 // chosen option re-priced; `comparison` flags any change. Internal ids (solutionId/orderKey) stay
@@ -139,7 +139,7 @@ export interface ChatBubble {
   runUrl?: string
   /** Turn-level failure (DO `__error` frame) — rendered in the error palette. */
   error?: boolean
-  /** Inline 方案 cards attached to this assistant turn (chat-stream): the rebyte-flight
+  /** Inline 方案 cards attached to this assistant turn (chat-stream): the simplifly-flyai-skill
    *  compact search rendered as selectable cards, with the agent's redundant markdown
    *  table stripped from `text`. Each search keeps its own bubble → full history. */
   cards?: CompactOption[]
@@ -246,7 +246,7 @@ export function derive(prompts: PromptContent[]): DerivedView {
         }
       }
 
-      // user turn carrying a tool_result. Both card-driving shapes are rebyte-flight COMPACT
+      // user turn carrying a tool_result. Both card-driving shapes are simplifly-flyai-skill COMPACT
       // family (Bash results — the skill talks direct HTTP, never MCP), so we route by SHAPE, not
       // tool name: search by `displayOptions`+`displayMapping`, verify by `selectedOption`+`verifiedOption`.
       if (data.type === 'user' && isObj(data.message)) {
@@ -315,7 +315,7 @@ function parseToolJson(raw: string): Record<string, unknown> | null {
   }
 }
 
-/** rebyte-flight compact search JSON → search view model. Tool-name agnostic: this is
+/** simplifly-flyai-skill compact search JSON → search view model. Tool-name agnostic: this is
  *  a Bash result (python script stdout), recognised by its `displayOptions`/`displayMapping`
  *  shape. We read only the public `displayOptions`; `displayMapping.solutionId` stays private. */
 function parseCompactSearch(json: Record<string, unknown>): SearchResult | null {
@@ -390,7 +390,7 @@ function toCompactOption(raw: unknown): CompactOption | null {
   }
 }
 
-/** rebyte-flight compact verify JSON (flight_verify_selected.py stdout) → fare view model.
+/** simplifly-flyai-skill compact verify JSON (flight_verify_selected.py stdout) → fare view model.
  *  Recognised by shape (`selectedOption`+`verifiedOption`), like the compact search. We read the
  *  curated `verifiedOption` summary only; solutionId/orderKey stay in the script's private fields.
  *  Compact carries no per-passenger price split, structured fare rules, or seat availability — those

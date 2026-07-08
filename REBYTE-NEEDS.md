@@ -22,7 +22,7 @@
 `.claude/settings.json` + 旧 `.claude/skills/travelkit/**`，re-seed 时真删。`CREDENTIAL_SCHEMA` bump 到
 `v2` 触发存量沙箱 re-seed。**vendored skill 不再需要任何 Credentials 旁路指引**（旧的那句 `source` 已无）。
 
-**`.simplifly.env` 契约**（`travelkit-pro` repo `rebyteai-template/skills-travelkit-wfl` 的
+**`.simplifly.env` 契约**（`travelkit-pro` repo `TravelKit-AI/skills-travelkit-wfl` 的
 `SKILL.md` Core Boundaries + `references/api-map.md`，我们 seed 侧据此写文件）：
 
 - 从 CWD **向上逐层找最近的 `.simplifly.env`**，按标准 dotenv 解析；不许 hardcode 绝对路径。
@@ -41,11 +41,11 @@
 ## 2. skill 更新：已 provision 的沙箱里干净替换 skill — 已解决 ✅
 
 > **更新 2026-07-07（skills v3 落地，彻底换掉本节的 workaround）**：cctools `main` 已发
-> **skills v3**（PR #193/#194）——`POST /v1/tasks` 带 `skills:[github:…tree/main/skills/rebyte-flight]`，
+> **skills v3**（PR #193/#194）——`POST /v1/tasks` 带 `skills:[github:…tree/main/skills/simplifly-flyai-skill]`，
 > relay 在跑 manager 前把 skill 从 GitHub `git clone` 进 workspace VM（私有 repo 用 org 绑的 GitHub
 > token，`pushAuthFilesToVM` 写 `~/.netrc`）；重装幂等替换、无残留。TripDesk 已切到此路：**不再
 > vendor/inline/逐文件上传 skill**（删了 `scripts/gen-seed-assets.ts`、`worker/seed-assets.generated.ts`、
-> `pushSeedFiles`），skill 单一真源 = repo `rebyteai-template/rebyte-flight-skill`，**改 skill = push
+> `pushSeedFiles`），skill 单一真源 = repo `TravelKit-AI/simplifly-flyai-skill`，**改 skill = push
 > `main`**。下面手搓的 gRPC-Web `Remove` 不再用于「换 skill」，只保留给：① `writeClaudeMd` 的
 > CLAUDE.md 软链 double-Remove；② `removeStaleArtifacts` 清理存量沙箱里退役的旧 skill 目录
 > （`.claude/skills/travelkit` / `travelkit-pro`）。⚠️ skills v3 **未上 prod relay**——dev 验证接
