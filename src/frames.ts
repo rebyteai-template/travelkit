@@ -294,7 +294,13 @@ export function derive(prompts: PromptContent[]): DerivedView {
             if (parsed) {
               search = parsed; fare = null; notice = null; stage = 'search'
               const sig = parsed.options.map((o) => `${o.optionNumber}:${o.price.amount}:${o.journeys[0]?.segments[0]?.flightNo ?? ''}`).join('|')
-              if (sig !== lastCardsSig) { pendingSearch = parsed; lastCardsSig = sig }
+              if (sig !== lastCardsSig) {
+                if (pendingSearch) {
+                  chat.push({ key: `cards-${p.id}-${f.seq}`, role: 'assistant', text: '', cards: pendingSearch.options, totalCount: pendingSearch.totalCount, ts: replyTs })
+                }
+                pendingSearch = parsed
+                lastCardsSig = sig
+              }
               continue
             }
           }
