@@ -52,6 +52,8 @@ export interface CompactJourney {
 }
 export interface CompactOption {
   optionNumber: number     // the user-visible 序号; selection rides this, never solutionId
+  displayNumber?: number   // UI-only number when multiple compact searches are merged into one table
+  selectionLabel?: string  // UI-only disambiguation for verify prompts, e.g. "第2组方案1"
   section?: string
   journeyType: string      // "单程直飞" | "单程中转N次" | "多程"
   duration: string         // "2h10m"
@@ -239,7 +241,7 @@ export function derive(prompts: PromptContent[]): DerivedView {
     chat.push({ key: `u-${p.id}`, role: 'user', text: p.prompt, ts: userTs, ...(p.attachments?.length ? { attachments: p.attachments } : {}) })
     // Hold this prompt's latest search / verify; attach to the next assistant text (stripping its
     // redundant markdown table), else flush as a standalone card bubble at prompt end.
-    let pendingSearch: SearchResult | null = null
+    let pendingSearches: SearchResult[] = []
     let pendingFare: FareVerification | null = null
 
     for (const f of p.frames) {
@@ -270,8 +272,13 @@ export function derive(prompts: PromptContent[]): DerivedView {
           // A search / verify card attaches to this turn's prose, with the redundant markdown
           // table stripped (the card shows the same data). Both can ride one bubble.
           const bubble: ChatBubble = { key, role: 'assistant', text, ts: replyTs }
-          if (pendingSearch || pendingFare) bubble.text = stripTables(text)
-          if (pendingSearch) { bubble.cards = pendingSearch.options; bubble.totalCount = pendingSearch.totalCount; pendingSearch = null }
+          if (pendingSearches.length || pendingFare) bubble.text = stripTables(text)
+          if (pendingSearches.length) {
+            const merged = mergeSearchResults(pendingSearches)
+            bubble.cards = merged.options
+            bubble.totalCount = merged.totalCount
+            pendingSearches = []
+          }
           if (pendingFare) { bubble.fare = pendingFare; pendingFare = null }
           chat.push(bubble)
         }
@@ -295,10 +302,7 @@ export function derive(prompts: PromptContent[]): DerivedView {
               search = parsed; fare = null; notice = null; stage = 'search'
               const sig = parsed.options.map((o) => `${o.optionNumber}:${o.price.amount}:${o.journeys[0]?.segments[0]?.flightNo ?? ''}`).join('|')
               if (sig !== lastCardsSig) {
-                if (pendingSearch) {
-                  chat.push({ key: `cards-${p.id}-${f.seq}`, role: 'assistant', text: '', cards: pendingSearch.options, totalCount: pendingSearch.totalCount, ts: replyTs })
-                }
-                pendingSearch = parsed
+                pendingSearches.push(parsed)
                 lastCardsSig = sig
               }
               continue
@@ -324,8 +328,9 @@ export function derive(prompts: PromptContent[]): DerivedView {
     }
 
     // a search / verify with no trailing summary text → standalone card bubble (keeps it visible)
-    if (pendingSearch) {
-      chat.push({ key: `cards-${p.id}`, role: 'assistant', text: '', cards: pendingSearch.options, totalCount: pendingSearch.totalCount, ts: replyTs })
+    if (pendingSearches.length) {
+      const merged = mergeSearchResults(pendingSearches)
+      chat.push({ key: `cards-${p.id}`, role: 'assistant', text: '', cards: merged.options, totalCount: merged.totalCount, ts: replyTs })
     }
     if (pendingFare) {
       chat.push({ key: `fare-${p.id}`, role: 'assistant', text: '', fare: pendingFare, ts: replyTs })
@@ -340,6 +345,19 @@ export function derive(prompts: PromptContent[]): DerivedView {
     deduped.push(b)
   }
   return { chat: deduped, stage, search, fare, notice }
+}
+
+function mergeSearchResults(searches: SearchResult[]): SearchResult {
+  if (searches.length <= 1) return searches[0] ?? { options: [] }
+  let displayNumber = 1
+  const options = searches.flatMap((search, searchIndex) =>
+    search.options.map((option) => ({
+      ...option,
+      displayNumber: displayNumber++,
+      selectionLabel: `第${searchIndex + 1}组方案${option.optionNumber}`,
+    })),
+  )
+  return { options }
 }
 
 function parseToolJson(raw: string): Record<string, unknown> | null {

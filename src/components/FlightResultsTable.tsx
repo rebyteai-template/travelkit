@@ -99,7 +99,9 @@ function copyText(o: CompactOption): string {
 interface FlightTableRow {
   key: string
   option: CompactOption
+  optionKey: string
   optionNumber: number | ''
+  selectionLabel: string
   journey: string
   flightNo: string
   date: string
@@ -138,21 +140,24 @@ export function FlightResultsTable({
   onBook: (label: string) => void
   busy: boolean
 }) {
-  const [copied, setCopied] = useState<number | null>(null)
+  const [copied, setCopied] = useState<string | null>(null)
   const showTotal = useMemo(() => options.some((o) => o.journeys.length > 2), [options])
   const rows = useMemo<FlightTableRow[]>(() => options.flatMap((o) => {
     let rowIndex = 0
     const displayPrice = priceDisplay(o)
     const source = o.sourceDisplay || o.source || '未返回'
+    const optionKey = `${o.displayNumber ?? o.optionNumber}:${o.optionNumber}:${o.journeys[0]?.segments[0]?.flightNo ?? ''}`
     return o.journeys.flatMap((j, ji) =>
       j.segments.map((s, si) => {
         const first = rowIndex === 0
         const journeyFirst = si === 0
         rowIndex += 1
         return {
-          key: `${o.optionNumber}-${ji}-${si}`,
+          key: `${optionKey}-${ji}-${si}`,
           option: o,
-          optionNumber: first ? o.optionNumber : '',
+          optionKey,
+          optionNumber: first ? (o.displayNumber ?? o.optionNumber) : '',
+          selectionLabel: o.selectionLabel ?? String(o.optionNumber),
           journey: journeyFirst ? journeyLabel(o, j, ji) : '',
           flightNo: s.flightNo,
           date: dateCn(s.departureDate),
@@ -170,8 +175,9 @@ export function FlightResultsTable({
 
   async function onCopy(o: CompactOption) {
     await writeClipboard(copyText(o))
-    setCopied(o.optionNumber)
-    window.setTimeout(() => setCopied((current) => (current === o.optionNumber ? null : current)), 1400)
+    const optionKey = `${o.displayNumber ?? o.optionNumber}:${o.optionNumber}:${o.journeys[0]?.segments[0]?.flightNo ?? ''}`
+    setCopied(optionKey)
+    window.setTimeout(() => setCopied((current) => (current === optionKey ? null : current)), 1400)
   }
 
   return (
@@ -217,8 +223,8 @@ export function FlightResultsTable({
                 <td>
                   {row.optionNumber ? (
                     <div className="flight-actions">
-                      <button type="button" onClick={() => onCopy(row.option)}>{copied === row.optionNumber ? '已复制' : 'Copy'}</button>
-                      <button type="button" disabled={busy} onClick={() => onBook(String(row.optionNumber))}>验价</button>
+                      <button type="button" onClick={() => onCopy(row.option)}>{copied === row.optionKey ? '已复制' : 'Copy'}</button>
+                      <button type="button" disabled={busy} onClick={() => onBook(row.selectionLabel)}>验价</button>
                     </div>
                   ) : null}
                 </td>

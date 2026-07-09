@@ -110,12 +110,16 @@ test('derive preserves multiple compact searches in one turn', () => {
 
   const view = derive([prompt])
   const cardBubbles = view.chat.filter((b) => b.cards)
-  assert.equal(cardBubbles.length, 2)
+  assert.equal(cardBubbles.length, 1)
+  assert.equal(cardBubbles[0]?.cards?.length, 2)
   const firstCard = cardBubbles[0]?.cards?.[0]
-  const secondCard = cardBubbles[1]?.cards?.[0]
+  const secondCard = cardBubbles[0]?.cards?.[1]
   const latestSearch = view.search?.options[0]
   if (!firstCard || !secondCard || !latestSearch) throw new Error('expected card-backed searches')
   assert.equal(firstCard.journeys[0]?.segments[0]?.flightNo, 'NH0964')
   assert.equal(secondCard.journeys[0]?.segments[0]?.flightNo, 'JL0022')
+  assert.equal(firstCard.displayNumber, 1)
+  assert.equal(secondCard.displayNumber, 2)
+  assert.equal(secondCard.selectionLabel, '第2组方案1')
   assert.equal(latestSearch.journeys[0]?.segments[0]?.flightNo, 'JL0022')
 })
