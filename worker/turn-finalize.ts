@@ -4,15 +4,27 @@
  *
  * The bug it guards: on delegated turns the relay's events arrive in a tail-burst
  * (delegation tool_use → long gap → tool_result → manager text → `done{finalResult}`),
- * and GET /tasks flips to a terminal status a beat BEFORE that trailing text + done
- * reach /events (and before its own finalResult field is populated). Finalizing on the
- * bare status there drops the agent's answer — the "second message loads back only
- * halfway then sticks" bug. So when the relay is terminal but we have neither streamed
- * text nor a finalResult yet, we drain a few more /events windows to catch the tail.
+ * and the relay flips terminal (both on GET /tasks and as a stream `done`) a beat
+ * BEFORE the trailing tool_result + text are readable from /events. Finalizing on the
+ * bare terminal signal drops the agent's answer and the delegated tool_result that
+ * feeds the bench cards. So while the turn is terminal but the tail hasn't streamed,
+ * we drain a few more /events windows to catch it.
+ *
+ * `sawText` here means "assistant text since the LAST tool_use" (TaskDO resets it when
+ * a tool_use streams): an opening ack ("好的，我马上委派…") before the delegation must
+ * not count as the answer — that exact false positive skipped the drain and lost a
+ * whole turn's tail in prod (2026-07-12, task 77904658). A present-but-early
+ * `finalResult` doesn't short-circuit the drain either: the relay populates it a beat
+ * before the tail events, so finalizing on it saves the text but still drops the
+ * delegated tool_result (= no cards) — drains are near-instant reconnects on a
+ * terminal task, so waiting for the streamed tail costs almost nothing.
  */
 
-/** Extra windows to drain the relay's trailing text+done after status flips terminal. */
-export const MAX_TERMINAL_DRAINS = 4
+/** Extra windows to drain the relay's trailing tail+done after it flips terminal.
+ *  Each drain against a terminal task converges in ~1s (the relay replays and closes
+ *  with `done` immediately), so a higher cap buys real patience for lagging event
+ *  synthesis without meaningfully delaying genuinely silent turns. */
+export const MAX_TERMINAL_DRAINS = 8
 
 /** Relay task statuses that mean the turn is over (mirrors the relay's vocabulary). */
 export const TERMINAL_STATUSES = new Set(['completed', 'succeeded', 'failed', 'canceled', 'cancelled'])
@@ -42,20 +54,19 @@ export function turnExpired(i: { now: number; deadline: number; hardDeadline: nu
 }
 
 export interface DrainInput {
-  /** Did we already stream assistant text this turn? */
+  /** Streamed assistant text since the last tool_use (an opening ack before a
+   *  delegation does NOT count — TaskDO resets this when a tool_use streams). */
   sawText: boolean
-  /** finalResult from GET /tasks (lags the status flip — often empty when terminal). */
-  finalResult?: string
   /** How many windows we've already drained this turn after seeing terminal. */
   terminalDrains: number
-  /** Current time and the turn's hard deadline (drain never runs past it). */
+  /** Current time and the turn's HARD deadline (drain never runs past it — the soft
+   *  deadline is too tight: a turn finalizing at 213s would get only 27s of drain). */
   now: number
-  deadline: number
+  hardDeadline: number
 }
 
 /** True → re-arm one more /events window to drain the tail before finalizing.
- *  False → we have the answer (or exhausted drains / hit the deadline): finalize now. */
+ *  False → the answer streamed (or drains/deadline exhausted): finalize now. */
 export function shouldDrainTerminal(i: DrainInput): boolean {
-  const haveAnswer = i.sawText || !!i.finalResult?.trim()
-  return !haveAnswer && i.terminalDrains < MAX_TERMINAL_DRAINS && i.now < i.deadline
+  return !i.sawText && i.terminalDrains < MAX_TERMINAL_DRAINS && i.now < i.hardDeadline
 }

@@ -19,7 +19,7 @@ import { streamSSE } from 'hono/streaming'
 import type { Store, Task } from './store.ts'
 import { MAX_UPLOAD_BYTES, attachmentPromptSuffix } from './attachments.ts'
 import type { FileRef } from './rebyte/client.ts'
-import { framesHaveAssistantText, unrenderedResultTexts } from './frame-text.ts'
+import { framesHaveAnswerText, unrenderedResultTexts } from './frame-text.ts'
 // Built-in defaults surfaced to the debug panel (placeholder / "填入默认") and used as the fallback
 // when the global config field is empty. Single source of truth stays in these two modules.
 import { SKILL_REF as DEFAULT_SKILL_REF } from '../worker/skill-ref.ts'
@@ -180,11 +180,12 @@ app.get('/tasks/:id/content', async (c) => {
   const prompts = await Promise.all(
     rows.map(async (p) => {
       let frames = await store.framesSince(p.id, 0)
-      // Self-heal a terminal turn whose answer the UI can't show: either nothing landed
-      // (truncation), or the answer is stored on the `result` channel but never rendered
-      // as chat text. A browser refresh reads only the store, so it can't recover on its
+      // Self-heal a terminal turn whose answer the UI can't show: nothing landed after
+      // the last tool_use (truncation — an opening ack alone doesn't count as whole),
+      // or the answer is stored on the `result` channel but never rendered as chat
+      // text. A browser refresh reads only the store, so it can't recover on its
       // own — ask the backend to backfill, then re-read. No-op for turns already whole.
-      const needsHeal = p.status !== 'running' && (!framesHaveAssistantText(frames) || unrenderedResultTexts(frames).length > 0)
+      const needsHeal = p.status !== 'running' && (!framesHaveAnswerText(frames) || unrenderedResultTexts(frames).length > 0)
       if (needsHeal && (await c.var.recoverPrompt(task.id, p.id))) frames = await store.framesSince(p.id, 0)
       // Metadata only — the client derives the rendition URLs (single source: api.toAttachment), so
       // the reloaded bubble matches the optimistic one (streaming-experience-contract I0).

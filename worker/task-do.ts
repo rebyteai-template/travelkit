@@ -32,7 +32,7 @@ import { provisionComputer, seedSandbox, writeClaudeMd, removeStaleArtifacts, ap
 import { SKILL_REF, toSkillRef } from './skill-ref.ts'
 import { ensureAgentConfig } from '../server/rebyte/agent-config.ts'
 import { shouldDrainTerminal, shouldRetryWindowError, turnExpired, TERMINAL_STATUSES } from './turn-finalize.ts'
-import { framesHaveAssistantText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
+import { framesHaveAnswerText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
 import type { Env } from './env.ts'
 
 // No model/executor here on purpose: POST /v1/tasks IGNORES both (cctools relay
@@ -70,6 +70,10 @@ interface TurnState {
    *  Guards a retried alarm from double-submitting after a window/eviction. */
   submitted: boolean
   lastRelaySeq: number
+  /** Assistant text streamed since the LAST tool_use — i.e. "the answer has arrived".
+   *  Reset when a tool_use streams: an opening ack before the delegation must not
+   *  count, or the terminal-drain guard is skipped and the turn's whole tail (the
+   *  delegated tool_result + final summary) is lost to the finalize race. */
   sawText: boolean
   /** Whitespace-stripped concat of all assistant text emitted this turn, so the
    *  `result` event + final `finalResult` (which echo the same answer on another
@@ -168,6 +172,9 @@ export class TaskDO extends DurableObject<Env> {
         const name = String(p.name ?? p.tool_name ?? '')
         const id = String(p.id ?? p.tool_id ?? '') || crypto.randomUUID()
         await this.emitToolUse(t.promptId, id, name, p.input ?? p.params ?? {})
+        // A tool call after any prior text means that text was an ack, not the answer —
+        // the answer is whatever the manager says AFTER this tool resolves.
+        t.sawText = false
         return
       }
       case 'tool_result': {
@@ -237,6 +244,24 @@ export class TaskDO extends DurableObject<Env> {
     await this.store.setTaskStatus(t.taskId, status)
     await this.ctx.storage.delete('turn')
     await this.ctx.storage.deleteAlarm()
+  }
+
+  /** A terminal signal arrived (stream `done` or GET /tasks status). The relay flips
+   *  terminal a beat before the tail events (delegated tool_result + manager summary)
+   *  are readable from /events — finalizing right away loses them. If the answer
+   *  hasn't streamed yet, re-arm the alarm to drain another window (the reconnect
+   *  replays the now-complete tail); else finalize, rendering finalResult if the
+   *  text never arrived on the stream. BOTH terminal paths must go through this —
+   *  the stream `done` used to finalize unconditionally and dropped tails too. */
+  private async drainOrFinalize(t: TurnState, status: string, finalResult?: string): Promise<void> {
+    if (shouldDrainTerminal({ sawText: t.sawText, terminalDrains: t.terminalDrains, now: Date.now(), hardDeadline: t.hardDeadline ?? t.deadline })) {
+      t.terminalDrains++
+      await this.ctx.storage.put('turn', t)
+      await this.ctx.storage.setAlarm(Date.now() + 100)
+      return
+    }
+    if (finalResult) await this.emitTurnText(t, finalResult, true)
+    return this.finalize(t, this.mapStatus(status))
   }
 
   /** Per-user sandbox, provisioned lazily on first use. Returns the user's cached
@@ -364,8 +389,9 @@ export class TaskDO extends DurableObject<Env> {
       await this.unfailRecovered(p)
       return true
     }
-    // Case 2: nothing rendered at all → recover from the relay's retained response.
-    if (framesHaveAssistantText(frames)) return false
+    // Case 2: no answer rendered (text after the last tool_use — an opening ack
+    // alone doesn't count) → recover from the relay's retained response.
+    if (framesHaveAnswerText(frames)) return false
 
     let relayTaskId = await this.ctx.storage.get<string>('relayTaskId')
     if (!relayTaskId) relayTaskId = (await this.store.getTask(p.task_id))?.relay_task_id ?? undefined
@@ -477,9 +503,13 @@ export class TaskDO extends DurableObject<Env> {
       // Re-pull delegated sub-sessions every window before we might finalize: their search
       // compact can land after the delegation result, and a one-shot replay dropped it (no card).
       await this.catchUpSubPrompts(t)
+      // Either terminal signal — the stream's `done` or a terminal GET /tasks status —
+      // can arrive before the tail events are readable, so both go through the same
+      // drain-then-finalize gate. (The stream `done` used to finalize unconditionally:
+      // that's how an ack-opening delegated turn lost its tool_result/cards even when
+      // the answer text was rescued via finalResult.)
       if (done.terminal) {
-        if (done.finalResult) await this.emitTurnText(t, done.finalResult, true)
-        return this.finalize(t, this.mapStatus(done.status ?? 'completed'))
+        return this.drainOrFinalize(t, done.status ?? 'completed', done.finalResult)
       }
 
       // Window ended without a stream `done`. Ask the relay directly.
@@ -487,22 +517,7 @@ export class TaskDO extends DurableObject<Env> {
         () => ({}) as { status?: string; finalResult?: string },
       )
       if (st.status && TERMINAL.has(st.status)) {
-        // The relay is terminal — but on delegated turns its events arrive in a tail-burst
-        // (delegation tool_use → long gap → tool_result → manager text → `done{finalResult}`),
-        // and the status flips a beat BEFORE that text + done reach /events (and before
-        // st.finalResult is populated). Finalizing on the bare status here drops the agent's
-        // answer — the "second message loads back only halfway then sticks" bug. So once we
-        // have neither the streamed text nor a finalResult, drain a few more windows: the
-        // reconnect replays this prompt's tail and delivers the `done` (handled above). Bound
-        // the drains so a genuinely silent terminal turn still finalizes.
-        if (shouldDrainTerminal({ sawText: t.sawText, finalResult: st.finalResult, terminalDrains: t.terminalDrains, now: Date.now(), deadline: t.deadline })) {
-          t.terminalDrains++
-          await this.ctx.storage.put('turn', t)
-          await this.ctx.storage.setAlarm(Date.now() + 100)
-          return
-        }
-        if (st.finalResult) await this.emitTurnText(t, st.finalResult, true)
-        return this.finalize(t, this.mapStatus(st.status))
+        return this.drainOrFinalize(t, st.status, st.finalResult)
       }
 
       // Two-tier expiry: past the soft deadline a relay that POSITIVELY reports the task

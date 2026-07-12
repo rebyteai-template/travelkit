@@ -16,61 +16,63 @@ import {
 
 const T0 = 1_000_000
 const DEADLINE = T0 + 240_000
+const HARD = T0 + 900_000
 
-test('THE BUG: terminal status arrives before text+finalResult → drain, do not finalize empty', () => {
-  // This is exactly what GET /tasks returns the beat the relay flips terminal:
-  // status=completed but finalResult not yet populated, and no text streamed yet.
+test('THE BUG: terminal signal arrives before the tail streams → drain, do not finalize', () => {
+  // Both terminal paths (stream `done` and GET /tasks) can fire the beat the relay
+  // flips terminal, before the delegated tool_result + manager summary are readable.
   assert.equal(
-    shouldDrainTerminal({ sawText: false, finalResult: '', terminalDrains: 0, now: T0, deadline: DEADLINE }),
+    shouldDrainTerminal({ sawText: false, terminalDrains: 0, now: T0, hardDeadline: HARD }),
     true,
-    '一拿到 terminal 就 finalize 会丢掉随后到达的 manager 总结（半截 bug）',
+    '一拿到 terminal 就 finalize 会丢掉随后到达的 tool_result + manager 总结',
   )
-  // undefined finalResult is the same case.
+})
+
+test('ACK POISON (task 77904658): sawText means text since the LAST tool_use, so an opening ack still drains', () => {
+  // TaskDO resets sawText when a tool_use streams — by the time the terminal race
+  // hits a delegated turn, an opening "好的，我马上委派…" has been invalidated and the
+  // guard sees sawText=false. (The old `sawText || finalResult` short-circuit is gone:
+  // an early finalResult rescued the text but still dropped the tool_result/cards.)
   assert.equal(
-    shouldDrainTerminal({ sawText: false, finalResult: undefined, terminalDrains: 0, now: T0, deadline: DEADLINE }),
-    true,
-  )
-  // whitespace-only finalResult counts as no answer → still drain.
-  assert.equal(
-    shouldDrainTerminal({ sawText: false, finalResult: '   \n', terminalDrains: 0, now: T0, deadline: DEADLINE }),
+    shouldDrainTerminal({ sawText: false, terminalDrains: 0, now: T0, hardDeadline: HARD }),
     true,
   )
 })
 
-test('have the answer → finalize immediately (no needless extra windows)', () => {
-  // streamed text already captured
+test('answer streamed → finalize immediately (no needless extra windows)', () => {
   assert.equal(
-    shouldDrainTerminal({ sawText: true, finalResult: '', terminalDrains: 0, now: T0, deadline: DEADLINE }),
-    false,
-  )
-  // finalResult present on the status response
-  assert.equal(
-    shouldDrainTerminal({ sawText: false, finalResult: '验价通过…', terminalDrains: 0, now: T0, deadline: DEADLINE }),
+    shouldDrainTerminal({ sawText: true, terminalDrains: 0, now: T0, hardDeadline: HARD }),
     false,
   )
 })
 
 test('bounded: stop draining after MAX so a genuinely silent terminal turn still finalizes', () => {
   assert.equal(
-    shouldDrainTerminal({ sawText: false, finalResult: '', terminalDrains: MAX_TERMINAL_DRAINS - 1, now: T0, deadline: DEADLINE }),
+    shouldDrainTerminal({ sawText: false, terminalDrains: MAX_TERMINAL_DRAINS - 1, now: T0, hardDeadline: HARD }),
     true,
     '尚未到上限，应继续 drain',
   )
   assert.equal(
-    shouldDrainTerminal({ sawText: false, finalResult: '', terminalDrains: MAX_TERMINAL_DRAINS, now: T0, deadline: DEADLINE }),
+    shouldDrainTerminal({ sawText: false, terminalDrains: MAX_TERMINAL_DRAINS, now: T0, hardDeadline: HARD }),
     false,
     '到上限必须 finalize，不能无限 drain',
   )
 })
 
-test('past the turn deadline → finalize regardless', () => {
+test('past the HARD deadline → finalize regardless (soft deadline no longer starves the drain)', () => {
+  // A turn that hits terminal at 213s used to get only 27s of drain budget against
+  // the 240s soft deadline; drains are bounded by count anyway, so the hard cap is
+  // the right time bound.
   assert.equal(
-    shouldDrainTerminal({ sawText: false, finalResult: '', terminalDrains: 0, now: DEADLINE + 1, deadline: DEADLINE }),
+    shouldDrainTerminal({ sawText: false, terminalDrains: 0, now: DEADLINE + 1, hardDeadline: HARD }),
+    true,
+    '过了软 deadline 仍可 drain（次数上限兜底）',
+  )
+  assert.equal(
+    shouldDrainTerminal({ sawText: false, terminalDrains: 0, now: HARD + 1, hardDeadline: HARD }),
     false,
   )
 })
-
-const HARD = T0 + 900_000
 
 test('THE BUG: one transient window error must NOT finalize the turn → retry', () => {
   // A single relay/D1 hiccup used to finalize 'failed' immediately: the browser got
@@ -104,8 +106,8 @@ test('hard deadline caps even an alive relay', () => {
 test('drain converges: a drained window that finally captures text stops the loop', () => {
   // window N: terminal, nothing yet → drain
   let drains = 0
-  assert.equal(shouldDrainTerminal({ sawText: false, finalResult: '', terminalDrains: drains, now: T0, deadline: DEADLINE }), true)
+  assert.equal(shouldDrainTerminal({ sawText: false, terminalDrains: drains, now: T0, hardDeadline: HARD }), true)
   drains++
   // window N+1: reconnect replayed the tail, text now streamed → finalize
-  assert.equal(shouldDrainTerminal({ sawText: true, finalResult: '', terminalDrains: drains, now: T0, deadline: DEADLINE }), false)
+  assert.equal(shouldDrainTerminal({ sawText: true, terminalDrains: drains, now: T0, hardDeadline: HARD }), false)
 })

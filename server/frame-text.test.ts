@@ -6,7 +6,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { isAssistantTextFrame, framesHaveAssistantText, resultFrameText, unrenderedResultTexts } from './frame-text.ts'
+import { isAssistantTextFrame, framesHaveAnswerText, resultFrameText, unrenderedResultTexts } from './frame-text.ts'
 
 const assistantText = (text: string) => ({ type: 'assistant', message: { content: [{ type: 'text', text }] } })
 const resultFrame = (text: string) => ({ __relay: 'result', payload: { result: text } })
@@ -38,9 +38,38 @@ test('malformed frames never throw, just return false', () => {
 test('THE TRUNCATION CASE: a finalized turn with only delegation frames reads as empty → triggers self-heal', () => {
   // What the store held for the stuck "2nd message": delegation + tool_result, no text.
   const truncated = [{ seq: 1, data: { __rebyte_run: 'r' } }, { seq: 2, data: toolUse }, { seq: 3, data: toolResult }]
-  assert.equal(framesHaveAssistantText(truncated), false)
+  assert.equal(framesHaveAnswerText(truncated), false)
   // After backfill, the recovered text frame makes it whole.
-  assert.equal(framesHaveAssistantText([...truncated, { seq: 4, data: assistantText('以下是验价结果…') }]), true)
+  assert.equal(framesHaveAnswerText([...truncated, { seq: 4, data: assistantText('以下是验价结果…') }]), true)
+})
+
+test('THE ACK CASE (task 77904658): opening ack then delegation, tail lost → reads as no answer', () => {
+  // The finalize race dropped everything after the tool_use. The old any-text-anywhere
+  // check saw the ack and called the turn whole — refresh could never recover it.
+  const lost = [
+    { seq: 1, data: { __rebyte_run: 'r' } },
+    { seq: 2, data: assistantText('好的，这是机票搜索请求，我马上委派沙箱里的 Claude Code 来处理。') },
+    { seq: 3, data: toolUse },
+  ]
+  assert.equal(framesHaveAnswerText(lost), false)
+  // Backfilled answer after the tool_use → whole (and future loads no-op).
+  assert.equal(framesHaveAnswerText([...lost, { seq: 4, data: assistantText('以下是3人出行的汇总……') }]), true)
+})
+
+test('a trailing tool_result after the answer does not un-answer the turn (late sub-session replay)', () => {
+  const frames = [
+    { seq: 1, data: toolUse },
+    { seq: 2, data: toolResult },
+    { seq: 3, data: assistantText('汇总如下……') },
+    { seq: 4, data: toolResult }, // catchUpSubPrompts can append after the manager text
+  ]
+  assert.equal(framesHaveAnswerText(frames), true)
+})
+
+test('a turn with no tool calls just needs any text', () => {
+  assert.equal(framesHaveAnswerText([{ seq: 1, data: assistantText('您好！请提供出行日期…') }]), true)
+  assert.equal(framesHaveAnswerText([{ seq: 1, data: { __rebyte_run: 'r' } }]), false)
+  assert.equal(framesHaveAnswerText([]), false)
 })
 
 test('resultFrameText extracts the agent text from a __relay:result frame', () => {
@@ -63,8 +92,9 @@ test('THE CZ8882 CASE: answer present on result channel but unrendered → self-
     { seq: 5, data: resultFrame(ack) }, // echo again
     { seq: 6, data: resultFrame(table) }, // the real answer — unrendered
   ]
-  // It HAS assistant text (the ack), so the old guard skipped it — but the answer is missing.
-  assert.equal(framesHaveAssistantText(frames), true)
+  // Only the ack landed before the tool_use → correctly reads as answer-missing now
+  // (the old any-text-anywhere guard said true here and relied on case 1 alone).
+  assert.equal(framesHaveAnswerText(frames), false)
   // The detector finds exactly the table (ack echoes deduped against the rendered ack).
   assert.deepEqual(unrenderedResultTexts(frames), [table])
   // After backfilling it, nothing is left pending (idempotent on the next load).

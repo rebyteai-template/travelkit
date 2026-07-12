@@ -29,9 +29,28 @@ export function isAssistantTextFrame(data: unknown): boolean {
   return assistantFrameText(data) !== null
 }
 
-/** True if any frame is a non-empty assistant text frame. */
-export function framesHaveAssistantText(frames: Frame[]): boolean {
-  return frames.some((f) => isAssistantTextFrame(f.data))
+/** A stored assistant tool_use frame ({type:'assistant', content:[{type:'tool_use'}]}). */
+function isToolUseFrame(data: unknown): boolean {
+  if (!isObj(data) || data.type !== 'assistant') return false
+  const content = isObj(data.message) ? (data.message as { content?: unknown }).content : undefined
+  if (!Array.isArray(content)) return false
+  return content.some((c) => isObj(c) && c.type === 'tool_use')
+}
+
+/** Did the turn's ANSWER land — assistant text streamed AFTER its last tool_use?
+ *  Any-text-anywhere is not enough: a delegated turn opens with an ack ("好的，我马上
+ *  委派…"), then the finalize race can drop everything after the tool_use. That ack
+ *  made the old check read the turn as whole, so the self-heal never engaged and a
+ *  refresh couldn't recover the lost answer (prod 2026-07-12, task 77904658). A
+ *  tool_RESULT after the answer does not un-answer it (late sub-session replays
+ *  append trailing tool_results) — only a new tool_use does. */
+export function framesHaveAnswerText(frames: Frame[]): boolean {
+  let sawAnswer = false
+  for (const f of frames) {
+    if (isToolUseFrame(f.data)) sawAnswer = false
+    else if (isAssistantTextFrame(f.data)) sawAnswer = true
+  }
+  return sawAnswer
 }
 
 /** The agent's text carried by a relay `result` event (stored as `__relay:"result"`).
