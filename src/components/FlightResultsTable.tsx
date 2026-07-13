@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { CompactJourney, CompactOption, CompactSegment } from '../frames.ts'
+import type { CompactJourney, CompactOption, CompactPrice, CompactSegment } from '../frames.ts'
 import { stopsLabel } from '../booking.ts'
 
 /** Shown whenever upstream data is missing. The table never substitutes data
@@ -20,6 +20,53 @@ function money(amount: number, currency: string): string {
 
 function optionPrice(o: CompactOption): string {
   return money(o.price.amount, o.price.currency)
+}
+
+function passengerCount(price: CompactPrice): number {
+  return Object.values(price.perType ?? {}).reduce((sum, item) =>
+    sum + (typeof item.num === 'number' && Number.isFinite(item.num) && item.num > 0 ? item.num : 0), 0)
+}
+
+function passengerTypeLabel(type: string): string {
+  if (type === 'adult') return '成人'
+  if (type === 'child') return '儿童'
+  if (type === 'infant') return '婴儿'
+  return type
+}
+
+function unitPrice(price: CompactPrice): string | null {
+  const entries = Object.entries(price.perType ?? {})
+    .filter(([, item]) => typeof item.unitTotal === 'number' && Number.isFinite(item.unitTotal) && item.unitTotal > 0)
+  if (!entries.length) return null
+  return entries.map(([type, item]) => `${passengerTypeLabel(type)} ${money(item.unitTotal ?? 0, price.currency)}/人`).join('；')
+}
+
+function partyPrice(price: CompactPrice): string {
+  const display = money(price.amount, price.currency)
+  const count = passengerCount(price)
+  if (count > 1) return `${display}（${count}人）`
+  return count === 1 ? display : `${display}（总价）`
+}
+
+function displayPrice(price: CompactPrice): string {
+  return passengerCount(price) > 1 ? unitPrice(price) ?? partyPrice(price) : money(price.amount, price.currency)
+}
+
+function hasUnitPrice(price: CompactPrice): boolean {
+  return unitPrice(price) !== null
+}
+
+function hasCompleteUnitPrices(option: CompactOption): boolean {
+  const prices = option.blocks?.length && option.blocks.length > 1
+    ? option.blocks.map((block) => block.price)
+    : [option.price]
+  return prices.every((price) => passengerCount(price) <= 1 || hasUnitPrice(price))
+}
+
+function sharedPassengerCount(options: CompactOption[]): number | null {
+  const counts = options.map((option) => passengerCount(option.price))
+  if (!counts.length || counts.some((count) => count <= 0)) return null
+  return counts.every((count) => count === counts[0]) ? counts[0] ?? null : null
 }
 
 function airportName(code: string, name?: string, terminal?: string): string {
@@ -64,7 +111,9 @@ function optionSummary(o: CompactOption): string {
   const firstJourney = o.journeys[0]
   const firstSegment = firstJourney?.segments[0]
   if (!firstJourney || !firstSegment) return `方案 ${o.displayNumber ?? o.optionNumber}`
-  return `方案 ${o.displayNumber ?? o.optionNumber} · ${firstSegment.flightNo} · ${timeCell(firstJourney, firstSegment)} · ${optionPrice(o)}`
+  const unit = passengerCount(o.price) > 1 ? unitPrice(o.price) : null
+  const price = unit ? `${unit} · ${partyPrice(o.price)}` : optionPrice(o)
+  return `方案 ${o.displayNumber ?? o.optionNumber} · ${firstSegment.flightNo} · ${timeCell(firstJourney, firstSegment)} · ${price}`
 }
 
 function passengerCountForPrompt(o: CompactOption): string {
@@ -179,7 +228,7 @@ function groupBySection(options: CompactOption[]): FlightOptionGroup[] {
 export function buildRows(options: CompactOption[], recommendedOptions: CompactOption[]): FlightTableRow[] {
   return options.flatMap((o) => {
     let rowIndex = 0
-    const totalPrice = optionPrice(o)
+    const totalPrice = partyPrice(o.price)
     // A combo is several separately-booked tickets: price/source per ticket
     // (blocks[j.blockIndex], on the ticket's first row), total on the first row.
     const blocks = o.blocks ?? []
@@ -213,8 +262,8 @@ export function buildRows(options: CompactOption[], recommendedOptions: CompactO
           cabin: s.cabin || NO_DATA,
           baggage: s.checkedBaggage || NO_DATA,
           price: isCombo
-            ? (blockFirst ? (block ? money(block.price.amount, block.price.currency) : NO_DATA) : '')
-            : (first ? totalPrice : ''),
+            ? (blockFirst ? (block ? displayPrice(block.price) : NO_DATA) : '')
+            : (first ? displayPrice(o.price) : ''),
           total: first ? totalPrice : '',
           source: isCombo
             ? (blockFirst ? (block?.source || NO_DATA) : '')
@@ -254,9 +303,23 @@ export function FlightResultsTable({
   busy: boolean
 }) {
   const [copied, setCopied] = useState<string | null>(null)
-  // 总价 column only makes sense when some option is a combo (per-ticket prices
-  // in 价格 + combined total in 总价); otherwise 价格 already is the full price.
-  const showTotal = useMemo(() => options.some((o) => (o.blocks?.length ?? 0) > 1), [options])
+  // A total column makes the price scope explicit for split tickets and for
+  // parties. When an upstream fallback lacks a passenger split, keep the party
+  // total visible instead of guessing a per-person amount.
+  const showTotal = useMemo(
+    () => options.some((o) => (o.blocks?.length ?? 0) > 1 || passengerCount(o.price) > 1),
+    [options],
+  )
+  const priceHeader = useMemo(
+    () => options.every(hasCompleteUnitPrices) && options.some((o) => passengerCount(o.price) > 1)
+      ? '单价（含税/人）'
+      : '价格（含税）',
+    [options],
+  )
+  const totalHeader = useMemo(() => {
+    const count = sharedPassengerCount(options)
+    return count ? `${count}人总价` : '总价（含税）'
+  }, [options])
   const groups = useMemo(() => groupBySection(options), [options])
   // The skill tags its own picks (最低价 / 直飞最快 / 综合推荐); highlight those.
   const recommendedOptions = useMemo(
@@ -305,8 +368,8 @@ export function FlightResultsTable({
                   <th>飞行时长</th>
                   <th>舱位</th>
                   <th>行李</th>
-                  <th>价格</th>
-                  {showTotal ? <th>总价</th> : null}
+                  <th>{priceHeader}</th>
+                  {showTotal ? <th>{totalHeader}</th> : null}
                   <th>供应渠道</th>
                 </tr>
               </thead>

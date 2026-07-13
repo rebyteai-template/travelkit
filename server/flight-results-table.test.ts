@@ -106,18 +106,18 @@ test('combo rows show each ticket price/source on its block first row and the su
     ...comboOption,
     journeys: comboOption.journeys.map((j, i) => ({ ...j, blockIndex: i })),
     blocks: [
-      { price: { amount: 20000, currency: 'CNY' }, source: '美亚' },
-      { price: { amount: 1050, currency: 'CNY' }, source: 'yinling' },
-      { price: { amount: 2658, currency: 'CNY' }, source: 'yinling' },
-      { price: { amount: 22363, currency: 'CNY' } },
+      { price: { amount: 20001, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 6667, subtotal: 20001 } } }, source: '美亚' },
+      { price: { amount: 1050, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 350, subtotal: 1050 } } }, source: 'yinling' },
+      { price: { amount: 2658, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 886, subtotal: 2658 } } }, source: 'yinling' },
+      { price: { amount: 22362, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 7454, subtotal: 22362 } } } },
     ],
   }
 
   const rows = buildRows([combo], [])
   assert.equal(rows.length, 4)
-  assert.deepEqual(rows.map((r) => r.price), ['¥20,000', '¥1,050', '¥2,658', '¥22,363'])
+  assert.deepEqual(rows.map((r) => r.price), ['成人 ¥6,667/人', '成人 ¥350/人', '成人 ¥886/人', '成人 ¥7,454/人'])
   assert.deepEqual(rows.map((r) => r.source), ['美亚', 'yinling', 'yinling', '--'])
-  assert.deepEqual(rows.map((r) => r.total), ['¥46,071', '', '', ''])
+  assert.deepEqual(rows.map((r) => r.total), ['¥46,071（3人）', '', '', ''])
 })
 
 test('a jointly-booked block (two journeys, one ticket) prices only its first row', () => {
@@ -129,21 +129,21 @@ test('a jointly-booked block (two journeys, one ticket) prices only its first ro
       { ...comboLeg('DL1194', 'LAX', 'SLC', '2026-09-29'), blockIndex: 1 },
     ],
     blocks: [
-      { price: { amount: 45000, currency: 'CNY' }, source: '美亚' },
-      { price: { amount: 1071, currency: 'CNY' }, source: 'yinling' },
+      { price: { amount: 45000, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 15000, subtotal: 45000 } } }, source: '美亚' },
+      { price: { amount: 1071, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 357, subtotal: 1071 } } }, source: 'yinling' },
     ],
   }
 
   const rows = buildRows([combo], [])
-  assert.deepEqual(rows.map((r) => r.price), ['¥45,000', '', '¥1,071'])
+  assert.deepEqual(rows.map((r) => r.price), ['成人 ¥15,000/人', '', '成人 ¥357/人'])
   assert.deepEqual(rows.map((r) => r.source), ['美亚', '', 'yinling'])
-  assert.deepEqual(rows.map((r) => r.total), ['¥46,071', '', ''])
+  assert.deepEqual(rows.map((r) => r.total), ['¥46,071（3人）', '', ''])
 })
 
-test('a single-ticket option keeps its price on the first row and no per-block split', () => {
+test('a single-ticket option shows the unit price and party total', () => {
   const rows = buildRows([option], [])
   assert.equal(rows.length, 1)
-  assert.equal(rows[0]?.price, '¥1,280')
-  assert.equal(rows[0]?.total, '¥1,280')
+  assert.equal(rows[0]?.price, '成人 ¥640/人')
+  assert.equal(rows[0]?.total, '¥1,280（2人）')
   assert.equal(rows[0]?.source, '--')
 })

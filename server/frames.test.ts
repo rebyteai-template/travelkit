@@ -89,21 +89,22 @@ test('derive parses combo blocks (per-ticket price/source) and journey blockInde
   const compact = compactSearch(1, 'MU0583', 46071)
   const combo = compact.displayOptions[0] as Record<string, unknown>
   combo.solutionId = 'combo:abc123'
+  combo.price = { amount: 46071, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 15357, subtotal: 46071 } } }
   combo.journeys = [
     { ...(combo.journeys as Record<string, unknown>[])[0], blockIndex: 0 },
     { ...(combo.journeys as Record<string, unknown>[])[0], blockIndex: 1 },
   ]
   combo.blocks = [
-    { price: { amount: 45021, currency: 'CNY' }, source: '美亚' },
-    { price: { amount: 1050, currency: 'CNY' } },
+    { price: { amount: 45021, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 15007, subtotal: 45021 } } }, source: '美亚' },
+    { price: { amount: 1050, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 350, subtotal: 1050 } } } },
   ]
 
   const view = derive([promptWithToolResult(JSON.stringify(compact))])
   const option = view.search?.options[0]
   assert.deepEqual(option?.journeys.map((j) => j.blockIndex), [0, 1])
   assert.deepEqual(option?.blocks, [
-    { price: { amount: 45021, currency: 'CNY' }, source: '美亚' },
-    { price: { amount: 1050, currency: 'CNY' }, source: undefined },
+    { price: { amount: 45021, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 15007, subtotal: 45021 } } }, source: '美亚' },
+    { price: { amount: 1050, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 350, subtotal: 1050 } } }, source: undefined },
   ])
 })
 

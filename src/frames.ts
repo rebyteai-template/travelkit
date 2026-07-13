@@ -50,6 +50,11 @@ export interface CompactJourney {
   blockIndex?: number      // bookable-unit index: which separately-booked ticket this journey belongs to
   segments: CompactSegment[]
 }
+export interface CompactPrice {
+  amount: number
+  currency: string
+  perType?: Record<string, { num?: number; unitTotal?: number; subtotal?: number }>
+}
 export interface CompactOption {
   optionNumber: number     // skill-visible option number; UI may displayNumber after merging
   solutionId?: string      // search result handle used for exact verify; orderKey remains agent-side
@@ -64,14 +69,10 @@ export interface CompactOption {
   cabin: string
   baggage?: string
   hasCheckedBaggage: boolean
-  price: {
-    amount: number
-    currency: string
-    perType?: Record<string, { num?: number; unitTotal?: number; subtotal?: number }>
-  }
+  price: CompactPrice
   /** Combos only: each separately-booked ticket's own price + supply channel,
    *  indexed by journeys[].blockIndex. option.price is their sum. */
-  blocks?: Array<{ price: { amount: number; currency: string }; source?: string }>
+  blocks?: Array<{ price: CompactPrice; source?: string }>
   source?: string
   copyText?: string
   journeys: CompactJourney[]
@@ -203,18 +204,27 @@ function textFromContent(content: unknown): string {
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 
-function parseCompactPricePerType(raw: unknown): CompactOption['price']['perType'] | undefined {
+function parseCompactPricePerType(raw: unknown): CompactPrice['perType'] | undefined {
   if (!isObj(raw)) return undefined
-  const perType: NonNullable<CompactOption['price']['perType']> = {}
+  const perType: NonNullable<CompactPrice['perType']> = {}
   for (const [passengerType, value] of Object.entries(raw)) {
     if (!isObj(value)) continue
-    const line: NonNullable<CompactOption['price']['perType']>[string] = {}
+    const line: NonNullable<CompactPrice['perType']>[string] = {}
     if (typeof value.num === 'number' && Number.isFinite(value.num)) line.num = num(value.num)
     if (typeof value.unitTotal === 'number' && Number.isFinite(value.unitTotal)) line.unitTotal = num(value.unitTotal)
     if (typeof value.subtotal === 'number' && Number.isFinite(value.subtotal)) line.subtotal = num(value.subtotal)
     perType[passengerType] = line
   }
   return Object.keys(perType).length ? perType : undefined
+}
+
+function parseCompactPrice(raw: unknown): CompactPrice {
+  const price = isObj(raw) ? raw : {}
+  return {
+    amount: num(price.amount),
+    currency: str(price.currency),
+    perType: parseCompactPricePerType(price.perType),
+  }
 }
 
 export function derive(prompts: PromptContent[]): DerivedView {
@@ -467,15 +477,13 @@ function toCompactOption(raw: unknown): CompactOption | null {
   }
   if (!journeys.length) return null
 
-  const price = isObj(raw.price) ? raw.price : {}
-  const perType = parseCompactPricePerType(price.perType)
+  const price = parseCompactPrice(raw.price)
   // Verbatim from the skill — no recomputed labels, no defaulted currency, no
   // synthesized display strings. Missing data stays missing; the table shows "--".
   const blocks: NonNullable<CompactOption['blocks']> = []
   for (const b of Array.isArray(raw.blocks) ? raw.blocks : []) {
     if (!isObj(b)) continue
-    const bp = isObj(b.price) ? b.price : {}
-    blocks.push({ price: { amount: num(bp.amount), currency: str(bp.currency) }, source: str(b.source) || undefined })
+    blocks.push({ price: parseCompactPrice(b.price), source: str(b.source) || undefined })
   }
   return {
     optionNumber,
@@ -488,7 +496,7 @@ function toCompactOption(raw: unknown): CompactOption | null {
     cabin: str(raw.cabin),
     baggage: str(raw.baggage) || undefined,
     hasCheckedBaggage: raw.hasCheckedBaggage === true,
-    price: { amount: num(price.amount), currency: str(price.currency), perType },
+    price,
     blocks: blocks.length > 1 ? blocks : undefined,
     source: str(raw.source) || undefined,
     copyText: str(raw.copyText) || undefined,
