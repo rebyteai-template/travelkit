@@ -24,6 +24,9 @@ data/
 # Per-IDE generated skill mirror
 .agents/
 
+# Playwright CLI local state and artifacts
+.playwright-cli/
+
 # wrangler local secrets
 .dev.vars
 
