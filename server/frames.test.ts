@@ -35,6 +35,8 @@ function compactSearch(optionNumber: number, flightNo: string, amount: number) {
         optionNumber,
         solutionId: `sol-${flightNo.toLowerCase()}`,
         itineraryType: 'oneway',
+        fareSource: 'oneway',
+        ticketGroups: [{ index: 0, fareSource: 'oneway', journeyIndexes: [0], price: { amount, currency: 'CNY' } }],
         journeyType: '直飞',
         duration: '2h',
         durationMinutes: 120,
@@ -75,6 +77,13 @@ function compactSearch(optionNumber: number, flightNo: string, amount: number) {
       },
     ],
     displayMapping: { 1: {} },
+    searchCoverage: {
+      status: 'complete',
+      required: ['oneway'],
+      attempted: ['oneway'],
+      completed: ['oneway'],
+      missing: [],
+    },
   }
 }
 
@@ -90,6 +99,13 @@ test('derive parses compact search JSON before trailing shell output', () => {
   assert.equal(view.search?.options[0]?.solutionId, 'sol-mu5186')
   assert.equal(view.search?.options[0]?.priceBasis, 'verified')
   assert.equal(view.search?.options[0]?.itineraryType, 'oneway')
+  assert.equal(view.search?.options[0]?.fareSource, 'oneway')
+  assert.deepEqual(view.search?.options[0]?.ticketGroups?.map((group) => ({
+    fareSource: group.fareSource,
+    journeyIndexes: group.journeyIndexes,
+  })), [{ fareSource: 'oneway', journeyIndexes: [0] }])
+  assert.equal(view.search?.coverage?.status, 'complete')
+  assert.deepEqual(view.chat.at(-1)?.coverage?.completed, ['oneway'])
   assert.equal(view.search?.options[0]?.journeys[0]?.role, 'oneway')
   assert.equal(view.search?.options[0]?.journeys[0]?.ticketGroupIndex, 0)
   assert.deepEqual(view.search?.options[0]?.capabilities, { canCopy: false, canBook: false })

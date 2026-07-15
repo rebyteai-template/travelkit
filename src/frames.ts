@@ -37,6 +37,8 @@ export interface CompactSegment {
 }
 export type ItineraryType = 'oneway' | 'roundtrip' | 'multi_city'
 export type JourneyRole = 'oneway' | 'outbound' | 'inbound' | 'leg'
+export type FareSource = 'oneway' | 'roundtrip' | 'joint'
+export type OptionFareSource = FareSource | 'mixed'
 export interface CompactJourney {
   role?: JourneyRole
   ticketGroupIndex?: number
@@ -58,6 +60,13 @@ export interface CompactPrice {
   currency: string
   perType?: Record<string, { num?: number; unitTotal?: number; subtotal?: number }>
 }
+export interface CompactTicketGroup {
+  index: number
+  fareSource: FareSource
+  journeyIndexes: number[]
+  price?: CompactPrice
+  source?: string
+}
 export interface CompactOption {
   optionNumber: number     // skill-visible option number; UI may displayNumber after merging
   solutionId?: string      // search result handle used for exact verify; orderKey remains agent-side
@@ -69,6 +78,8 @@ export interface CompactOption {
   verifiedAt?: string
   priceBasis?: 'search' | 'pricing' | 'verified'
   itineraryType?: ItineraryType
+  fareSource?: OptionFareSource
+  ticketGroups?: CompactTicketGroup[]
   journeyType: string      // "单程直飞" | "单程中转N次" | "多程"
   duration: string         // "2h10m"
   durationMinutes: number
@@ -86,6 +97,14 @@ export interface CompactOption {
 export interface SearchResult {
   options: CompactOption[]
   totalCount?: number       // unique candidates matched (skill curated down to options[])
+  coverage?: SearchCoverage
+}
+export interface SearchCoverage {
+  status: 'complete' | 'partial' | 'failed'
+  required: FareSource[]
+  attempted: FareSource[]
+  completed: FareSource[]
+  missing: FareSource[]
 }
 
 // ── verify (simplifly-flyai-skill CLI JSON) ──────────
@@ -177,6 +196,7 @@ export interface ChatBubble {
    *  table stripped from `text`. Each search keeps its own bubble → full history. */
   cards?: CompactOption[]
   totalCount?: number
+  coverage?: SearchCoverage
   /** Inline verify (fare) card attached to the verify turn — same chat-stream treatment as
    *  `cards`. The latest verify's fare is the SAME object as `DerivedView.fare`, so the panel
    *  shows the "继续预订" CTA only on that one (`b.fare === view.fare`). */
@@ -362,6 +382,7 @@ export function derive(prompts: PromptContent[]): DerivedView {
           text: '',
           cards: searchResult.options,
           totalCount: searchResult.totalCount,
+          coverage: searchResult.coverage,
           ts: replyTs,
         })
       })
@@ -456,7 +477,19 @@ function parseCompactSearch(json: Record<string, unknown>): SearchResult | null 
     : sr && typeof sr.uniqueCandidateCount === 'number'
       ? sr.uniqueCandidateCount
       : undefined
-  return { options, totalCount }
+  return { options, totalCount, coverage: parseSearchCoverage(json.searchCoverage) }
+}
+
+function parseSearchCoverage(raw: unknown): SearchCoverage | undefined {
+  if (!isObj(raw) || (raw.status !== 'complete' && raw.status !== 'partial' && raw.status !== 'failed')) return undefined
+  const fareSources = (value: unknown): FareSource[] => Array.isArray(value) ? value.filter(isFareSource) : []
+  return {
+    status: raw.status,
+    required: fareSources(raw.required),
+    attempted: fareSources(raw.attempted),
+    completed: fareSources(raw.completed),
+    missing: fareSources(raw.missing),
+  }
 }
 
 function toCompactOption(raw: unknown): CompactOption | null {
@@ -519,6 +552,20 @@ function toCompactOption(raw: unknown): CompactOption | null {
     if (!isObj(b)) continue
     blocks.push({ price: parseCompactPrice(b.price), source: str(b.source) || undefined })
   }
+  const ticketGroups: NonNullable<CompactOption['ticketGroups']> = []
+  for (const group of Array.isArray(raw.ticketGroups) ? raw.ticketGroups : []) {
+    if (!isObj(group) || !isFareSource(group.fareSource)) continue
+    const journeyIndexes = Array.isArray(group.journeyIndexes)
+      ? group.journeyIndexes.filter((value): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0)
+      : []
+    ticketGroups.push({
+      index: num(group.index),
+      fareSource: group.fareSource,
+      journeyIndexes,
+      price: isObj(group.price) ? parseCompactPrice(group.price) : undefined,
+      source: str(group.source) || undefined,
+    })
+  }
   return {
     optionNumber,
     solutionId: str(raw.solutionId) || undefined,
@@ -529,6 +576,8 @@ function toCompactOption(raw: unknown): CompactOption | null {
       ? raw.priceBasis
       : undefined,
     itineraryType: isItineraryType(raw.itineraryType) ? raw.itineraryType : undefined,
+    fareSource: isOptionFareSource(raw.fareSource) ? raw.fareSource : undefined,
+    ticketGroups: ticketGroups.length ? ticketGroups : undefined,
     journeyType: str(raw.journeyType),
     duration: str(raw.duration),
     durationMinutes: num(raw.durationMinutes),
@@ -548,6 +597,14 @@ const VERIFY_RESULT_TYPE = 'flight.verify'
 
 function isItineraryType(value: unknown): value is ItineraryType {
   return value === 'oneway' || value === 'roundtrip' || value === 'multi_city'
+}
+
+function isFareSource(value: unknown): value is FareSource {
+  return value === 'oneway' || value === 'roundtrip' || value === 'joint'
+}
+
+function isOptionFareSource(value: unknown): value is OptionFareSource {
+  return isFareSource(value) || value === 'mixed'
 }
 
 function isJourneyRole(value: unknown): value is JourneyRole {

@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { CompactJourney, CompactOption, CompactPrice, CompactSegment } from '../frames.ts'
+import type { CompactJourney, CompactOption, CompactPrice, CompactSegment, FareSource, SearchCoverage } from '../frames.ts'
 import { flightRouteCell } from '../lib/flight-display.ts'
 import { stopsLabel } from '../booking.ts'
 
@@ -178,12 +178,43 @@ function journeyLabel(o: CompactOption, j: CompactJourney, index: number): strin
   return stops
 }
 
+const shortFareSourceLabel: Record<FareSource, string> = {
+  roundtrip: '往返',
+  joint: '联合',
+  oneway: '单程',
+}
+const fareSourceOrder: Record<FareSource, number> = { roundtrip: 0, joint: 1, oneway: 2 }
+
+export function fareSourceLabel(option: CompactOption): string {
+  if (!option.fareSource) return NO_DATA
+  const ticketCount = option.ticketGroups?.length ?? 1
+  if (option.fareSource === 'roundtrip') return `往返联查 · ${ticketCount}票`
+  if (option.fareSource === 'joint') return `联合查询 · ${ticketCount}票`
+  if (option.fareSource === 'oneway') return ticketCount > 1 ? `单程组合 · ${ticketCount}票` : '单程 · 1票'
+  const sources = [...new Set((option.ticketGroups ?? []).map((group) => shortFareSourceLabel[group.fareSource]))]
+  return sources.length ? `${sources.join(' + ')} · ${ticketCount}票` : NO_DATA
+}
+
+export function searchCoverageLabel(coverage: SearchCoverage): string {
+  const names = (sources: FareSource[]) => [...sources]
+    .sort((left, right) => fareSourceOrder[left] - fareSourceOrder[right])
+    .map((source) => shortFareSourceLabel[source])
+    .join('、')
+  if (coverage.status === 'complete') {
+    return coverage.completed.length > 1 ? `已比较：${names(coverage.completed)}` : `已查询：${names(coverage.completed)}`
+  }
+  const completed = coverage.completed.length ? `已完成${names(coverage.completed)}查询` : '尚无查询完成'
+  const missing = coverage.missing.length ? `未完成${names(coverage.missing)}比价` : '查询覆盖不完整'
+  return `${completed}；${missing}`
+}
+
 interface FlightTableRow {
   key: string
   option: CompactOption
   optionKey: string
   optionNumber: number | ''
   journey: string
+  fareSource: string
   flightNo: string
   date: string
   route: string
@@ -255,6 +286,7 @@ export function buildRows(options: CompactOption[], recommendedOptions: CompactO
           optionKey,
           optionNumber: first ? (o.displayNumber ?? o.optionNumber) : '',
           journey: journeyFirst ? journeyLabel(o, j, ji) : '',
+          fareSource: first ? fareSourceLabel(o) : '',
           flightNo: s.flightNo,
           date: dateCn(s.departureDate),
           route: flightRouteCell(s),
@@ -282,11 +314,13 @@ export function buildRows(options: CompactOption[], recommendedOptions: CompactO
 export function FlightResultsTable({
   options,
   totalCount,
+  coverage,
   onBook,
   busy,
 }: {
   options: CompactOption[]
   totalCount?: number
+  coverage?: SearchCoverage
   onBook: (prompt: string) => void
   busy: boolean
 }) {
@@ -323,6 +357,11 @@ export function FlightResultsTable({
         <h2>航班方案</h2>
         <span className="muted">{totalCount ? `共匹配 ${totalCount} 条，` : ''}显示 {options.length} 个方案</span>
       </div>
+      {coverage ? (
+        <div className={`flight-search-coverage ${coverage.status === 'complete' ? '' : 'is-warning'}`.trim()}>
+          {searchCoverageLabel(coverage)}
+        </div>
+      ) : null}
       {recommendedOptions.length ? (
         <div className="flight-recommend">
           <span className="option-badge">推荐</span>
@@ -339,6 +378,7 @@ export function FlightResultsTable({
                   <th>方案</th>
                   <th>操作</th>
                   <th>航程</th>
+                  <th>票价来源</th>
                   <th>航班号</th>
                   <th>日期</th>
                   <th>航段</th>
@@ -370,6 +410,7 @@ export function FlightResultsTable({
                       ) : null}
                     </td>
                     <td>{row.journey}</td>
+                    <td>{row.fareSource}</td>
                     <td className="mono">{row.flightNo}</td>
                     <td>{row.date}</td>
                     <td className="route-cell">{row.route}</td>

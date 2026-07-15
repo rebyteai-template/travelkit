@@ -336,6 +336,15 @@ tr.cheapest td { background: var(--good-soft); }
   border-radius: var(--radius-sm); background: var(--good-soft); color: var(--text);
   font-size: 13px; line-height: 1.4;
 }
+.flight-search-coverage {
+  display: inline-flex; align-items: center; width: fit-content;
+  margin: -2px 0 10px; padding: 7px 10px; border: 1px solid var(--good-border);
+  border-radius: var(--radius-sm); background: var(--good-soft); color: var(--text);
+  font-size: 13px; line-height: 1.4;
+}
+.flight-search-coverage.is-warning {
+  border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn);
+}
 .flight-actions { display: inline-flex; gap: 6px; align-items: center; }
 .flight-actions button { padding: 4px 9px; }
 .fare-table-block .results-head { align-items: center; }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { buildRows, buildVerifyPrompt, optionActionLabel } from '../src/components/FlightResultsTable.tsx'
+import { buildRows, buildVerifyPrompt, fareSourceLabel, optionActionLabel, searchCoverageLabel } from '../src/components/FlightResultsTable.tsx'
 import type { CompactOption } from '../src/frames.ts'
 
 const option: CompactOption = {
@@ -90,6 +90,36 @@ test('search rows use explicit journey roles even when routes resemble a round t
   assert.deepEqual(buildRows([multiCity], []).map((row) => row.journey), ['第1程直飞', '第2程直飞'])
   assert.match(buildVerifyPrompt(multiCity), /第1程MU5186/)
   assert.match(buildVerifyPrompt(multiCity), /第2程MU5186/)
+})
+
+test('fare source labels distinguish route topology from ticket construction', () => {
+  assert.equal(fareSourceLabel({ ...option, itineraryType: 'roundtrip', fareSource: 'roundtrip', ticketGroups: [
+    { index: 0, fareSource: 'roundtrip', journeyIndexes: [0, 1] },
+  ] }), '往返联查 · 1票')
+  assert.equal(fareSourceLabel({ ...option, itineraryType: 'roundtrip', fareSource: 'oneway', ticketGroups: [
+    { index: 0, fareSource: 'oneway', journeyIndexes: [0] },
+    { index: 1, fareSource: 'oneway', journeyIndexes: [1] },
+  ] }), '单程组合 · 2票')
+  assert.equal(fareSourceLabel({ ...option, itineraryType: 'multi_city', fareSource: 'joint', ticketGroups: [
+    { index: 0, fareSource: 'joint', journeyIndexes: [0, 1] },
+  ] }), '联合查询 · 1票')
+})
+
+test('search coverage labels expose complete comparisons and missing recalls', () => {
+  assert.equal(searchCoverageLabel({
+    status: 'complete',
+    required: ['joint', 'oneway'],
+    attempted: ['oneway', 'joint'],
+    completed: ['oneway', 'joint'],
+    missing: [],
+  }), '已比较：联合、单程')
+  assert.equal(searchCoverageLabel({
+    status: 'partial',
+    required: ['roundtrip', 'oneway'],
+    attempted: ['oneway'],
+    completed: ['oneway'],
+    missing: ['roundtrip'],
+  }), '已完成单程查询；未完成往返比价')
 })
 
 const comboLeg = (flightNo: string, from: string, to: string, date: string) => ({
