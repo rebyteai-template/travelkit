@@ -10,6 +10,12 @@ export type DocType = 'idcard' | 'passport' | 'mtp' | 'ttp'
 export type PaxType = 'adult' | 'child' | 'infant'
 export type Gender = 'M' | 'F'
 
+export function isBookableFare(fare: FareVerification | null): fare is FareVerification {
+  if (fare?.canBook !== true || !fare.bookableUntil) return false
+  const validUntilMs = Date.parse(fare.bookableUntil)
+  return Number.isFinite(validUntilMs) && Date.now() <= validUntilMs
+}
+
 export const PAX_LABELS: Record<PaxType, string> = { adult: '成人', child: '儿童', infant: '婴儿' }
 export const GENDER_LABELS: Record<Gender, string> = { M: '男', F: '女' }
 

@@ -12,10 +12,8 @@
  */
 import type { Attachment, PromptContent } from './api.ts'
 
-// ── search (simplifly-flyai-skill compact JSON) ────────────────────────────────
-// The skill runs python scripts in the sandbox; the structured result we can parse
-// is the COMPACT JSON (flight_search_compact.py stdout), replayed into our frames from
-// the sub-session. `displayOptions` = the skill's curated recommendations, each fully
+// ── search (simplifly-flyai-skill CLI JSON) ────────────────────────────────
+// `displayOptions` contains the skill CLI's curated recommendations, each fully
 // structured, including solutionId for exact verify. `displayMapping` stays unused.
 // Cards mirror the skill's deterministic, already-filtered recommendations;
 // conversational refinement changes the constraints and asks the skill to run
@@ -37,7 +35,11 @@ export interface CompactSegment {
   cabin: string            // already display form, e.g. "经济舱 T舱"
   checkedBaggage?: string  // e.g. "1件，20kg/件"
 }
+export type ItineraryType = 'oneway' | 'roundtrip' | 'multi_city'
+export type JourneyRole = 'oneway' | 'outbound' | 'inbound' | 'leg'
 export interface CompactJourney {
+  role?: JourneyRole
+  ticketGroupIndex?: number
   origin: string
   destination: string
   departureDate: string
@@ -66,6 +68,7 @@ export interface CompactOption {
   tag?: string | null
   verifiedAt?: string
   priceBasis?: 'search' | 'pricing' | 'verified'
+  itineraryType?: ItineraryType
   journeyType: string      // "单程直飞" | "单程中转N次" | "多程"
   duration: string         // "2h10m"
   durationMinutes: number
@@ -77,7 +80,7 @@ export interface CompactOption {
    *  indexed by journeys[].blockIndex. option.price is their sum. */
   blocks?: Array<{ price: CompactPrice; source?: string }>
   source?: string
-  copyText?: string
+  capabilities?: { canCopy: boolean; canBook: boolean }
   journeys: CompactJourney[]
 }
 export interface SearchResult {
@@ -85,19 +88,19 @@ export interface SearchResult {
   totalCount?: number       // unique candidates matched (skill curated down to options[])
 }
 
-// ── verify (simplifly-flyai-skill compact: flight_verify_selected.py) ──────────
-// The verify result is COMPACT family too — a Bash result recognised by shape
-// (`selectedOption`+`verifiedOption`), NOT an MCP tool by name. `verifiedOption` re-states the
-// chosen option re-priced; `comparison` flags any change. orderKey stays
-// in the script's private fields and is never read here. FareVerification is the booking fare
-// model the write-flow consumes; compact fills what it has and leaves the rest empty (the card
-// hides those) rather than faking per-pax splits / structured rules / availability.
+// ── verify (simplifly-flyai-skill CLI JSON) ──────────
+// Versioned results are decoded by schema and result type. A shape-based legacy
+// adapter remains for saved history, but it never enables copy or booking actions.
 export interface FareLeg {
   flightNo: string
   departure: string
+  departureName?: string
+  departureTerminal?: string
   departureDate?: string
   departureTime?: string
   arrival: string
+  arrivalName?: string
+  arrivalTerminal?: string
   arrivalDate?: string
   arrivalTime?: string
   cabinClass: string
@@ -106,6 +109,8 @@ export interface FareLeg {
   availability?: number
 }
 export interface FareJourney {
+  role: JourneyRole
+  ticketGroupIndex: number
   origin: string
   destination: string
   departureDate?: string
@@ -128,13 +133,11 @@ export interface BaggageInfo {
   carryOn?: string
   checked?: string
 }
-export interface FareRuleInfo {
-  passengerType: string
-  canVoid: boolean
-  refundDescription?: string
-  changeDescription?: string
-}
 export interface FareVerification {
+  schemaVersion?: string
+  itineraryType?: ItineraryType
+  verifiedAt?: string
+  bookableUntil?: string
   currency: string
   total: number
   baseFare: number
@@ -143,8 +146,11 @@ export interface FareVerification {
   journeys: FareJourney[]
   passengers: FarePassengerLine[]
   baggage: BaggageInfo[]
-  fareRules: FareRuleInfo[]
+  fareRules: unknown
   minAvailability: number | null
+  source?: string
+  canBook: boolean
+  transitAdvisory?: unknown
   /** Compact verify gives the price split as a ready display string ("票价 ¥X + 税费 ¥Y"), not
    *  structured base/tax numbers — carried here so the card and order prompt show it verbatim. */
   priceBreakdownDisplay?: string
@@ -230,6 +236,12 @@ function parseCompactPrice(raw: unknown): CompactPrice {
   }
 }
 
+function parseCapabilities(raw: unknown): NonNullable<CompactOption['capabilities']> | null {
+  if (!isObj(raw)) return null
+  if (typeof raw.canCopy !== 'boolean' || typeof raw.canBook !== 'boolean') return null
+  return { canCopy: raw.canCopy === true, canBook: raw.canBook === true }
+}
+
 export function derive(prompts: PromptContent[]): DerivedView {
   const chat: ChatBubble[] = []
   let search: SearchResult | null = null
@@ -284,9 +296,8 @@ export function derive(prompts: PromptContent[]): DerivedView {
         }
       }
 
-      // user turn carrying a tool_result. Both card-driving shapes are simplifly-flyai-skill COMPACT
-      // family (Bash results — the skill talks direct HTTP, never MCP), so we route by SHAPE, not
-      // tool name: search by `displayOptions`+`displayMapping`, verify by `selectedOption`+`verifiedOption`.
+      // User turn carrying a simplifly-flyai-skill CLI result. Search remains
+      // shape-routed; current verify results have an explicit version and result type.
       if (data.type === 'user' && isObj(data.message)) {
         const content = (data.message as Record<string, unknown>).content
         if (!Array.isArray(content)) continue
@@ -314,11 +325,14 @@ export function derive(prompts: PromptContent[]): DerivedView {
             }
           }
 
-          // compact verify (fare card) — shape gate; on expiry/failure surface a notice and keep
-          // the prior stage so the user re-picks from the agent's refreshed (inline) search.
-          if (raw.includes('"verifiedOption"') && raw.includes('"selectedOption"')) {
+          // Every recognized verify attempt invalidates the prior actionable fare.
+          // Only a valid result restores verify stage; failures fall back to search/idle.
+          if (raw.includes('"flight.verify"') || (raw.includes('"verifiedOption"') && raw.includes('"selectedOption"'))) {
             const payload = parseToolJson(raw)
             if (!payload) continue
+            fare = null
+            pendingFare = null
+            stage = search ? 'search' : 'idle'
             if (payload.ok !== true) {
               notice = verifyErrorNotice(payload)
             } else {
@@ -326,6 +340,8 @@ export function derive(prompts: PromptContent[]): DerivedView {
               if (parsed) {
                 successfulVerifyCount += 1
                 fare = parsed; pendingFare = parsed; notice = null; stage = 'verify'
+              } else {
+                notice = '验价结果版本或必备字段不受支持，请重新验价。'
               }
             }
             continue
@@ -353,6 +369,11 @@ export function derive(prompts: PromptContent[]): DerivedView {
     // A turn that verifies several options is an agent comparison, not a single actionable fare.
     // Rendering the last successful verify as "the" fare card surfaces arbitrary alternatives
     // (for example WN3888) after the agent already summarized the real choice in text.
+    if (successfulVerifyCount > 1) {
+      fare = null
+      pendingFare = null
+      stage = search ? 'search' : 'idle'
+    }
     if (pendingFare && successfulVerifyCount === 1) {
       chat.push({ key: `fare-${p.id}`, role: 'assistant', text: '', fare: pendingFare, ts: replyTs })
     }
@@ -417,9 +438,8 @@ function firstJsonObject(raw: string): string | null {
   return null
 }
 
-/** simplifly-flyai-skill compact search JSON → search view model. Tool-name agnostic: this is
- *  a Bash result (python script stdout), recognised by its `displayOptions`/`displayMapping`
- *  shape. We read only the public `displayOptions`; `displayMapping` stays unused. */
+/** simplifly-flyai-skill search JSON → search view model. We read only the
+ * public `displayOptions`; `displayMapping` stays private to the skill. */
 function parseCompactSearch(json: Record<string, unknown>): SearchResult | null {
   if (!Array.isArray(json.displayOptions) || !isObj(json.displayMapping)) return null
   const options: CompactOption[] = []
@@ -470,6 +490,10 @@ function toCompactOption(raw: unknown): CompactOption | null {
     }
     if (!segments.length) continue
     journeys.push({
+      role: isJourneyRole(j.role) ? j.role : undefined,
+      ticketGroupIndex: typeof j.ticketGroupIndex === 'number' && Number.isFinite(j.ticketGroupIndex)
+        ? num(j.ticketGroupIndex)
+        : undefined,
       origin: str(j.origin),
       destination: str(j.destination),
       departureDate: str(j.departureDate),
@@ -487,6 +511,7 @@ function toCompactOption(raw: unknown): CompactOption | null {
   if (!journeys.length) return null
 
   const price = parseCompactPrice(raw.price)
+  const capabilities = parseCapabilities(raw.capabilities)
   // Verbatim from the skill — no recomputed labels, no defaulted currency, no
   // synthesized display strings. Missing data stays missing; the table shows "--".
   const blocks: NonNullable<CompactOption['blocks']> = []
@@ -503,6 +528,7 @@ function toCompactOption(raw: unknown): CompactOption | null {
     priceBasis: raw.priceBasis === 'search' || raw.priceBasis === 'pricing' || raw.priceBasis === 'verified'
       ? raw.priceBasis
       : undefined,
+    itineraryType: isItineraryType(raw.itineraryType) ? raw.itineraryType : undefined,
     journeyType: str(raw.journeyType),
     duration: str(raw.duration),
     durationMinutes: num(raw.durationMinutes),
@@ -512,33 +538,95 @@ function toCompactOption(raw: unknown): CompactOption | null {
     price,
     blocks: blocks.length > 1 ? blocks : undefined,
     source: str(raw.source) || undefined,
-    copyText: str(raw.copyText) || undefined,
+    capabilities: capabilities ?? undefined,
     journeys,
   }
 }
 
-/** simplifly-flyai-skill compact verify JSON (flight_verify_selected.py stdout) → fare view model.
- *  Recognised by shape (`selectedOption`+`verifiedOption`), like the compact search. We read the
- *  curated `verifiedOption` summary only; orderKey stays in the script's private fields.
- *  Compact carries no per-passenger price split, structured fare rules, or seat availability — those
- *  stay empty (the card hides them) rather than being faked. */
+const VERIFY_SCHEMA_VERSION = 'flight-verify/v1'
+const VERIFY_RESULT_TYPE = 'flight.verify'
+
+function isItineraryType(value: unknown): value is ItineraryType {
+  return value === 'oneway' || value === 'roundtrip' || value === 'multi_city'
+}
+
+function isJourneyRole(value: unknown): value is JourneyRole {
+  return value === 'oneway' || value === 'outbound' || value === 'inbound' || value === 'leg'
+}
+
+/** Versioned simplifly-flyai-skill verify result → UI fare model. A legacy
+ * payload may still render, but missing business capabilities fail closed. */
 function parseCompactVerify(json: Record<string, unknown>): FareVerification | null {
+  const hasContractIdentity = json.schemaVersion !== undefined || json.resultType !== undefined
+  const legacy = !hasContractIdentity
+  if (!legacy && (json.schemaVersion !== VERIFY_SCHEMA_VERSION || json.resultType !== VERIFY_RESULT_TYPE)) return null
+
   const verified = isObj(json.verifiedOption) ? json.verifiedOption : null
   if (!verified) return null
+  const explicitItineraryType = isItineraryType(verified.itineraryType) ? verified.itineraryType : undefined
+  const capabilities = parseCapabilities(verified.capabilities)
+  const verification = isObj(json.verification) ? json.verification : null
+  const verifiedAt = verification ? str(verification.verifiedAt) : ''
+  const validUntil = verification ? str(verification.validUntil) : ''
+  const price = isObj(verified.price) ? verified.price : null
+  const rawJourneys = Array.isArray(verified.journeys) ? verified.journeys : []
+  if (!legacy && (
+    !explicitItineraryType
+    || !capabilities
+    || capabilities.canCopy
+    || verification?.status !== 'verified'
+    || !verifiedAt
+    || !Number.isFinite(Date.parse(verifiedAt))
+    || !validUntil
+    || !Number.isFinite(Date.parse(validUntil))
+    || Date.parse(validUntil) <= Date.parse(verifiedAt)
+    || !price
+    || typeof price.amount !== 'number'
+    || !Number.isFinite(price.amount)
+    || !str(price.currency)
+    || rawJourneys.length === 0
+  )) return null
 
   const journeys: FareJourney[] = []
-  for (const j of Array.isArray(verified.journeys) ? verified.journeys : []) {
-    if (!isObj(j)) continue
+  for (const [journeyIndex, j] of rawJourneys.entries()) {
+    if (!isObj(j)) {
+      if (!legacy) return null
+      continue
+    }
+    const transferCount = j.transferCount
+    if (!legacy && (
+      ![j.origin, j.destination, j.departureDate, j.departureTime, j.arrivalDate, j.arrivalTime, j.duration]
+        .every((value) => Boolean(str(value)))
+      || typeof transferCount !== 'number'
+      || !Number.isInteger(transferCount)
+      || transferCount < 0
+    )) return null
     const legs: FareLeg[] = []
     for (const s of Array.isArray(j.segments) ? j.segments : []) {
-      if (!isObj(s)) continue
+      if (!isObj(s)) {
+        if (!legacy) return null
+        continue
+      }
+      if (!legacy && ![
+        s.flightNo,
+        s.departure,
+        s.departureDate,
+        s.departureTime,
+        s.arrival,
+        s.arrivalDate,
+        s.arrivalTime,
+      ].every((value) => Boolean(str(value)))) return null
       // compact `cabin` is already a display string ("经济舱 T舱"); carry it as cabinClass.
       legs.push({
         flightNo: str(s.flightNo),
         departure: str(s.departure),
+        departureName: str(s.departureName) || undefined,
+        departureTerminal: str(s.departureTerminal) || undefined,
         departureDate: str(s.departureDate) || undefined,
         departureTime: str(s.departureTime) || undefined,
         arrival: str(s.arrival),
+        arrivalName: str(s.arrivalName) || undefined,
+        arrivalTerminal: str(s.arrivalTerminal) || undefined,
         arrivalDate: str(s.arrivalDate) || undefined,
         arrivalTime: str(s.arrivalTime) || undefined,
         cabinClass: str(s.cabin),
@@ -546,7 +634,27 @@ function parseCompactVerify(json: Record<string, unknown>): FareVerification | n
       })
     }
     if (!legs.length) continue
+    const explicitRole = isJourneyRole(j.role) ? j.role : undefined
+    const explicitTicketGroup = typeof j.ticketGroupIndex === 'number'
+      && Number.isInteger(j.ticketGroupIndex)
+      && j.ticketGroupIndex >= 0
+      ? num(j.ticketGroupIndex)
+      : undefined
+    if (!legacy && (!explicitRole || explicitTicketGroup === undefined)) return null
+    if (!legacy) {
+      const expectedRole: JourneyRole = explicitItineraryType === 'oneway'
+        ? 'oneway'
+        : explicitItineraryType === 'roundtrip'
+          ? (journeyIndex === 0 ? 'outbound' : 'inbound')
+          : 'leg'
+      const expectedJourneyCount = explicitItineraryType === 'oneway' ? 1 : explicitItineraryType === 'roundtrip' ? 2 : null
+      if (explicitRole !== expectedRole || (expectedJourneyCount !== null && rawJourneys.length !== expectedJourneyCount)) return null
+    }
+    const role: JourneyRole = explicitRole
+      ?? (Array.isArray(verified.journeys) && verified.journeys.length === 1 ? 'oneway' : 'leg')
     journeys.push({
+      role,
+      ticketGroupIndex: explicitTicketGroup ?? num(j.blockIndex),
       origin: str(j.origin),
       destination: str(j.destination),
       departureDate: str(j.departureDate) || undefined,
@@ -554,23 +662,36 @@ function parseCompactVerify(json: Record<string, unknown>): FareVerification | n
       arrivalDate: str(j.arrivalDate) || undefined,
       arrivalTime: str(j.arrivalTime) || undefined,
       duration: str(j.duration),
-      transferNum: num(j.transferCount),
+      transferNum: num(transferCount),
       legs,
     })
   }
   if (!journeys.length) return null
 
-  const price = isObj(verified.price) ? verified.price : {}
-  const total = num(price.amount)
-  const currency = str(price.currency) || 'CNY'
+  const parsedPrice = price ?? {}
+  const total = num(parsedPrice.amount)
+  const currency = str(parsedPrice.currency) || 'CNY'
 
-  // passenger rows from the verify request's counts (compact has no per-type price split) — enough
-  // to seed the right number of form rows; salePrice stays 0 so the card hides the per-pax table.
   const passengers: FarePassengerLine[] = []
-  const reqCount = isObj(json.request) && isObj(json.request.passengerCount) ? json.request.passengerCount : null
-  for (const t of ['adult', 'child', 'infant'] as const) {
-    const n = reqCount ? num(reqCount[t]) : 0
-    if (n > 0) passengers.push({ passengerType: t, baseFare: 0, tax: 0, salePrice: 0, num: n })
+  const perType = isObj(parsedPrice.perType) ? parsedPrice.perType : null
+  if (perType) {
+    for (const [passengerType, rawLine] of Object.entries(perType)) {
+      if (!isObj(rawLine) || num(rawLine.num) <= 0) continue
+      passengers.push({
+        passengerType,
+        baseFare: num(rawLine.unitFare),
+        tax: num(rawLine.unitTax),
+        salePrice: num(rawLine.unitTotal),
+        num: num(rawLine.num),
+      })
+    }
+  }
+  if (!passengers.length) {
+    const reqCount = isObj(json.request) && isObj(json.request.passengerCount) ? json.request.passengerCount : null
+    for (const t of ['adult', 'child', 'infant'] as const) {
+      const n = reqCount ? num(reqCount[t]) : 0
+      if (n > 0) passengers.push({ passengerType: t, baseFare: 0, tax: 0, salePrice: 0, num: n })
+    }
   }
   if (!passengers.length) passengers.push({ passengerType: 'adult', baseFare: 0, tax: 0, salePrice: 0, num: 1 })
 
@@ -580,16 +701,25 @@ function parseCompactVerify(json: Record<string, unknown>): FareVerification | n
   if (verified.hasCheckedBaggage === true && bagStr) baggage.push({ passengerType: 'adult', checked: bagStr })
 
   return {
+    schemaVersion: str(json.schemaVersion) || undefined,
+    itineraryType: explicitItineraryType,
+    verifiedAt: verifiedAt || undefined,
+    bookableUntil: validUntil || undefined,
     currency,
     total,
-    baseFare: 0,
-    tax: 0,
+    baseFare: num(parsedPrice.fareTotal),
+    tax: num(parsedPrice.taxTotal),
     publishTotal: total,
     journeys,
     passengers,
     baggage,
-    fareRules: [],
-    minAvailability: null,
+    fareRules: json.fareRules ?? null,
+    minAvailability: typeof verified.availability === 'number' && Number.isFinite(verified.availability)
+      ? num(verified.availability)
+      : null,
+    source: str(verified.source) || undefined,
+    canBook: !legacy && capabilities?.canBook === true,
+    transitAdvisory: verified.transitAdvisory,
     priceBreakdownDisplay: str(verified.priceBreakdownDisplay) || undefined,
     changeNotice: buildChangeNotice(json.comparison),
   }

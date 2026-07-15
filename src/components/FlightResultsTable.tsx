@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import type { CompactJourney, CompactOption, CompactPrice, CompactSegment } from '../frames.ts'
+import { flightRouteCell } from '../lib/flight-display.ts'
 import { stopsLabel } from '../booking.ts'
 
 /** Shown whenever upstream data is missing. The table never substitutes data
@@ -69,18 +70,6 @@ function sharedPassengerCount(options: CompactOption[]): number | null {
   return counts.every((count) => count === counts[0]) ? counts[0] ?? null : null
 }
 
-function airportName(code: string, name?: string, terminal?: string): string {
-  const base = (name || code).trim()
-  if (!terminal) return base
-  const t = terminal.startsWith('T') ? terminal : terminal.replace(/[()]/g, '')
-  if (base.includes(t) || base.includes(`(${t})`)) return base
-  return `${base}(${t})`
-}
-
-function routeCell(s: CompactSegment): string {
-  return `${s.departure}${s.arrival} ${airportName(s.departure, s.departureName, s.departureTerminal)} → ${airportName(s.arrival, s.arrivalName, s.arrivalTerminal)}`
-}
-
 function crossDays(j: CompactJourney, s: CompactSegment): number {
   if (s.arrivalDate && s.departureDate && s.arrivalDate > s.departureDate) {
     const a = Date.parse(`${s.departureDate}T00:00:00Z`)
@@ -135,7 +124,8 @@ export function buildVerifyPrompt(o: CompactOption): string {
   const selector = o.selectionLabel ?? `原始方案${o.optionNumber}`
   const checks = o.journeys.flatMap((journey, ji) =>
     journey.segments.map((segment) => {
-      const label = o.journeys.length > 1 ? (isRoundTrip(o) ? (ji === 0 ? '去程' : '回程') : `第${ji + 1}程`) : ''
+      const role = journeyRole(o, journey, ji)
+      const label = role === 'outbound' ? '去程' : role === 'inbound' ? '回程' : role === 'leg' ? `第${ji + 1}程` : ''
       return `${label}${segment.flightNo} ${segment.departureDate} ${segment.departure}${segment.arrival} ${segment.departureTime}-${segment.arrivalTime} ${segment.cabin || NO_DATA}`
     }),
   )
@@ -164,25 +154,28 @@ export function buildVerifyPrompt(o: CompactOption): string {
   ].filter(Boolean).join('\n')
 }
 
-// 去程/回程 only fits a true round trip (second journey mirrors the first);
-// a composed pair of unrelated one-ways (SHA→LAX + LAX→SLC) is 第1程/第2程.
-function isRoundTrip(o: CompactOption): boolean {
+function isLegacyRoundTrip(o: CompactOption): boolean {
   const [outbound, inbound] = o.journeys
   if (o.journeys.length !== 2 || !outbound || !inbound) return false
   return outbound.origin === inbound.destination && outbound.destination === inbound.origin
 }
 
-function journeyLabel(o: CompactOption, j: CompactJourney, index: number): string {
-  const stops = stopsLabel(j.transferCount)
-  if (o.journeys.length === 1) return stops
-  if (isRoundTrip(o)) return `${index === 0 ? '去程' : '回程'}${stops}`
-  return `第${index + 1}程${stops}`
+// Current results carry the skill-owned role. Route inference exists only so
+// saved pre-contract results remain readable; it does not authorize actions.
+function journeyRole(o: CompactOption, j: CompactJourney, index: number): NonNullable<CompactJourney['role']> {
+  if (j.role) return j.role
+  if (o.journeys.length === 1) return 'oneway'
+  if (isLegacyRoundTrip(o)) return index === 0 ? 'outbound' : 'inbound'
+  return 'leg'
 }
 
-// Customer copy comes from the skill verbatim (quote --copy-text contract);
-// the UI never assembles its own version. No copyText → the copy button is disabled.
-function copyTextOf(o: CompactOption): string {
-  return o.copyText?.trim() ?? ''
+function journeyLabel(o: CompactOption, j: CompactJourney, index: number): string {
+  const stops = stopsLabel(j.transferCount)
+  const role = journeyRole(o, j, index)
+  if (role === 'outbound') return `去程${stops}`
+  if (role === 'inbound') return `回程${stops}`
+  if (role === 'leg') return `第${index + 1}程${stops}`
+  return stops
 }
 
 interface FlightTableRow {
@@ -236,16 +229,19 @@ export function buildRows(options: CompactOption[], recommendedOptions: CompactO
   return options.flatMap((o) => {
     let rowIndex = 0
     const totalPrice = partyPrice(o.price)
-    // A combo is several separately-booked tickets: price/source per ticket
-    // (blocks[j.blockIndex], on the ticket's first row), total on the first row.
+    // A combo is several separately-booked tickets: price/source per ticket,
+    // using the skill-owned ticket group (blockIndex is legacy compatibility).
     const blocks = o.blocks ?? []
     const isCombo = blocks.length > 1
     const optionKey = `${o.displayNumber ?? o.optionNumber}:${o.optionNumber}:${o.journeys[0]?.segments[0]?.flightNo ?? ''}`
     const isRecommended = recommendedOptions.includes(o)
     const badges = optionBadges(o, isRecommended)
     return o.journeys.flatMap((j, ji) => {
-      const blockIndex = j.blockIndex ?? 0
-      const prevBlockIndex = ji > 0 ? o.journeys[ji - 1]?.blockIndex ?? 0 : null
+      const blockIndex = j.ticketGroupIndex ?? j.blockIndex ?? 0
+      const previousJourney = ji > 0 ? o.journeys[ji - 1] : undefined
+      const prevBlockIndex = previousJourney
+        ? previousJourney.ticketGroupIndex ?? previousJourney.blockIndex ?? 0
+        : null
       const blockStart = prevBlockIndex === null || blockIndex !== prevBlockIndex
       const block = blocks[blockIndex]
       return j.segments.map((s, si) => {
@@ -261,7 +257,7 @@ export function buildRows(options: CompactOption[], recommendedOptions: CompactO
           journey: journeyFirst ? journeyLabel(o, j, ji) : '',
           flightNo: s.flightNo,
           date: dateCn(s.departureDate),
-          route: routeCell(s),
+          route: flightRouteCell(s),
           time: timeCell(j, s),
           duration: journeyFirst ? durationCell(j) : '',
           // Segment-level facts only: a missing value renders NO_DATA rather
@@ -283,21 +279,6 @@ export function buildRows(options: CompactOption[], recommendedOptions: CompactO
   })
 }
 
-async function writeClipboard(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text)
-    return
-  }
-  const el = document.createElement('textarea')
-  el.value = text
-  el.style.position = 'fixed'
-  el.style.left = '-9999px'
-  document.body.appendChild(el)
-  el.select()
-  document.execCommand('copy')
-  document.body.removeChild(el)
-}
-
 export function FlightResultsTable({
   options,
   totalCount,
@@ -309,7 +290,6 @@ export function FlightResultsTable({
   onBook: (prompt: string) => void
   busy: boolean
 }) {
-  const [copied, setCopied] = useState<string | null>(null)
   // A total column makes the price scope explicit for split tickets and for
   // parties. When an upstream fallback lacks a passenger split, keep the party
   // total visible instead of guessing a per-person amount.
@@ -336,15 +316,6 @@ export function FlightResultsTable({
   const rowsByGroup = useMemo(() =>
     groups.map((group) => ({ ...group, rows: buildRows(group.options, recommendedOptions) })),
   [groups, recommendedOptions])
-
-  async function onCopy(o: CompactOption) {
-    const text = copyTextOf(o)
-    if (!text) return
-    await writeClipboard(text)
-    const optionKey = `${o.displayNumber ?? o.optionNumber}:${o.optionNumber}:${o.journeys[0]?.segments[0]?.flightNo ?? ''}`
-    setCopied(optionKey)
-    window.setTimeout(() => setCopied((current) => (current === optionKey ? null : current)), 1400)
-  }
 
   return (
     <div className="results flight-table-block">
@@ -395,7 +366,6 @@ export function FlightResultsTable({
                       {row.optionNumber ? (
                         <div className="flight-actions">
                           <button type="button" disabled={busy} onClick={() => onBook(buildVerifyPrompt(row.option))}>{optionActionLabel(row.option)}</button>
-                          <button type="button" disabled={!copyTextOf(row.option)} onClick={() => onCopy(row.option)}>{copied === row.optionKey ? '已复制' : '复制'}</button>
                         </div>
                       ) : null}
                     </td>

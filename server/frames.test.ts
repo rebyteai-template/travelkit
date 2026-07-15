@@ -34,15 +34,19 @@ function compactSearch(optionNumber: number, flightNo: string, amount: number) {
       {
         optionNumber,
         solutionId: `sol-${flightNo.toLowerCase()}`,
+        itineraryType: 'oneway',
         journeyType: '直飞',
         duration: '2h',
         durationMinutes: 120,
         cabin: '经济 H舱',
         baggage: '托运1*23kg',
         hasCheckedBaggage: true,
+        capabilities: { canCopy: false, canBook: false },
         price: { amount, currency: 'CNY' },
         journeys: [
           {
+            role: 'oneway',
+            ticketGroupIndex: 0,
             origin: 'PEK',
             destination: 'SHA',
             departureDate: '2026-08-05',
@@ -85,6 +89,10 @@ test('derive parses compact search JSON before trailing shell output', () => {
   assert.equal(view.search?.options.length, 1)
   assert.equal(view.search?.options[0]?.solutionId, 'sol-mu5186')
   assert.equal(view.search?.options[0]?.priceBasis, 'verified')
+  assert.equal(view.search?.options[0]?.itineraryType, 'oneway')
+  assert.equal(view.search?.options[0]?.journeys[0]?.role, 'oneway')
+  assert.equal(view.search?.options[0]?.journeys[0]?.ticketGroupIndex, 0)
+  assert.deepEqual(view.search?.options[0]?.capabilities, { canCopy: false, canBook: false })
   assert.equal(view.search?.options[0]?.blocks, undefined)
   assert.equal(view.chat.at(-1)?.cards?.length, 1)
 })
@@ -114,8 +122,8 @@ test('derive parses combo blocks (per-ticket price/source) and journey blockInde
   combo.solutionId = 'combo:abc123'
   combo.price = { amount: 46071, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 15357, subtotal: 46071 } } }
   combo.journeys = [
-    { ...(combo.journeys as Record<string, unknown>[])[0], blockIndex: 0 },
-    { ...(combo.journeys as Record<string, unknown>[])[0], blockIndex: 1 },
+    { ...(combo.journeys as Record<string, unknown>[])[0], role: 'leg', ticketGroupIndex: 0, blockIndex: 0 },
+    { ...(combo.journeys as Record<string, unknown>[])[0], role: 'leg', ticketGroupIndex: 1, blockIndex: 1 },
   ]
   combo.blocks = [
     { price: { amount: 45021, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 15007, subtotal: 45021 } } }, source: '美亚' },
@@ -125,6 +133,7 @@ test('derive parses combo blocks (per-ticket price/source) and journey blockInde
   const view = derive([promptWithToolResult(JSON.stringify(compact))])
   const option = view.search?.options[0]
   assert.deepEqual(option?.journeys.map((j) => j.blockIndex), [0, 1])
+  assert.deepEqual(option?.journeys.map((j) => j.ticketGroupIndex), [0, 1])
   assert.deepEqual(option?.blocks, [
     { price: { amount: 45021, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 15007, subtotal: 45021 } } }, source: '美亚' },
     { price: { amount: 1050, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 350, subtotal: 1050 } } }, source: undefined },
@@ -173,12 +182,34 @@ test('derive preserves multiple compact searches in one turn', () => {
 
 function compactVerify(flightNo: string, amount: number) {
   return {
+    schemaVersion: 'flight-verify/v1',
+    resultType: 'flight.verify',
     ok: true,
+    verification: {
+      status: 'verified',
+      verifiedAt: '2026-10-01T08:00:00.000Z',
+      validUntil: '2026-10-01T08:05:00.000Z',
+      changed: false,
+      changedFields: [],
+    },
     selectedOption: { optionNumber: 1 },
     verifiedOption: {
-      price: { amount, currency: 'CNY' },
+      itineraryType: 'oneway',
+      availability: 2,
+      source: 'meiya',
+      capabilities: { canCopy: false, canBook: true },
+      transitAdvisory: { status: 'complete', facts: [{ baggageThrough: true }] },
+      price: {
+        amount,
+        currency: 'CNY',
+        fareTotal: amount - 200,
+        taxTotal: 200,
+        perType: { adult: { num: 2, unitFare: (amount - 200) / 2, unitTax: 100, unitTotal: amount / 2, subtotal: amount } },
+      },
       journeys: [
         {
+          role: 'oneway',
+          ticketGroupIndex: 0,
           origin: 'SLC',
           destination: 'BUF',
           departureDate: '2026-10-02',
@@ -191,9 +222,13 @@ function compactVerify(flightNo: string, amount: number) {
             {
               flightNo,
               departure: 'SLC',
+              departureName: '盐湖城',
+              departureTerminal: 'T1',
               departureDate: '2026-10-02',
               departureTime: '11:20',
               arrival: 'BUF',
+              arrivalName: '布法罗',
+              arrivalTerminal: 'T2',
               arrivalDate: '2026-10-02',
               arrivalTime: '20:05',
               cabin: '经济 T舱',
@@ -202,8 +237,124 @@ function compactVerify(flightNo: string, amount: number) {
         },
       ],
     },
+    fareRules: { refund: [{ condition: '起飞前', fee: 210 }] },
   }
 }
+
+test('derive preserves explicit verified-option semantics instead of guessing them in the UI', () => {
+  const payload = compactVerify('AA2883', 4000)
+  const view = derive([promptWithToolResult(JSON.stringify(payload))])
+  const fare = view.fare
+  if (!fare) throw new Error('expected verified fare')
+
+  assert.equal(fare.schemaVersion, 'flight-verify/v1')
+  assert.equal(fare.verifiedAt, '2026-10-01T08:00:00.000Z')
+  assert.equal(fare.bookableUntil, '2026-10-01T08:05:00.000Z')
+  assert.equal(fare.itineraryType, 'oneway')
+  assert.equal(fare.journeys[0]?.role, 'oneway')
+  assert.equal(fare.journeys[0]?.ticketGroupIndex, 0)
+  assert.equal(fare.journeys[0]?.legs[0]?.departureName, '盐湖城')
+  assert.equal(fare.journeys[0]?.legs[0]?.arrivalTerminal, 'T2')
+  assert.equal(fare.baseFare, 3800)
+  assert.equal(fare.tax, 200)
+  assert.deepEqual(fare.passengers, [{ passengerType: 'adult', baseFare: 1900, tax: 100, salePrice: 2000, num: 2 }])
+  assert.equal(fare.minAvailability, 2)
+  assert.equal(fare.source, 'meiya')
+  assert.equal(fare.canBook, true)
+  assert.deepEqual(fare.transitAdvisory, { status: 'complete', facts: [{ baggageThrough: true }] })
+  assert.deepEqual(fare.fareRules, { refund: [{ condition: '起飞前', fee: 210 }] })
+})
+
+test('versioned roundtrip roles survive the full verify adapter', () => {
+  const payload = compactVerify('AA2883', 4000)
+  payload.verifiedOption.itineraryType = 'roundtrip'
+  payload.verifiedOption.journeys[0]!.role = 'outbound'
+  payload.verifiedOption.journeys.push({
+    ...payload.verifiedOption.journeys[0]!,
+    role: 'inbound',
+    origin: 'BUF',
+    destination: 'SLC',
+    departureDate: '2026-10-09',
+    segments: payload.verifiedOption.journeys[0]!.segments.map((segment) => ({
+      ...segment,
+      departure: 'BUF',
+      departureName: '布法罗',
+      arrival: 'SLC',
+      arrivalName: '盐湖城',
+      departureDate: '2026-10-09',
+      arrivalDate: '2026-10-09',
+    })),
+  })
+
+  const fare = derive([promptWithToolResult(JSON.stringify(payload))]).fare
+  assert.equal(fare?.itineraryType, 'roundtrip')
+  assert.deepEqual(fare?.journeys.map((journey) => journey.role), ['outbound', 'inbound'])
+})
+
+test('legacy verify results remain readable but cannot authorize copy or booking', () => {
+  const payload = compactVerify('AA2883', 4000) as unknown as Record<string, unknown>
+  delete payload.schemaVersion
+  delete payload.resultType
+  delete payload.verification
+  const verified = payload.verifiedOption as Record<string, unknown>
+  verified.capabilities = { canCopy: false, canBook: true }
+  delete verified.itineraryType
+  const journeys = verified.journeys as Array<Record<string, unknown>>
+  delete journeys[0]!.role
+  delete journeys[0]!.ticketGroupIndex
+
+  const fare = derive([promptWithToolResult(JSON.stringify(payload))]).fare
+  if (!fare) throw new Error('expected legacy fare')
+  assert.equal(fare.canBook, false)
+  assert.equal(fare.journeys[0]?.role, 'oneway')
+})
+
+test('unknown verify contract versions do not become actionable fare data', () => {
+  const payload = { ...compactVerify('AA2883', 4000), schemaVersion: 'flight-verify/v999' }
+  assert.equal(derive([promptWithToolResult(JSON.stringify(payload))]).fare, null)
+})
+
+test('failed or unsupported verify invalidates a prior actionable fare', () => {
+  const success = promptWithToolResult(JSON.stringify(compactVerify('AA2883', 4000)))
+  success.id = 'success'
+  const failed = promptWithToolResult(JSON.stringify({
+    schemaVersion: 'flight-verify/v1',
+    resultType: 'flight.verify',
+    ok: false,
+    verification: { status: 'failed', verifiedAt: null, changed: false, changedFields: [] },
+    errorType: 'expired_search',
+    message: '搜索已过期',
+  }))
+  failed.id = 'failed'
+  const afterFailure = derive([success, failed])
+  assert.equal(afterFailure.fare, null)
+  assert.notEqual(afterFailure.stage, 'verify')
+  assert.match(afterFailure.notice ?? '', /过期/)
+
+  const unknown = promptWithToolResult(JSON.stringify({ ...compactVerify('AA2883', 4000), schemaVersion: 'flight-verify/v999' }))
+  unknown.id = 'unknown'
+  const afterUnknown = derive([success, unknown])
+  assert.equal(afterUnknown.fare, null)
+  assert.notEqual(afterUnknown.stage, 'verify')
+  assert.match(afterUnknown.notice ?? '', /版本|必备字段/)
+})
+
+test('v1 rejects partial capabilities and missing required fare facts', () => {
+  const variants: Array<(payload: ReturnType<typeof compactVerify>) => void> = [
+    (payload) => { payload.verifiedOption.capabilities = { canCopy: true } as { canCopy: boolean; canBook: boolean } },
+    (payload) => { payload.verifiedOption.capabilities = { canCopy: true, canBook: true } },
+    (payload) => { delete (payload.verification as { verifiedAt?: string }).verifiedAt },
+    (payload) => { delete (payload.verification as { validUntil?: string }).validUntil },
+    (payload) => { delete (payload.verifiedOption.price as { amount?: number }).amount },
+    (payload) => { payload.verifiedOption.price.currency = '' },
+    (payload) => { payload.verifiedOption.journeys[0]!.segments = [] },
+  ]
+  for (const mutate of variants) {
+    const payload = compactVerify('AA2883', 4000)
+    mutate(payload)
+    assert.equal(derive([promptWithToolResult(JSON.stringify(payload))]).fare, null)
+  }
+})
 
 test('derive does not render the last fare card when a turn verifies multiple alternatives', () => {
   const prompt = promptWithToolResult('')
@@ -232,6 +383,8 @@ test('derive does not render the last fare card when a turn verifies multiple al
   ]
 
   const view = derive([prompt])
+  assert.equal(view.fare, null)
+  assert.notEqual(view.stage, 'verify')
 
   assert.equal(view.chat.some((b) => b.fare), false)
   assert.match(view.chat.at(-1)?.text ?? '', /\| WN \| ¥3978 \|/)

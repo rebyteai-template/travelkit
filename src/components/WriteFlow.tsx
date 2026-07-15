@@ -1,5 +1,5 @@
 import type { FareVerification, FareJourney } from '../frames.ts'
-import { PAX_LABELS, passengerName, docLabel, amountLine, journeyFacts, lowStockWarning, type PassengerDraft } from '../booking.ts'
+import { PAX_LABELS, passengerName, docLabel, amountLine, isBookableFare, journeyFacts, lowStockWarning, type PassengerDraft } from '../booking.ts'
 import { PassengerForm } from './PassengerForm.tsx'
 import { ConfirmGate, type ConfirmRow } from './ConfirmGate.tsx'
 import type { FlowMode } from '../store/ui.ts'
@@ -24,8 +24,8 @@ function orderGate(fare: FareVerification, passengers: PassengerDraft[]): { rows
 }
 
 /** The active booking write-flow step, rendered inline at the chat tail (no side bench): the
- *  passenger form, then the confirm gate. Returns null when there's nothing to collect — `mode`
- *  is 'auto' (the inline verify card carries the entry CTA) or no fare has been verified yet. */
+ *  passenger form, then the confirm gate. Returns null when `mode` is auto or
+ *  the latest fare is absent/non-bookable. */
 export function WriteFlow({
   mode,
   fare,
@@ -45,7 +45,7 @@ export function WriteFlow({
   onCancelConfirm: () => void
   busy: boolean
 }) {
-  if (!fare) return null
+  if (!isBookableFare(fare)) return null
   if (mode === 'passengers') {
     return <PassengerForm initial={orderDraft} onSubmit={onSubmitPassengers} onBack={onBackFromForm} busy={busy} />
   }

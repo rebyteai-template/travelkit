@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { passengersFromFare, buildOrderPrompt } from './booking.ts'
+import { passengersFromFare, buildOrderPrompt, isBookableFare } from './booking.ts'
 import { ChatPanel } from './components/ChatPanel.tsx'
 import { Composer, type ComposerHandle } from './components/Composer.tsx'
 import { WriteFlow } from './components/WriteFlow.tsx'
@@ -53,11 +53,11 @@ export function App() {
     document.documentElement.classList.toggle('dark', theme === 'dark')
   }, [theme])
 
-  // A fresh search supersedes any half-finished write-flow: drop back to auto so the form/confirm
-  // step disappears from the stream and the new options take over.
+  // Any fare identity/capability change invalidates a half-finished passenger
+  // or confirmation flow. Clicking Continue does not change these dependencies.
   useEffect(() => {
-    if (view.stage === 'search') setMode('auto')
-  }, [view.stage, setMode])
+    setMode('auto')
+  }, [view.stage, view.fare?.canBook, view.fare?.verifiedAt, setMode])
 
   function tapBrand() {
     if (debugOn) return
@@ -71,7 +71,7 @@ export function App() {
 
   // fare card → passenger form (pure UI transition; nothing sent yet)
   function continueToPassengers() {
-    if (!view.fare) return
+    if (!isBookableFare(view.fare)) return
     const need = passengersFromFare(view.fare)
     setOrderDraft((prev) => (prev.length === need.length ? prev : need))
     setMode('passengers')
@@ -127,7 +127,7 @@ export function App() {
               orderDraft={orderDraft}
               onSubmitPassengers={(passengers) => { setOrderDraft(passengers); setMode('confirm') }}
               onBackFromForm={() => setMode('auto')}
-              onConfirmOrder={() => { if (view.fare) send(buildOrderPrompt(orderDraft, view.fare)) }}
+              onConfirmOrder={() => { if (isBookableFare(view.fare)) send(buildOrderPrompt(orderDraft, view.fare)) }}
               onCancelConfirm={() => setMode('passengers')}
               busy={busy}
             />

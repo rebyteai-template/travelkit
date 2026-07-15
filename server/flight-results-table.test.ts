@@ -70,6 +70,28 @@ test('freshly verified search rows are marked verified and use a select action',
   assert.match(buildVerifyPrompt(verified), /优先复用本次搜索刚保存的验价结果/)
 })
 
+test('search rows use explicit journey roles even when routes resemble a round trip', () => {
+  const multiCity: CompactOption = {
+    ...option,
+    itineraryType: 'multi_city',
+    journeys: [
+      { ...option.journeys[0]!, role: 'leg', ticketGroupIndex: 0 },
+      {
+        ...option.journeys[0]!,
+        role: 'leg',
+        ticketGroupIndex: 1,
+        origin: 'SHA',
+        destination: 'PEK',
+        segments: [{ ...option.journeys[0]!.segments[0]!, departure: 'SHA', arrival: 'PEK' }],
+      },
+    ],
+  }
+
+  assert.deepEqual(buildRows([multiCity], []).map((row) => row.journey), ['第1程直飞', '第2程直飞'])
+  assert.match(buildVerifyPrompt(multiCity), /第1程MU5186/)
+  assert.match(buildVerifyPrompt(multiCity), /第2程MU5186/)
+})
+
 const comboLeg = (flightNo: string, from: string, to: string, date: string) => ({
   origin: from,
   destination: to,
@@ -151,6 +173,25 @@ test('a jointly-booked block (two journeys, one ticket) prices only its first ro
   assert.deepEqual(rows.map((r) => r.price), ['成人 ¥15,000/人', '', '成人 ¥357/人'])
   assert.deepEqual(rows.map((r) => r.source), ['美亚', '', 'yinling'])
   assert.deepEqual(rows.map((r) => r.total), ['¥46,071（3人）', '', ''])
+})
+
+test('ticketGroupIndex takes precedence over the legacy blockIndex', () => {
+  const combo: CompactOption = {
+    ...comboOption,
+    journeys: [
+      { ...comboLeg('MU0583', 'PVG', 'LAX', '2026-09-27'), ticketGroupIndex: 0, blockIndex: 1 },
+      { ...comboLeg('MU0588', 'JFK', 'PVG', '2026-10-07'), ticketGroupIndex: 0, blockIndex: 1 },
+      { ...comboLeg('DL1194', 'LAX', 'SLC', '2026-09-29'), ticketGroupIndex: 1, blockIndex: 0 },
+    ],
+    blocks: [
+      { price: { amount: 45000, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 15000, subtotal: 45000 } } }, source: '美亚' },
+      { price: { amount: 1071, currency: 'CNY', perType: { adult: { num: 3, unitTotal: 357, subtotal: 1071 } } }, source: 'yinling' },
+    ],
+  }
+
+  const rows = buildRows([combo], [])
+  assert.deepEqual(rows.map((row) => row.price), ['成人 ¥15,000/人', '', '成人 ¥357/人'])
+  assert.deepEqual(rows.map((row) => row.source), ['美亚', '', 'yinling'])
 })
 
 test('a single-ticket option shows the unit price and party total', () => {

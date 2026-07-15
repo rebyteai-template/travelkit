@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import type { FareVerification } from '../frames.ts'
-import { amountLine, currencySymbol, lowStockWarning, stopsLabel } from '../booking.ts'
+import { amountLine, currencySymbol, isBookableFare, lowStockWarning, stopsLabel } from '../booking.ts'
+import { flightRouteCell } from '../lib/flight-display.ts'
 
 function dateCn(iso?: string): string {
   if (!iso) return '未返回'
@@ -17,11 +18,12 @@ function crossDay(dep?: string, arr?: string): string {
   return days ? `(+${days})` : ''
 }
 
-function journeyLabel(journeyCount: number, transferNum: number, index: number): string {
-  if (journeyCount === 1) return stopsLabel(transferNum)
-  if (index === 0) return '去程'
-  if (index === 1) return '回程'
-  return `第${index + 1}程`
+export function fareJourneyLabel(role: FareVerification['journeys'][number]['role'], transferNum: number, index: number): string {
+  const stops = stopsLabel(transferNum)
+  if (role === 'outbound') return `去程${stops}`
+  if (role === 'inbound') return `回程${stops}`
+  if (role === 'leg') return `第${index + 1}程${stops}`
+  return stops
 }
 
 export function FareDetailTable({
@@ -38,7 +40,7 @@ export function FareDetailTable({
   const rows = useMemo(() => fare.journeys.flatMap((j, ji) =>
     j.legs.map((leg, li) => ({
       key: `${ji}-${li}`,
-      journey: journeyLabel(fare.journeys.length, j.transferNum, ji),
+      journey: fareJourneyLabel(j.role, j.transferNum, ji),
       leg,
       duration: li === 0 ? j.duration : '',
     })),
@@ -71,7 +73,9 @@ export function FareDetailTable({
                 <td>{row.journey}</td>
                 <td className="mono">{row.leg.flightNo}</td>
                 <td>{dateCn(row.leg.departureDate)}</td>
-                <td className="route-cell">{row.leg.departure}{row.leg.arrival} {row.leg.departure} → {row.leg.arrival}</td>
+                <td className="route-cell">
+                  {flightRouteCell(row.leg)}
+                </td>
                 <td className="mono">
                   {row.leg.departureTime && row.leg.arrivalTime
                     ? `${row.leg.departureTime}-${row.leg.arrivalTime}${crossDay(row.leg.departureDate, row.leg.arrivalDate)}`
@@ -88,7 +92,7 @@ export function FareDetailTable({
       </div>
       {fare.changeNotice ? <div className="fare-warn">{fare.changeNotice}</div> : null}
       {warning ? <div className="fare-warn">{warning}</div> : null}
-      {onContinue ? (
+      {onContinue && isBookableFare(fare) ? (
         <div className="fare-cta">
           <button disabled={busy} onClick={onContinue}>继续预订</button>
         </div>
