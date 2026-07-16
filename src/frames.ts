@@ -414,6 +414,7 @@ export function derive(prompts: PromptContent[]): DerivedView {
     // Hold this prompt's latest search / verify; attach to the next assistant text (stripping its
     // redundant markdown table), else flush as a standalone card bubble at prompt end.
     let pendingSearches: SearchResult[] = []
+    let hasVersionedSearch = false
     let pendingFare: FareVerification | null = null
     let pendingProposal: FlightProposal | null = null
     let successfulVerifyCount = 0
@@ -482,6 +483,7 @@ export function derive(prompts: PromptContent[]): DerivedView {
             if (payload?.resultType && payload.resultType !== 'flight.search') continue
             const parsed = payload && parseCompactSearch(payload)
             if (parsed) {
+              if (payload?.resultType === 'flight.search') hasVersionedSearch = true
               search = parsed; fare = null; notice = null; stage = 'search'
               // Signature covers every option's full itinerary (all legs, all segments, dates), not
               // just the first flight — otherwise two different multi-leg searches that share a first
@@ -529,7 +531,10 @@ export function derive(prompts: PromptContent[]): DerivedView {
     if (pendingProposal) {
       if (lastAssistantTextBubble) lastAssistantTextBubble.text = stripMarkdownTables(lastAssistantTextBubble.text)
       chat.push({ key: `proposal-${p.id}`, role: 'assistant', text: '', proposal: pendingProposal, ts: replyTs })
-    } else if (pendingSearches.length && !(lastAssistantTextBubble && containsMarkdownTable(lastAssistantTextBubble.text))) {
+    } else if (pendingSearches.length && (hasVersionedSearch || !(lastAssistantTextBubble && containsMarkdownTable(lastAssistantTextBubble.text)))) {
+      if (hasVersionedSearch && lastAssistantTextBubble) {
+        lastAssistantTextBubble.text = stripMarkdownTables(lastAssistantTextBubble.text)
+      }
       pendingSearches.forEach((searchResult, index) => {
         chat.push({
           key: `cards-${p.id}-${index}`,

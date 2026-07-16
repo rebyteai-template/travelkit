@@ -196,6 +196,22 @@ test('derive preserves multiple compact searches in one turn', () => {
   assert.equal(latestSearch.journeys[0]?.segments[0]?.flightNo, 'JL0022')
 })
 
+test('versioned search keeps the structured UI table when the agent also writes markdown tables', () => {
+  const search = compactSearch(1, 'CA165', 14932) as Record<string, unknown>
+  search.schemaVersion = 'flight-search/v1'
+  search.resultType = 'flight.search'
+  const prompt = promptWithToolResult('')
+  prompt.frames = [
+    { seq: 1, data: { type: 'user', message: { content: [{ type: 'tool_result', content: JSON.stringify(search) }] } } },
+    { seq: 2, data: { type: 'assistant', message: { content: [{ type: 'text', text: '搜索完成\n\n| 航班 | 价格 |\n| --- | --- |\n| CA165 | ¥14932 |' }] } } },
+  ]
+
+  const view = derive([prompt])
+  assert.equal(view.chat.filter((bubble) => bubble.cards).length, 1)
+  assert.equal(view.chat.find((bubble) => bubble.cards)?.cards?.[0]?.journeys[0]?.segments[0]?.flightNo, 'CA165')
+  assert.equal(view.chat.find((bubble) => bubble.text.includes('搜索完成'))?.text, '搜索完成')
+})
+
 test('a final proposal replaces search and pricing tables with one OP card', () => {
   const search = compactSearch(1, 'CA165', 14932) as Record<string, unknown>
   search.schemaVersion = 'flight-search/v1'
