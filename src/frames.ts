@@ -170,6 +170,8 @@ export interface RecommendationSegment {
 
 export interface RecommendationJourney {
   journeyId: string
+  routeOptionId?: string
+  routePriority?: 'primary' | 'alternate'
   role: JourneyRole
   origin: string
   destination: string
@@ -220,6 +222,7 @@ export interface FlightRecommendations {
   resultType: 'flight.recommendations'
   status: RecommendationStatus
   coverageStatus: RecommendationCoverageStatus
+  alternateCoverageStatus?: RecommendationCoverageStatus | 'not_requested'
   budgetStatus: RecommendationBudgetStatus
   message?: string
   reason?: string
@@ -525,6 +528,11 @@ function parseRecommendationPlan(raw: unknown): RecommendationPlan | null {
     const origin = str(item.origin).trim()
     const destination = str(item.destination).trim()
     const duration = str(item.duration).trim()
+    const routeOptionId = str(item.routeOptionId).trim()
+    const routePriority = item.routePriority === 'primary' || item.routePriority === 'alternate'
+      ? item.routePriority
+      : undefined
+    if ((routeOptionId && !routePriority) || (!routeOptionId && routePriority)) return null
     if (!journeyId || journeyIds.has(journeyId) || !origin || !destination || !duration) return null
     if (typeof item.transferCount !== 'number' || !Number.isInteger(item.transferCount) || item.transferCount < 0) return null
     const segments = item.segments.map(parseRecommendationSegment)
@@ -532,6 +540,7 @@ function parseRecommendationPlan(raw: unknown): RecommendationPlan | null {
     journeyIds.add(journeyId)
     journeys.push({
       journeyId,
+      ...(routeOptionId ? { routeOptionId, routePriority } : {}),
       role: item.role,
       origin,
       destination,
@@ -678,9 +687,15 @@ function parseRecommendations(raw: Record<string, unknown>): FlightRecommendatio
   if (raw.resultType !== RECOMMENDATIONS_RESULT_TYPE || raw.schemaVersion !== RECOMMENDATIONS_SCHEMA_VERSION) return null
   const status = raw.status
   const coverageStatus = raw.coverageStatus
+  const alternateCoverageStatus = raw.alternateCoverageStatus
   const budgetStatus = raw.budgetStatus
   if (status !== 'loading' && status !== 'success' && status !== 'partial' && status !== 'empty' && status !== 'expired' && status !== 'fatal_error') return null
   if (coverageStatus !== 'complete' && coverageStatus !== 'partial' && coverageStatus !== 'failed') return null
+  if (alternateCoverageStatus !== undefined
+    && alternateCoverageStatus !== 'complete'
+    && alternateCoverageStatus !== 'partial'
+    && alternateCoverageStatus !== 'failed'
+    && alternateCoverageStatus !== 'not_requested') return null
   if (budgetStatus !== 'within_budget' && budgetStatus !== 'exhausted') return null
   if (!Array.isArray(raw.plans) || raw.plans.length > MAX_RECOMMENDATION_PLANS) return null
   const planBearing = status === 'success' || status === 'partial' || status === 'expired'
@@ -707,6 +722,7 @@ function parseRecommendations(raw: Record<string, unknown>): FlightRecommendatio
     resultType: RECOMMENDATIONS_RESULT_TYPE,
     status,
     coverageStatus,
+    ...(alternateCoverageStatus !== undefined ? { alternateCoverageStatus } : {}),
     budgetStatus,
     ...(str(raw.message).trim() ? { message: str(raw.message) } : {}),
     ...(str(raw.reason).trim() ? { reason: str(raw.reason) } : {}),

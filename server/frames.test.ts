@@ -93,6 +93,7 @@ function recommendationsResult() {
     resultType: 'flight.recommendations',
     status: 'success',
     coverageStatus: 'complete',
+    alternateCoverageStatus: 'failed',
     budgetStatus: 'within_budget',
     capabilities: { canRetry: false, canReverify: false, canCopy: true },
     plans: [
@@ -120,6 +121,8 @@ function recommendationsResult() {
           },
           {
             journeyId: 'inbound',
+            routeOptionId: 'hong-kong',
+            routePriority: 'alternate',
             role: 'inbound',
             origin: 'SYD',
             destination: 'HKG',
@@ -382,6 +385,9 @@ test('a recommendation result is authoritative regardless of frame order and ret
   assert.equal(view.stage, 'recommendation')
   assert.equal(view.fare, null)
   assert.equal(view.recommendations?.plans[0]?.planId, 'plan-morning-evening')
+  assert.equal(view.recommendations?.alternateCoverageStatus, 'failed')
+  assert.equal(view.recommendations?.plans[0]?.journeys[1]?.routeOptionId, 'hong-kong')
+  assert.equal(view.recommendations?.plans[0]?.journeys[1]?.routePriority, 'alternate')
   assert.equal(view.chat.filter((bubble) => bubble.recommendations).length, 1)
   assert.equal(view.chat.some((bubble) => bubble.cards || bubble.fare || bubble.proposal), false)
   assert.equal(view.chat.find((bubble) => bubble.recommendations)?.evidence?.length, 1)

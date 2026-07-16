@@ -23,7 +23,7 @@ function resultFixture(): FlightRecommendations {
       label: '上午出发',
       windows: [{ journeyIndex: 0, window: '09:00-18:00' }],
       journeys: [{
-        journeyId: 'outbound', role: 'oneway', origin: 'PEK', destination: 'MEL', duration: '11h25m', transferCount: 0,
+        journeyId: 'outbound', routeOptionId: 'melbourne', routePriority: 'alternate', role: 'oneway', origin: 'PEK', destination: 'MEL', duration: '11h25m', transferCount: 0,
         segments: [{
           flightNo: 'CA165', departure: 'PEK', departureName: '北京首都', departureDate: '2026-08-14', departureTime: '10:00',
           arrival: 'MEL', arrivalName: '墨尔本', arrivalDate: '2026-08-14', arrivalTime: '23:25',
@@ -87,6 +87,7 @@ test('recommendation renderer shows one physical itinerary with cabin lines and 
   assert.equal(html.match(/<strong class="mono">CA165<\/strong>/g)?.length, 1)
   assert.match(html, /商务 Z舱/)
   assert.match(html, /经济 T舱/)
+  assert.match(html, /备选路线/)
   assert.match(html, /<details class="recommend-evidence">/)
   assert.match(html, /查看中间搜索证据/)
   assert.doesNotMatch(html, /<th>操作<\/th>/)

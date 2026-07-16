@@ -108,7 +108,10 @@ function JourneyCard({ plan, journey, index }: { plan: RecommendationPlan; journ
   return (
     <section className="recommend-journey" aria-labelledby={`${plan.planId}-${journey.journeyId}`}>
       <div className="recommend-journey-head">
-        <h4 id={`${plan.planId}-${journey.journeyId}`}>{roleLabel(journey, index)} · {journey.origin} → {journey.destination}</h4>
+        <h4 id={`${plan.planId}-${journey.journeyId}`}>
+          {roleLabel(journey, index)} · {journey.origin} → {journey.destination}
+          {journey.routePriority === 'alternate' ? <span className="recommend-route-priority">备选路线</span> : null}
+        </h4>
         <span>{journey.transferCount ? `中转 ${journey.transferCount} 次` : '直飞'}</span>
       </div>
       <div className="recommend-flight-facts">

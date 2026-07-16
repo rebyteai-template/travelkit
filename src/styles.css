@@ -381,6 +381,7 @@ tr.cheapest td { background: var(--good-soft); }
 .recommend-journey-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .recommend-journey-head h4, .recommend-tickets h4 { margin: 0; font-size: 14px; }
 .recommend-journey-head > span { color: var(--muted); font-size: 12px; }
+.recommend-route-priority { display: inline-block; margin-left: 7px; padding: 1px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 700; }
 .recommend-flight-facts { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 13px; }
 .recommend-flight-facts span:last-child { flex-basis: 100%; color: var(--muted); overflow-wrap: anywhere; }
 .recommend-cabin-lines { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }
