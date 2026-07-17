@@ -54,6 +54,20 @@ function planTotal(plan: RecommendationPlan) {
   return plan.customerQuoteTotal ?? plan.verifiedFareTotal
 }
 
+function passengerCount(group: RecommendationPlan['passengerGroups'][number]): number {
+  return group.passengers.adult + group.passengers.child + group.passengers.infant
+}
+
+function ticketUnitPrice(
+  ticket: RecommendationPlan['ticketGroups'][number],
+  passengers: RecommendationPlan['passengerGroups'][number],
+): string {
+  const count = passengerCount(passengers)
+  if (count <= 0) return recommendationMoney(ticket.verifiedPrice.amount, ticket.verifiedPrice.currency)
+  const amount = Math.round((ticket.verifiedPrice.amount / count) * 100) / 100
+  return `${recommendationMoney(amount, ticket.verifiedPrice.currency)}/人`
+}
+
 function CopyAction({ plan }: { plan: RecommendationPlan }) {
   const [state, setState] = useState<'idle' | 'copying' | 'copied' | 'error'>('idle')
   const resetTimer = useRef<number | undefined>(undefined)
@@ -74,10 +88,21 @@ function CopyAction({ plan }: { plan: RecommendationPlan }) {
   }
 
   if (!plan.capabilities.canCopy) return null
+  const copied = state === 'copied'
   return (
     <div className="recommend-copy">
-      <button type="button" disabled={state === 'copying'} onClick={onCopy}>
-        {state === 'copying' ? '复制中…' : state === 'copied' ? '已复制' : 'Copy'}
+      <button
+        type="button"
+        className={`recommend-copy-action ${copied ? 'is-copied' : ''}`.trim()}
+        disabled={state === 'copying'}
+        onClick={onCopy}
+      >
+        {copied ? (
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8 3 3 6-7" /></svg>
+        ) : (
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="7" height="7" rx="1.5" /><path d="M10.5 5.5v-2h-7v7h2" /></svg>
+        )}
+        <span>{state === 'copying' ? '复制中…' : copied ? '已复制' : state === 'error' ? '复制失败' : '复制'}</span>
       </button>
       <span className="sr-only" aria-live="polite">
         {state === 'copied' ? '方案已复制到剪贴板' : state === 'error' ? '无法访问剪贴板，请手动复制' : ''}
@@ -128,9 +153,17 @@ function PlanSummary({ plan, busy, onAction }: {
   busy: boolean
   onAction: (prompt: string) => void
 }) {
+  const total = planTotal(plan)
   return (
     <div className="recommend-plan-summary">
-      <strong className="recommend-plan-label">{plan.label || '未返回'}</strong>
+      <div className="recommend-plan-title-row">
+        <strong className="recommend-plan-label">{plan.label || '未返回'}</strong>
+        <CopyAction plan={plan} />
+      </div>
+      <div className="recommend-plan-total">
+        <span className="recommend-plan-total-label">总价</span>
+        <strong className="recommend-plan-total-amount mono">{recommendationMoney(total.amount, total.currency)}</strong>
+      </div>
       <ul className="recommend-plan-journeys">
         {plan.journeys.map((journey, journeyIndex) => (
           <li key={journey.journeyId}>
@@ -142,12 +175,11 @@ function PlanSummary({ plan, busy, onAction }: {
       {plan.validity.status === 'expired' ? (
         <span className="recommend-validity">价格已过期</span>
       ) : null}
-      <div className="recommend-actions">
-        <CopyAction plan={plan} />
-        {plan.capabilities.canReverify ? (
+      {plan.capabilities.canReverify ? (
+        <div className="recommend-actions">
           <button type="button" disabled={busy} onClick={() => onAction(buildRecommendationRetryPrompt(plan.planId))}>重新验价</button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -164,7 +196,7 @@ function TicketPriceLines({ plan, tickets }: {
           <div key={ticket.ticketGroupId}>
             <span className={`recommend-source-badge is-${ticket.fareSource}`}>{fareSourceLabel(ticket.fareSource)}</span>
             <strong>{passengerSummary(passengers)}</strong>
-            <strong className="recommend-fare-price mono">{recommendationMoney(ticket.verifiedPrice.amount, ticket.verifiedPrice.currency)}</strong>
+            <strong className="recommend-fare-price mono">{ticketUnitPrice(ticket, passengers)}</strong>
           </div>
         )
       })}
@@ -231,13 +263,11 @@ function RecommendationTable({ plans, busy, onAction }: {
             <th scope="col">舱位</th>
             <th scope="col">行李</th>
             <th scope="col">价格</th>
-            <th scope="col">总价</th>
             <th scope="col">供应渠道</th>
           </tr>
         </thead>
         {plans.map((plan) => {
           const rows = recommendationRows(plan)
-          const total = planTotal(plan)
           return (
             <tbody key={plan.planId} className="recommend-plan-group">
               {rows.map((row) => (
@@ -281,11 +311,6 @@ function RecommendationTable({ plans, busy, onAction }: {
                 <td className="recommend-fare-cell">
                   {row.tickets.length ? <TicketPriceLines plan={plan} tickets={row.tickets} /> : null}
                 </td>
-                {row.isFirstPlanRow ? (
-                  <td rowSpan={rows.length} className="recommend-total-cell">
-                    <strong className="mono">{recommendationMoney(total.amount, total.currency)}</strong>
-                  </td>
-                ) : null}
                 <td className="recommend-channel-cell">
                   {row.tickets.length ? <TicketSourceLines plan={plan} tickets={row.tickets} /> : null}
                 </td>

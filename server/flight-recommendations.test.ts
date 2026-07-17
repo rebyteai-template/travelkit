@@ -87,9 +87,11 @@ test('recommendation renderer uses one dense comparison table with exact segment
   }))
 
   assert.match(html, /<table class="recommend-table">/)
-  for (const heading of ['方案', '航程', '航班号', '日期', '航段', '时间', '飞行时长', '舱位', '行李', '价格', '总价', '供应渠道']) {
+  for (const heading of ['方案', '航程', '航班号', '日期', '航段', '时间', '飞行时长', '舱位', '行李', '价格', '供应渠道']) {
     assert.match(html, new RegExp(`<th scope="col">${heading}<\\/th>`))
   }
+  assert.doesNotMatch(html, /<th scope="col">总价<\/th>/)
+  assert.match(html, /recommend-plan-total-label">总价<\/span><strong class="recommend-plan-total-amount mono">¥21,000<\/strong>/)
   assert.equal(html.match(/class="recommend-segment-row/g)?.length, 1)
   assert.equal(html.match(/CA165/g)?.length, 1)
   assert.match(html, /商务 Z舱/)
@@ -106,7 +108,9 @@ test('recommendation renderer uses one dense comparison table with exact segment
   assert.doesNotMatch(html, />验价<\/button>/)
   assert.doesNotMatch(html, /实时查询价/)
   assert.match(html, /<ul class="recommend-plan-journeys"><li><span>第1程<\/span><span class="mono">09:00-18:00<\/span><\/li><\/ul>/)
-  assert.match(html, />Copy<\/button>/)
+  assert.match(html, /<div class="recommend-plan-title-row"><strong class="recommend-plan-label">上午出发<\/strong><div class="recommend-copy">/)
+  assert.match(html, /class="recommend-copy-action"[^>]*><svg[^>]*aria-hidden="true"[^>]*>.*<span>复制<\/span><\/button>/)
+  assert.doesNotMatch(html, />Copy<\/button>/)
 })
 
 test('each physical segment becomes one standard table row while plan and journey facts print once', () => {
@@ -135,7 +139,8 @@ test('each physical segment becomes one standard table row while plan and journe
   assert.equal(html.match(/class="recommend-segment-row/g)?.length, 2)
   assert.match(html, /<th scope="rowgroup" rowSpan="2" class="recommend-plan-cell">/)
   assert.match(html, /<th scope="rowgroup" rowSpan="2" class="recommend-journey-cell">/)
-  assert.match(html, /<td rowSpan="2" class="recommend-total-cell">/)
+  assert.doesNotMatch(html, /recommend-total-cell/)
+  assert.equal(html.match(/recommend-plan-total-amount/g)?.length, 1)
   assert.equal(html.match(/上午出发/g)?.length, 1)
   assert.equal(html.match(/<th scope="rowgroup" rowSpan="2" class="recommend-journey-cell"><div class="recommend-journey-summary"><strong>单程<\/strong><span> · 中转 1 次<\/span><\/div>/g)?.length, 1)
   assert.equal(html.match(/CA165/g)?.length, 1)
@@ -148,6 +153,27 @@ test('each physical segment becomes one standard table row while plan and journe
   assert.match(html, /第二段托运1\*20kg/)
   assert.match(html, /recommend-duration-cell mono">2h15m/)
   assert.match(html, /recommend-duration-cell mono">未返回/)
+})
+
+test('ticket-group totals render as per-person prices while the plan card keeps the whole-order total', () => {
+  const result = resultFixture()
+  const plan = result.plans[0]!
+  const economyTicket = plan.ticketGroups[1]!
+  economyTicket.verifiedPrice.amount = 4821
+  plan.verifiedFareTotal.amount = 16821
+  plan.customerQuoteTotal!.amount = 16821
+
+  const html = renderToStaticMarkup(createElement(FlightRecommendationsView, { result, busy: false, onAction: () => {} }))
+
+  assert.match(html, /<strong>3 成人<\/strong><strong class="recommend-fare-price mono">¥1,607\/人<\/strong>/)
+  assert.match(html, /recommend-plan-total-amount mono">¥16,821<\/strong>/)
+  assert.doesNotMatch(html, />¥4,821<\/strong>/)
+
+  economyTicket.verifiedPrice.amount = 4822
+  plan.verifiedFareTotal.amount = 16822
+  plan.customerQuoteTotal!.amount = 16822
+  const roundedHtml = renderToStaticMarkup(createElement(FlightRecommendationsView, { result, busy: false, onAction: () => {} }))
+  assert.match(roundedHtml, /recommend-fare-price mono">¥1,607.33\/人<\/strong>/)
 })
 
 test('missing segment facts never fall back to ticket-level aggregates', () => {
@@ -229,7 +255,7 @@ test('partial state renders plans without inventing a coverage warning', () => {
   assert.doesNotMatch(partialHtml, /搜索覆盖不完整/)
   assert.doesNotMatch(partialHtml, /全部组合中的最低价/)
   assert.match(partialHtml, />重试推荐<\/button>/)
-  assert.match(partialHtml, />Copy<\/button>/)
+  assert.match(partialHtml, /class="recommend-copy-action"[^>]*>.*<span>复制<\/span><\/button>/)
 })
 
 test('partial state shows only an explicit skill message and its retry capability', () => {
@@ -255,7 +281,7 @@ test('expired plan renders the skill-owned state and authorized Reverify action'
   assert.match(html, /价格已过期/)
   assert.match(html, />重新验价<\/button>/)
   assert.doesNotMatch(html, /实时查询价/)
-  assert.doesNotMatch(html, />Copy<\/button>/)
+  assert.doesNotMatch(html, /recommend-copy-action/)
 })
 
 test('empty and fatal states provide retry semantics and stable labels', () => {
