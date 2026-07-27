@@ -68,7 +68,6 @@ interface NormalizedDomainResult {
   resultType:
     | 'flight.search'
     | 'flight.verify'
-    | 'flight.proposal'
     | 'flight.recommendations'
   schemaVersion: string
   payload: unknown
@@ -118,7 +117,6 @@ Move business contract parsers into shared modules:
 
 - `shared/flight-search-contract.ts`
 - `shared/flight-verify-contract.ts`
-- `shared/flight-proposal-contract.ts`
 - `shared/flight-recommendations-contract.ts`
 
 Both worker/server normalization and TypeScript UI types import these modules. The UI does not independently reinterpret unknown payloads.

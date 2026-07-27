@@ -31,10 +31,9 @@ export function buildRecommendationRetryPrompt(planId?: string): string {
     : '请重新运行航班推荐，并返回新的 flight.recommendations 结构化结果。'
 }
 
-export function buildRecommendationContinuationPrompt(mode: 'global_more' | 'unseen_variants', count: number): string {
-  return mode === 'unseen_variants'
-    ? `请基于刚才的推荐，优先继续查找第一页未覆盖的其他出发城市或路线，最多返回${count}个未展示方案；使用已有 continuation，不要重新搜索。`
-    : `请基于刚才的推荐继续返回最多${count}个未展示方案；使用已有 continuation，不要重新搜索。`
+/** Sent as the customer's own chat turn — page size, mode and snapshot reuse stay the skill's rules. */
+export function buildRecommendationContinuationPrompt(): string {
+  return '再来一些方案。'
 }
 
 function passengerSummary(group: RecommendationPlan['passengerGroups'][number]): string {
@@ -330,20 +329,37 @@ function RecommendationTable({ plans, busy, onAction }: {
   )
 }
 
-export function FlightRecommendationsView({ result, evidence = [], busy, onAction }: {
+export function FlightRecommendationsView({ result, evidence = [], busy, onAction, isLatest = false }: {
   result: FlightRecommendations
   evidence?: SearchResult[]
   busy: boolean
   onAction: (prompt: string) => void
+  /** Grants the "load more" capability, the way `onContinue` grants the fare CTA. Only the
+   *  task's newest recommendation may continue: the skill consumes a continuation token per
+   *  page and mints a new one, so an older page's token is already dead. Withheld by default
+   *  — a caller that forgets loses a button rather than offering one that fails. */
+  isLatest?: boolean
 }) {
   const [evidenceOpened, setEvidenceOpened] = useState(false)
   const isAlert = result.status === 'fatal_error' || result.status === 'empty'
   const explicitStatusText = result.message || result.reason
   const showState = result.plans.length === 0 || result.status === 'loading' || Boolean(explicitStatusText)
   const hasRetry = result.capabilities.canRetry
-  const continuation = result.continuation && Date.parse(result.continuation.expiresAt) > Date.now()
-    ? result.continuation
-    : undefined
+  // The token dies on its own clock, so re-render at expiry — otherwise the button survives
+  // until some unrelated render and the click fails. 0 for pages that can never continue,
+  // which also keeps stale pages from arming a timer.
+  const expiresAt = isLatest && result.continuation ? Date.parse(result.continuation.expiresAt) : 0
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    const untilExpiry = expiresAt - Date.now()
+    if (untilExpiry <= 0) return
+    const timer = window.setTimeout(() => setNow(Date.now()), untilExpiry)
+    return () => window.clearTimeout(timer)
+  }, [expiresAt])
+  const canContinue = expiresAt > now
+  // Retry lives in the state box when there is one; otherwise it joins the row under the
+  // table. It is a recovery action, so it never gets its own slot above the result.
+  const showRetryAction = hasRetry && !showState
 
   return (
     <section
@@ -367,34 +383,32 @@ export function FlightRecommendationsView({ result, evidence = [], busy, onActio
         </div>
       ) : null}
 
-      {!showState && hasRetry ? (
-        <div className="recommendations-actions">
-          <button type="button" disabled={busy} onClick={() => onAction(buildRecommendationRetryPrompt())}>重试推荐</button>
-        </div>
-      ) : null}
-
       {result.plans.length ? (
         <RecommendationTable plans={result.plans} busy={busy} onAction={onAction} />
       ) : null}
 
-      {continuation ? (
-        <div className="recommendations-actions" aria-label="继续查看推荐">
-          {continuation.modes.includes('global_more') ? (
+      {/* One row under the table: ask for more, or start over. Retry sits quiet at the far end.
+          A page that verified nothing still offers "more" — its snapshot keeps candidates, and
+          another page budget beats the full re-run retry triggers. */}
+      {canContinue || showRetryAction ? (
+        <div className="recommendations-actions" aria-label="推荐操作">
+          {canContinue ? (
             <button
               type="button"
               disabled={busy}
-              onClick={() => onAction(buildRecommendationContinuationPrompt('global_more', continuation.pageSize))}
+              onClick={() => onAction(buildRecommendationContinuationPrompt())}
             >
-              再来{continuation.pageSize}个
+              加载更多方案
             </button>
           ) : null}
-          {continuation.modes.includes('unseen_variants') ? (
+          {showRetryAction ? (
             <button
               type="button"
+              className="ghost"
               disabled={busy}
-              onClick={() => onAction(buildRecommendationContinuationPrompt('unseen_variants', continuation.pageSize))}
+              onClick={() => onAction(buildRecommendationRetryPrompt())}
             >
-              看其他出发地或路线
+              重试推荐
             </button>
           ) : null}
         </div>

@@ -129,6 +129,7 @@ export function App() {
             onPick={pickSuggestion}
             onBook={selectOption}
             fareLatest={view.fare}
+            recommendationsLatest={view.recommendations}
             onContinue={mode === 'auto' ? continueToPassengers : undefined}
             notice={view.notice}
             waitingForAnswer={!!view.pendingQuestion}

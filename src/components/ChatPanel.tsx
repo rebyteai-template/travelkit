@@ -1,10 +1,9 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { ChatBubble, FareVerification } from '../frames.ts'
+import type { ChatBubble, FareVerification, FlightRecommendations } from '../frames.ts'
 import { parseTs, shortStamp, fullStamp } from '../lib/time.ts'
 import { Markdown } from './Markdown.tsx'
 import { FlightResultsTable } from './FlightResultsTable.tsx'
-import { FlightProposalTable } from './FlightProposalTable.tsx'
 import { FlightRecommendationsView } from './FlightRecommendations.tsx'
 import { FareDetailTable } from './FareDetailTable.tsx'
 import { FileCard } from './FileCard.tsx'
@@ -43,6 +42,7 @@ export function ChatPanel({
   onPick,
   onBook,
   fareLatest,
+  recommendationsLatest,
   onContinue,
   notice,
   waitingForAnswer,
@@ -58,6 +58,9 @@ export function ChatPanel({
   /** The current verified fare (DerivedView.fare). The inline verify card whose `b.fare` is this
    *  exact object is the latest/actionable one; older verify cards render read-only. */
   fareLatest: FareVerification | null
+  /** DerivedView.recommendations — the task's newest recommendation set. Only that bubble
+   *  may offer "load more"; older pages hold a token the skill already consumed. */
+  recommendationsLatest: FlightRecommendations | null
   /** Entry CTA for the verify card. Undefined while a write-flow step is open (mode != 'auto') so
    *  the CTA hides; when defined it shows only on the latest fare card. */
   onContinue?: () => void
@@ -104,6 +107,15 @@ export function ChatPanel({
               </div>
             )
           }
+          if (b.runUrl) {
+            return (
+              <div key={b.key} className="msg full">
+                <a className="run-link" href={b.runUrl} target="_blank" rel="noreferrer">
+                  ↗ 在 rebyte 查看本次运行
+                </a>
+              </div>
+            )
+          }
           if (b.question && b.promptId) {
             return (
               <div key={b.key} className="msg full">
@@ -120,15 +132,13 @@ export function ChatPanel({
           // Inline card turn: the (table-stripped) assistant prose, then the search cards or the
           // verify fare card. The fare card shows its CTA only on the latest fare and only while no
           // write-flow step is open (onContinue is undefined otherwise → the form is showing below).
-          if (b.cards || b.fare || b.proposal || b.recommendations) {
+          if (b.cards || b.fare || b.recommendations) {
             return (
               <div key={b.key} className="msg full">
                 <div className="chat-cards">
                   {b.text.trim() ? <div className="bubble assistant"><Markdown text={b.text} /></div> : null}
                   {b.recommendations
-                    ? <FlightRecommendationsView result={b.recommendations} evidence={b.evidence} busy={busy} onAction={onBook} />
-                    : b.proposal
-                      ? <FlightProposalTable proposal={b.proposal} />
+                    ? <FlightRecommendationsView result={b.recommendations} evidence={b.evidence} busy={busy} onAction={onBook} isLatest={b.recommendations === recommendationsLatest} />
                     : b.cards
                       ? <FlightResultsTable options={b.cards} totalCount={b.totalCount} coverage={b.coverage} onBook={onBook} busy={busy} />
                       : <FareDetailTable fare={b.fare!} busy={busy} onContinue={b.fare === fareLatest ? onContinue : undefined} />}

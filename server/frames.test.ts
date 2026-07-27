@@ -308,72 +308,6 @@ test('versioned search keeps the structured UI table when the agent also writes 
   assert.equal(view.chat.find((bubble) => bubble.text.includes('搜索完成'))?.text, '搜索完成')
 })
 
-test('a final proposal replaces search and pricing tables with one OP card', () => {
-  const search = compactSearch(1, 'CA165', 14932) as Record<string, unknown>
-  search.schemaVersion = 'flight-search/v1'
-  search.resultType = 'flight.search'
-  const pricing = compactSearch(6, 'CA165', 14932) as Record<string, unknown>
-  pricing.schemaVersion = 'flight-pricing/v1'
-  pricing.resultType = 'flight.pricing'
-  const proposal = {
-    schemaVersion: 'flight-proposal/v1',
-    resultType: 'flight.proposal',
-    ok: true,
-    title: '客户报价方案',
-    journeys: [
-      {
-        role: 'outbound',
-        itinerary: {
-          origin: 'PEK', destination: 'MEL', duration: '11h25m', transferCount: 0,
-          segments: [{
-            flightNo: 'CA165', departure: 'PEK', departureName: '北京首都', departureTerminal: 'T3',
-            departureDate: '2026-08-14', departureTime: '01:00', arrival: 'MEL', arrivalName: '墨尔本',
-            arrivalTerminal: 'T2', arrivalDate: '2026-08-14', arrivalTime: '14:25', cabin: '商务 Z舱',
-          }],
-        },
-        fares: [
-          { passengers: 1, passengerType: 'adult', cabin: '商务 Z舱', baggage: '托运2*32kg', unitPrice: 13255, subtotal: 13255 },
-          { passengers: 3, passengerType: 'adult', cabin: '经济 T舱', baggage: '托运1*23kg', unitPrice: 3809, subtotal: 11427 },
-        ],
-        subtotal: 24682,
-      },
-      {
-        role: 'inbound',
-        itinerary: {
-          origin: 'SYD', destination: 'HKG', duration: '9h55m', transferCount: 0,
-          segments: [{
-            flightNo: 'HX18', departure: 'SYD', departureName: '悉尼', departureTerminal: 'T1',
-            departureDate: '2026-08-24', departureTime: '11:15', arrival: 'HKG', arrivalName: '香港',
-            arrivalTerminal: 'T1', arrivalDate: '2026-08-24', arrivalTime: '19:10', cabin: '商务 I舱',
-          }],
-        },
-        fares: [
-          { passengers: 1, passengerType: 'adult', cabin: '商务 I舱', baggage: '托运2*32kg', unitPrice: 15145, subtotal: 15145 },
-          { passengers: 3, passengerType: 'adult', cabin: '经济 W舱', baggage: '托运1*23kg', unitPrice: 2141, subtotal: 6423 },
-        ],
-        subtotal: 21568,
-      },
-    ],
-    total: { amount: 46250, currency: 'CNY' },
-    copyText: '1. CA165\n1人 商务 Z舱\n3人 经济 T舱\n\n2. HX18\n1人 商务 I舱\n3人 经济 W舱',
-    capabilities: { canCopy: true, canBook: false },
-  }
-  const prompt = promptWithToolResult('')
-  prompt.frames = [
-    { seq: 1, data: { type: 'user', message: { content: [{ type: 'tool_result', content: JSON.stringify(search) }] } } },
-    { seq: 2, data: { type: 'user', message: { content: [{ type: 'tool_result', content: JSON.stringify(pricing) }] } } },
-    { seq: 3, data: { type: 'assistant', message: { content: [{ type: 'text', text: '最终如下\n\n| 航班 | 价格 |\n| --- | --- |\n| CA165 | ¥13255 |' }] } } },
-    { seq: 4, data: { type: 'user', message: { content: [{ type: 'tool_result', content: JSON.stringify(proposal) }] } } },
-  ]
-
-  const view = derive([prompt])
-  assert.equal(view.chat.filter((bubble) => bubble.cards).length, 0)
-  assert.equal(view.chat.filter((bubble) => bubble.proposal).length, 1)
-  assert.equal(view.chat.find((bubble) => bubble.proposal)?.proposal?.journeys.length, 2)
-  assert.equal(view.chat.find((bubble) => bubble.proposal)?.proposal?.journeys[0]?.fares.length, 2)
-  assert.equal(view.chat.find((bubble) => bubble.text.includes('最终如下'))?.text, '最终如下')
-})
-
 test('a recommendation result is authoritative regardless of frame order and retains search as evidence', () => {
   const recommendation = {
     ...recommendationsResult(),
@@ -408,7 +342,7 @@ test('a recommendation result is authoritative regardless of frame order and ret
   assert.equal(view.recommendations?.continuation?.nextPage, 2)
   assert.deepEqual(view.recommendations?.continuation?.modes, ['global_more', 'unseen_variants'])
   assert.equal(view.chat.filter((bubble) => bubble.recommendations).length, 1)
-  assert.equal(view.chat.some((bubble) => bubble.cards || bubble.fare || bubble.proposal), false)
+  assert.equal(view.chat.some((bubble) => bubble.cards || bubble.fare), false)
   assert.equal(view.chat.find((bubble) => bubble.recommendations)?.evidence?.length, 1)
   assert.equal(view.chat.find((bubble) => bubble.text.includes('中间表'))?.text, '中间表')
 })
@@ -663,34 +597,6 @@ test('failed TaskOutput never publishes nested business JSON', () => {
   assert.equal(view.chat.some((bubble) => bubble.recommendations), false)
 })
 
-test('a new recommendation result outranks a legacy proposal emitted later in the same turn', () => {
-  const legacy = {
-    schemaVersion: 'flight-proposal/v1', resultType: 'flight.proposal', ok: true, title: '旧报价',
-    journeys: [{
-      role: 'oneway',
-      itinerary: {
-        origin: 'PEK', destination: 'SHA', duration: '2h', transferCount: 0,
-        segments: [{
-          flightNo: 'MU5186', departure: 'PEK', departureDate: '2026-08-05', departureTime: '07:45',
-          arrival: 'SHA', arrivalDate: '2026-08-05', arrivalTime: '10:05', cabin: '经济 H舱',
-        }],
-      },
-      fares: [{ passengers: 1, passengerType: 'adult', cabin: '经济 H舱', baggage: '1件', unitPrice: 1000, subtotal: 1000 }],
-      subtotal: 1000,
-    }],
-    total: { amount: 1000, currency: 'CNY' }, copyText: '旧报价', capabilities: { canCopy: true, canBook: false },
-  }
-  const prompt = promptWithToolResult('')
-  prompt.frames = [
-    { seq: 1, data: { type: 'user', message: { content: [{ type: 'tool_result', content: JSON.stringify(recommendationsResult()) }] } } },
-    { seq: 2, data: { type: 'user', message: { content: [{ type: 'tool_result', content: JSON.stringify(legacy) }] } } },
-  ]
-
-  const view = derive([prompt])
-  assert.equal(view.chat.some((bubble) => bubble.proposal), false)
-  assert.equal(view.chat.filter((bubble) => bubble.recommendations).length, 1)
-})
-
 test('multiple plan-bearing recommendation results in one turn fail closed instead of taking the last result', () => {
   const first = recommendationsResult()
   const second = structuredClone(first)
@@ -792,20 +698,28 @@ test('malformed explicit recommendation results fail closed instead of falling t
   assert.equal(view.chat.some((bubble) => bubble.cards), false)
 })
 
-test('recommendation sets reject duplicate plan identities and more than ten plans', () => {
+test('recommendation sets reject duplicate plan identities', () => {
   const duplicatePlan = structuredClone(recommendationsResult())
   duplicatePlan.plans.push(structuredClone(duplicatePlan.plans[0]!))
-  const tooMany = structuredClone(recommendationsResult())
-  tooMany.plans = Array.from({ length: 11 }, (_, index) => ({
-    ...structuredClone(tooMany.plans[0]!),
+
+  const view = derive([promptWithToolResult(JSON.stringify(duplicatePlan))])
+  assert.equal(view.recommendations?.status, 'fatal_error')
+})
+
+// Page size belongs to the skill (its MAX_RECOMMENDATION_RESULTS, enforced in
+// `recommend-next --count`). A second copy of that number here would reject every result
+// the day the skill changes it.
+test('a page carrying more plans than today\'s skill page size still renders', () => {
+  const payload = structuredClone(recommendationsResult())
+  payload.plans = Array.from({ length: 12 }, (_, index) => ({
+    ...structuredClone(payload.plans[0]!),
     planId: `plan-${index}`,
     windowKey: `window-${index}`,
   }))
 
-  for (const payload of [duplicatePlan, tooMany]) {
-    const view = derive([promptWithToolResult(JSON.stringify(payload))])
-    assert.equal(view.recommendations?.status, 'fatal_error')
-  }
+  const view = derive([promptWithToolResult(JSON.stringify(payload))])
+  assert.equal(view.recommendations?.status, 'success')
+  assert.equal(view.recommendations?.plans.length, 12)
 })
 
 test('recommendation sets render distinct plans that share the same time window', () => {

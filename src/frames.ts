@@ -114,40 +114,6 @@ export interface SearchCoverage {
   missing: FareSource[]
 }
 
-// ── customer proposal (one OP card, one row per physical itinerary) ─────
-// Search/pricing results are intermediate workbench evidence. A proposal is
-// the deliberately selected outbound/return plan: the flight facts appear once
-// and all cabin/passenger prices live inside that flight row.
-export interface ProposalFareLine {
-  passengers: number
-  passengerType: string
-  cabin: string
-  baggage: string
-  unitPrice: number
-  subtotal: number
-}
-export interface ProposalItinerary {
-  origin: string
-  destination: string
-  duration: string
-  transferCount: number
-  segments: CompactSegment[]
-}
-export interface ProposalJourney {
-  role: JourneyRole
-  itinerary: ProposalItinerary
-  fares: ProposalFareLine[]
-  subtotal: number
-}
-export interface FlightProposal {
-  schemaVersion: 'flight-proposal/v1'
-  title: string
-  journeys: ProposalJourney[]
-  total: { amount: number; currency: string }
-  copyText: string
-  capabilities: { canCopy: boolean; canBook: boolean }
-}
-
 // ── authoritative recommendations (several complete, verified plans) ────
 export type RecommendationStatus = 'loading' | 'success' | 'partial' | 'empty' | 'expired' | 'fatal_error'
 export type RecommendationCoverageStatus = 'complete' | 'partial' | 'failed'
@@ -251,7 +217,9 @@ export interface FlightRecommendations {
     expiresAt: string
     nextPage: number
     pageSize: number
-    modes: Array<'global_more' | 'unseen_variants'>
+    /** The skill's own continuation menu, carried opaquely: TravelKit asks for more and lets
+     *  the agent pick the mode, so it must not pin the set of valid values. */
+    modes: string[]
   }
 }
 
@@ -347,9 +315,6 @@ export interface ChatBubble {
    *  `cards`. The latest verify's fare is the SAME object as `DerivedView.fare`, so the panel
    *  shows the "继续预订" CTA only on that one (`b.fare === view.fare`). */
   fare?: FareVerification
-  /** Final selected customer proposal. Its presence suppresses every search/pricing
-   *  table produced while the agent assembled it. */
-  proposal?: FlightProposal
   /** Authoritative multi-plan result. Search results used to create it are retained as
    *  collapsed, read-only evidence on the same bubble and never regain primary status. */
   recommendations?: FlightRecommendations
@@ -364,6 +329,8 @@ export interface ChatBubble {
   promptId?: string
   /** One compact, collapsible run summary. Structured business results stay separate. */
   activity?: AgentActivityRun
+  /** Link back to this turn's raw rebyte run — an operator affordance, not chat content. */
+  runUrl?: string
 }
 
 export type Stage = 'idle' | 'search' | 'verify' | 'recommendation' | 'order' | 'payment'
@@ -383,6 +350,15 @@ export interface DerivedView {
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object'
+}
+
+/** Does this bubble carry anything besides prose? One list, so a new payload kind is added
+ *  in one place instead of being negated twice inside the de-dupe condition. */
+function carriesPayload(b: ChatBubble): boolean {
+  return Boolean(
+    b.cards || b.fare || b.recommendations
+    || b.attachments || b.question || b.activity || b.runUrl,
+  )
 }
 
 function textFromContent(content: unknown): string {
@@ -426,80 +402,8 @@ function parseCapabilities(raw: unknown): NonNullable<CompactOption['capabilitie
   return { canCopy: raw.canCopy === true, canBook: raw.canBook === true }
 }
 
-function parseProposal(raw: Record<string, unknown>): FlightProposal | null {
-  if (raw.resultType !== 'flight.proposal' || raw.schemaVersion !== 'flight-proposal/v1' || raw.ok !== true) return null
-  if (!Array.isArray(raw.journeys) || !raw.journeys.length || !isObj(raw.total)) return null
-  const journeys: ProposalJourney[] = []
-  for (const rawJourney of raw.journeys) {
-    if (!isObj(rawJourney) || !isObj(rawJourney.itinerary) || !Array.isArray(rawJourney.fares)) return null
-    const itinerary = rawJourney.itinerary
-    if (!Array.isArray(itinerary.segments) || !itinerary.segments.length) return null
-    const segments: CompactSegment[] = []
-    for (const rawSegment of itinerary.segments) {
-      if (!isObj(rawSegment)) return null
-      const segment: CompactSegment = {
-        flightNo: str(rawSegment.flightNo),
-        departure: str(rawSegment.departure),
-        departureDate: str(rawSegment.departureDate),
-        departureTime: str(rawSegment.departureTime),
-        arrival: str(rawSegment.arrival),
-        arrivalDate: str(rawSegment.arrivalDate),
-        arrivalTime: str(rawSegment.arrivalTime),
-        cabin: str(rawSegment.cabin),
-        ...(typeof rawSegment.departureName === 'string' ? { departureName: rawSegment.departureName } : {}),
-        ...(typeof rawSegment.departureTerminal === 'string' ? { departureTerminal: rawSegment.departureTerminal } : {}),
-        ...(typeof rawSegment.arrivalName === 'string' ? { arrivalName: rawSegment.arrivalName } : {}),
-        ...(typeof rawSegment.arrivalTerminal === 'string' ? { arrivalTerminal: rawSegment.arrivalTerminal } : {}),
-        ...(typeof rawSegment.flightTime === 'string' ? { flightTime: rawSegment.flightTime } : {}),
-        ...(typeof rawSegment.checkedBaggage === 'string' ? { checkedBaggage: rawSegment.checkedBaggage } : {}),
-      }
-      if (!segment.flightNo || !segment.departure || !segment.arrival || !segment.departureDate) return null
-      segments.push(segment)
-    }
-    const fares: ProposalFareLine[] = []
-    for (const rawFare of rawJourney.fares) {
-      if (!isObj(rawFare)) return null
-      const fare = {
-        passengers: num(rawFare.passengers),
-        passengerType: str(rawFare.passengerType),
-        cabin: str(rawFare.cabin),
-        baggage: str(rawFare.baggage),
-        unitPrice: num(rawFare.unitPrice),
-        subtotal: num(rawFare.subtotal),
-      }
-      if (fare.passengers <= 0 || fare.unitPrice <= 0 || !fare.cabin) return null
-      fares.push(fare)
-    }
-    const role = rawJourney.role
-    if (role !== 'oneway' && role !== 'outbound' && role !== 'inbound' && role !== 'leg') return null
-    journeys.push({
-      role,
-      itinerary: {
-        origin: str(itinerary.origin),
-        destination: str(itinerary.destination),
-        duration: str(itinerary.duration),
-        transferCount: num(itinerary.transferCount),
-        segments,
-      },
-      fares,
-      subtotal: num(rawJourney.subtotal),
-    })
-  }
-  const capabilities = parseCapabilities(raw.capabilities)
-  const proposal: FlightProposal = {
-    schemaVersion: 'flight-proposal/v1',
-    title: str(raw.title) || '报价方案',
-    journeys,
-    total: { amount: num(raw.total.amount), currency: str(raw.total.currency) },
-    copyText: str(raw.copyText),
-    capabilities: capabilities ?? { canCopy: false, canBook: false },
-  }
-  return proposal.total.amount > 0 && proposal.total.currency && proposal.copyText ? proposal : null
-}
-
 const RECOMMENDATIONS_SCHEMA_VERSION = 'flight-recommendations/v1'
 const RECOMMENDATIONS_RESULT_TYPE = 'flight.recommendations'
-const MAX_RECOMMENDATION_PLANS = 10
 
 function parsePositivePrice(raw: unknown): CompactPrice | null {
   if (!isObj(raw) || typeof raw.amount !== 'number' || !Number.isFinite(raw.amount) || raw.amount <= 0) return null
@@ -759,7 +663,10 @@ function parseRecommendations(raw: Record<string, unknown>): FlightRecommendatio
     && alternateCoverageStatus !== 'failed'
     && alternateCoverageStatus !== 'not_requested') return null
   if (budgetStatus !== 'within_budget' && budgetStatus !== 'exhausted') return null
-  if (!Array.isArray(raw.plans) || raw.plans.length > MAX_RECOMMENDATION_PLANS) return null
+  // How many plans a page carries is the skill's product decision (its own
+  // MAX_RECOMMENDATION_RESULTS), not a TravelKit contract term. Mirroring the number here
+  // would reject every result the day the skill changes it.
+  if (!Array.isArray(raw.plans)) return null
   const planBearing = status === 'success' || status === 'partial' || status === 'expired'
   if (planBearing !== (raw.plans.length > 0)) return null
   const plans = raw.plans.map(parseRecommendationPlan)
@@ -797,10 +704,11 @@ function parseRecommendations(raw: Record<string, unknown>): FlightRecommendatio
       || typeof pageSize !== 'number'
       || !Number.isInteger(pageSize)
       || pageSize < 1
-      || pageSize > MAX_RECOMMENDATION_PLANS
       || !Array.isArray(modes)
       || !modes.length
-      || modes.some((mode) => mode !== 'global_more' && mode !== 'unseen_variants')
+      // Which modes exist is the skill's menu, and TravelKit no longer picks one. Requiring a
+      // closed set here would fail the whole page closed the day the skill adds a third.
+      || modes.some((mode) => typeof mode !== 'string' || !mode.trim())
     ) return null
     continuation = {
       hasMore: true,
@@ -808,7 +716,7 @@ function parseRecommendations(raw: Record<string, unknown>): FlightRecommendatio
       expiresAt,
       nextPage,
       pageSize,
-      modes: modes as Array<'global_more' | 'unseen_variants'>,
+      modes: modes as string[],
     }
   }
   return {
@@ -889,7 +797,6 @@ export function derive(prompts: PromptContent[]): DerivedView {
     let pendingSearches: SearchResult[] = []
     let hasVersionedSearch = false
     let pendingFare: FareVerification | null = null
-    let pendingProposal: FlightProposal | null = null
     let pendingRecommendations: FlightRecommendations | null = null
     const planBearingRecommendationSignatures = new Set<string>()
     let conflictingRecommendationResults = false
@@ -970,8 +877,11 @@ export function derive(prompts: PromptContent[]): DerivedView {
         continue
       }
 
-      // Run metadata is internal; the customer status is derived from business phases.
+      // rebyte run link for this turn (emitted by the DO when the relay task starts).
+      // Operator affordance: the customer-visible progress is the activity summary, this
+      // is the way back to the raw run when a turn needs debugging.
       if (typeof data.__rebyte_run === 'string') {
+        chat.push({ key: `r-${p.id}-${f.seq}`, role: 'assistant', text: '', runUrl: `https://app.rebyte.ai/run/${data.__rebyte_run}` })
         continue
       }
 
@@ -1051,23 +961,11 @@ export function derive(prompts: PromptContent[]): DerivedView {
               ? invalidRecommendations('本次运行返回了多个独立的推荐结果，无法确定它们是否共同覆盖原始请求。请用一个完整行程请求重新生成推荐。')
               : parsed ?? invalidRecommendations()
             recommendations = pendingRecommendations
-            pendingProposal = null
             fare = null
             pendingFare = null
             notice = null
             stage = 'recommendation'
             continue
-          }
-
-          // A proposal is the only customer-facing summary for this turn. It
-          // replaces all search/pricing tables used to assemble the plan.
-          if (payload && resultType === 'flight.proposal') {
-            const parsed = parseProposal(payload)
-            if (parsed && !pendingRecommendations) {
-              pendingProposal = parsed
-              recommendations = null
-              continue
-            }
           }
 
           // Pricing is intermediate evidence, never a search table. Older
@@ -1179,9 +1077,6 @@ export function derive(prompts: PromptContent[]): DerivedView {
         evidence: pendingSearches,
         ts: replyTs,
       })
-    } else if (pendingProposal) {
-      if (lastAssistantTextBubble) lastAssistantTextBubble.text = stripMarkdownTables(lastAssistantTextBubble.text)
-      chat.push({ key: `proposal-${p.id}`, role: 'assistant', text: '', proposal: pendingProposal, ts: replyTs })
     } else if (pendingSearches.length && (hasVersionedSearch || !(lastAssistantTextBubble && containsMarkdownTable(lastAssistantTextBubble.text)))) {
       if (hasVersionedSearch && lastAssistantTextBubble) {
         lastAssistantTextBubble.text = stripMarkdownTables(lastAssistantTextBubble.text)
@@ -1211,11 +1106,11 @@ export function derive(prompts: PromptContent[]): DerivedView {
     }
   }
 
-  // de-dupe consecutive identical assistant bubbles; never drop a card- or attachment-bearing bubble
+  // de-dupe consecutive identical assistant bubbles; never drop a payload-bearing one
   const deduped: ChatBubble[] = []
   for (const b of chat) {
     const prev = deduped[deduped.length - 1]
-    if (!b.cards && !b.fare && !b.proposal && !b.recommendations && !b.attachments && !b.question && !b.activity && prev && prev.role === b.role && prev.text === b.text && !prev.cards && !prev.fare && !prev.proposal && !prev.recommendations && !prev.attachments && !prev.question && !prev.activity) continue
+    if (prev && !carriesPayload(b) && !carriesPayload(prev) && prev.role === b.role && prev.text === b.text) continue
     deduped.push(b)
   }
   const pendingQuestion = [...deduped].reverse().find(

@@ -300,6 +300,11 @@ body {
 .md .table-scroll td { white-space: nowrap; }
 .md hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
 
+/* Operator link back to this turn's raw rebyte run. Deliberately the quietest thing in
+   the stream: it sits below the agent's own progress summary and never competes with it. */
+.run-link { font-size: 12px; color: var(--accent); text-decoration: none; opacity: .8; }
+.run-link:hover { opacity: 1; text-decoration: underline; }
+
 /* ── composer ──────────────────────────────────────────────────────────── */
 /* The bar blends into the chat canvas; the rounded shell is the raised input surface. */
 .composer { padding: 8px clamp(20px, 3vw, 36px) 18px; background: var(--bg); }
@@ -416,28 +421,6 @@ tr.cheapest td { background: var(--good-soft); }
 .flight-table tr.recommended td { background: var(--good-soft); }
 .flight-table tr.recommended .option-cell { background: var(--good-soft); }
 
-/* Final OP quote: one row per physical flight. Cabin/passenger prices stay in
-   the final cell, so the itinerary is never duplicated just to show fares. */
-.proposal-card {
-  align-self: stretch; padding: 18px; background: var(--panel); border: 1px solid var(--border);
-  border-radius: var(--radius-lg); box-shadow: 0 1px 2px rgba(20, 20, 19, .04);
-}
-.proposal-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
-.proposal-head h2 { margin: 2px 0 0; font-size: 18px; }
-.proposal-kicker { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; }
-.proposal-table { min-width: 720px; }
-.proposal-table th, .proposal-table td { vertical-align: top; }
-.proposal-table .route-cell { min-width: 210px; white-space: normal; }
-.proposal-role { display: inline-flex; padding: 2px 7px; background: var(--accent-soft); color: var(--accent); border-radius: 999px; font-weight: 700; }
-.proposal-flight, .proposal-time { white-space: nowrap; }
-.proposal-flight span, .proposal-time span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; font-weight: 400; }
-.proposal-fares { min-width: 270px; white-space: normal; }
-.proposal-fare-line { display: flex; flex-direction: column; gap: 2px; padding: 0 0 8px; }
-.proposal-fare-line:last-child { padding-bottom: 0; }
-.proposal-table tfoot th { text-align: right; color: var(--text); background: var(--panel-2); }
-.proposal-table tfoot td { background: var(--panel-2); }
-.proposal-total { color: var(--accent); font-size: 16px; font-weight: 800; white-space: nowrap; }
-
 /* Versioned recommendation result */
 .recommendations { align-self: stretch; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .recommendations-state {
@@ -448,11 +431,19 @@ tr.cheapest td { background: var(--good-soft); }
 .recommendations-state.is-error { border-color: var(--err-border); background: var(--err-soft); }
 .recommendations-state h2 { margin: 2px 0 0; font-size: 18px; }
 .recommendations-state p { margin: 5px 0 0; font-size: 13px; }
-.recommendations-state button, .recommend-actions button {
-  flex-shrink: 0; background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent);
-  border-radius: var(--radius-sm); padding: 7px 12px; cursor: pointer; font-weight: 700;
+.recommendations-state button, .recommend-actions button, .recommendations-actions button {
+  flex-shrink: 0; border-radius: var(--radius-sm); padding: 7px 12px; cursor: pointer; font: inherit; font-weight: 700;
 }
-.recommendations-state button:disabled, .recommend-actions button:disabled { opacity: .5; cursor: default; }
+/* `:not(.ghost)` so the shared .ghost skin still wins for the quiet one — same shape as
+   .pf-actions below. */
+.recommendations-state button, .recommend-actions button, .recommendations-actions button:not(.ghost) {
+  background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent);
+}
+.recommendations-state button:disabled, .recommend-actions button:disabled, .recommendations-actions button:disabled { opacity: .5; cursor: default; }
+/* One action row under the recommendation table: continuation carries the accent, retry is
+   a recovery action and stays quiet at the far end. */
+.recommendations-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.recommendations-actions button.ghost { margin-left: auto; font-weight: 600; }
 .recommend-table-scroll { width: 100%; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); }
 .recommend-table { min-width: 1665px; border: 0; border-collapse: separate; border-spacing: 0; border-radius: 0; table-layout: fixed; }
 .recommend-table th, .recommend-table td {

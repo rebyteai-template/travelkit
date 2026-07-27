@@ -114,26 +114,77 @@ test('recommendation renderer uses one dense comparison table with exact segment
   assert.doesNotMatch(html, />Copy<\/button>/)
 })
 
-test('recommendation continuation renders explicit more and unseen-route actions', () => {
+/** Continuation as the skill returns it. `isLatest` grants the capability, so every test that
+ *  expects the button must pass it — the component withholds it by default. */
+function continued(result: FlightRecommendations, expiresAt = '2099-07-16T05:10:00.000Z'): FlightRecommendations {
+  result.continuation = { hasMore: true, token: 'opaque-token', expiresAt, nextPage: 2, pageSize: 10, modes: ['global_more', 'unseen_variants'] }
+  return result
+}
+
+const renderLatest = (result: FlightRecommendations) => renderToStaticMarkup(
+  createElement(FlightRecommendationsView, { result, busy: false, onAction: () => {}, isLatest: true }),
+)
+
+test('continuation offers one "more" action and leaves the mode to the skill', () => {
+  const html = renderLatest(continued(resultFixture()))
+
+  assert.match(html, />加载更多方案<\/button>/)
+  // Page size and continuation mode are the skill's rules; the button carries the customer's
+  // intent only, and reads like something they would type — it becomes their chat turn.
+  assert.doesNotMatch(html, /看其他出发地或路线|再来10个/)
+  assert.equal(buildRecommendationContinuationPrompt(), '再来一些方案。')
+})
+
+// The skill consumes a continuation token per page and mints a new one, so every page but
+// the newest holds a dead token.
+test('only the newest recommendation page offers to load more', () => {
+  const older = renderToStaticMarkup(createElement(FlightRecommendationsView, {
+    result: continued(resultFixture()), busy: false, onAction: () => {},
+  }))
+  assert.doesNotMatch(older, /加载更多方案/)
+})
+
+test('an expired continuation stops offering to load more', () => {
+  assert.doesNotMatch(renderLatest(continued(resultFixture(), '2020-01-01T00:00:00.000Z')), /加载更多方案/)
+})
+
+// A page can verify nothing and still leave candidates in the snapshot. Continuing costs one
+// fresh page budget; retry re-runs the whole search, so it must not be the only way forward.
+test('a page that verified nothing still offers to load more', () => {
+  const empty = resultFixture()
+  empty.status = 'empty'
+  empty.plans = []
+  empty.reason = 'No new verified recommendation plan remained.'
+
+  assert.match(renderLatest(continued(empty)), />加载更多方案<\/button>/)
+})
+
+test('plan actions share one row below the table, with retry as the quiet one', () => {
+  const result = continued(resultFixture())
+  result.capabilities.canRetry = true
+  const html = renderLatest(result)
+
+  // A recovery action must never take the slot above the result it recovers from.
+  assert.doesNotMatch(html.slice(0, html.indexOf('recommend-table-scroll')), /<button/)
+  assert.equal(html.match(/<div class="recommendations-actions"/g)?.length, 1)
+  const row = html.slice(html.indexOf('<div class="recommendations-actions"'))
+  assert.match(row, /加载更多方案<\/button>.*class="ghost"[^>]*>重试推荐<\/button>/s)
+  assert.equal(row.match(/<button/g)?.length, 2)
+})
+
+test('a result carrying its own message keeps retry in the state box only', () => {
   const result = resultFixture()
-  result.continuation = {
-    hasMore: true,
-    token: 'opaque-token',
-    expiresAt: '2099-07-16T05:10:00.000Z',
-    nextPage: 2,
-    pageSize: 10,
-    modes: ['global_more', 'unseen_variants'],
-  }
+  result.capabilities.canRetry = true
+  result.status = 'partial'
+  result.message = '仅覆盖去程'
   const html = renderToStaticMarkup(createElement(FlightRecommendationsView, {
     result,
     busy: false,
     onAction: () => {},
   }))
 
-  assert.match(html, />再来10个<\/button>/)
-  assert.match(html, />看其他出发地或路线<\/button>/)
-  assert.match(buildRecommendationContinuationPrompt('global_more', 10), /已有 continuation/)
-  assert.match(buildRecommendationContinuationPrompt('unseen_variants', 10), /未覆盖的其他出发城市或路线/)
+  assert.match(html, /recommendations-state[\s\S]*>重试推荐<\/button>/)
+  assert.doesNotMatch(html, /<div class="recommendations-actions"/)
 })
 
 test('each physical segment becomes one standard table row while plan and journey facts print once', () => {
