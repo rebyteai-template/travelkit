@@ -47,7 +47,10 @@ function isToolUseFrame(data: unknown): boolean {
 export function framesHaveAnswerText(frames: Frame[]): boolean {
   let sawAnswer = false
   for (const f of frames) {
-    if (isToolUseFrame(f.data)) sawAnswer = false
+    // Delegated subprompt tools are recovered evidence, not a new manager action.
+    // They can be appended after the manager's final text during historical replay
+    // and must not make that already-rendered answer look missing.
+    if (!f.source && isToolUseFrame(f.data)) sawAnswer = false
     else if (isAssistantTextFrame(f.data)) sawAnswer = true
   }
   return sawAnswer

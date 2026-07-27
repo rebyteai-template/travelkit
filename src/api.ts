@@ -148,6 +148,11 @@ export const createTask = (prompt: string, files?: FileRef[]): Promise<{ taskId:
 export const followup = (taskId: string, prompt: string, files?: FileRef[]): Promise<{ promptId: string }> =>
   postJson(`/tasks/${taskId}/prompts`, files?.length ? { prompt, files } : { prompt })
 
+export const answerQuestion = (
+  promptId: string,
+  answer: import('./user-question.ts').UserQuestionAnswer,
+): Promise<{ ok: boolean }> => postJson(`/prompts/${promptId}/answer`, { answer })
+
 /** Debug-only: provision a fresh sandbox VM for the caller (old one abandoned). Slow — it waits
  *  for the VM to boot. Hidden behind the sidebar-brand 10-click easter egg in App.tsx. */
 export const newSandbox = (): Promise<{ sandboxId?: string }> => postJson('/debug/new-sandbox', {})
@@ -189,6 +194,7 @@ export function streamPrompt(
   promptId: string,
   onFrame: (seq: number, data: unknown) => void,
   onDone: (status: string) => void,
+  onWaiting: () => void,
   fromSeq = 0,
 ): () => void {
   // fromSeq resumes after frames already loaded (reload-reattach): the SSE endpoint streams only
@@ -202,6 +208,12 @@ export function streamPrompt(
   es.addEventListener('done', (e) => {
     es.close()
     try { onDone(JSON.parse((e as MessageEvent).data).status) } catch { onDone('completed') }
+  })
+  es.addEventListener('waiting', () => {
+    // This is an intentional server-side pause, not a broken connection.
+    // Close locally so EventSource does not auto-reconnect while the user is idle.
+    es.close()
+    onWaiting()
   })
   es.onerror = () => {
     // Transient drop → EventSource auto-reconnects (readyState CONNECTING). A terminal failure

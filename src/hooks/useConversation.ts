@@ -38,7 +38,7 @@ export function useConversation() {
     const prompts = taskData?.prompts
     if (!taskId || !prompts?.length) return
     const last = prompts[prompts.length - 1]
-    if (!last || last.status !== 'running') return
+    if (!last || (last.status !== 'running' && last.status !== 'waiting_for_answer')) return
     const fromSeq = last.frames.reduce((m, f) => (f.seq > m ? f.seq : m), 0)
     attachStream(qc, taskId, last.id, fromSeq)
   }, [taskId, taskData, qc])

@@ -2,7 +2,7 @@ import { getDefaultStore } from 'jotai'
 import type { QueryClient } from '@tanstack/react-query'
 import { streamPrompt } from '../api.ts'
 import { queryKeys } from './queryKeys.ts'
-import { appendFrameAtom, markBusyAtom } from '../store/conversation.ts'
+import { appendFrameAtom, markBusyAtom, turnsAtom } from '../store/conversation.ts'
 
 // The Provider-less default store — set atoms from this plain module (not a hook).
 const store = getDefaultStore()
@@ -24,13 +24,17 @@ const activeStreams = new Map<string, () => void>()
  * frames (the SSE endpoint streams only seq > fromSeq). The turn keeps streaming across session
  * navigation (closed on `done`, never on unmount), matching the multi-task busy model.
  */
-export function attachStream(qc: QueryClient, taskId: string, promptId: string, fromSeq = 0): void {
+export function attachStream(qc: QueryClient, taskId: string, promptId: string, fromSeq?: number): void {
   if (activeStreams.has(promptId)) return
   store.set(markBusyAtom, { taskId, on: true })
-  const stop = streamPrompt(
+  const current = store.get(turnsAtom)[taskId]?.find((prompt) => prompt.id === promptId)
+  const resumeSeq = fromSeq ?? current?.frames.reduce((max, frame) => Math.max(max, frame.seq), 0) ?? 0
+  let stop: () => void = () => undefined
+  stop = streamPrompt(
     promptId,
     (seq, data) => store.set(appendFrameAtom, { taskId, promptId, seq, data }),
     () => {
+      if (activeStreams.get(promptId) !== stop) return
       store.set(markBusyAtom, { taskId, on: false })
       activeStreams.delete(promptId)
       void qc.invalidateQueries({ queryKey: queryKeys.sessions() })
@@ -38,7 +42,24 @@ export function attachStream(qc: QueryClient, taskId: string, promptId: string, 
       // A turn just burned credit — refresh the balance so the banner reacts promptly.
       void qc.invalidateQueries({ queryKey: queryKeys.credit() })
     },
-    fromSeq,
+    () => {
+      if (activeStreams.get(promptId) !== stop) return
+      activeStreams.delete(promptId)
+      // Keep the task busy: its same turn is parked, not complete. Refreshing
+      // persists the explicit waiting_for_answer status into the local snapshot.
+      void qc.invalidateQueries({ queryKey: queryKeys.taskContent(taskId) })
+    },
+    resumeSeq,
   )
   activeStreams.set(promptId, stop)
+}
+
+/** Replace any parked/stale stream after an answer resumes the same prompt.
+ *  A generation check in the callbacks makes already-queued events from the
+ *  old EventSource harmless. */
+export function restartStream(qc: QueryClient, taskId: string, promptId: string): void {
+  const previous = activeStreams.get(promptId)
+  if (previous) previous()
+  activeStreams.delete(promptId)
+  attachStream(qc, taskId, promptId)
 }

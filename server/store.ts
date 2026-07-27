@@ -49,6 +49,8 @@ export interface Prompt {
 export interface Frame {
   seq: number
   data: unknown
+  /** Present only for frames replayed from a delegated subprompt. */
+  source?: { subPromptId: string; eventIndex: number }
 }
 
 /** A prompt's display attachment (metadata only; the WebP rendition BLOBs are fetched
@@ -95,8 +97,19 @@ export interface Store {
    *  prematurely-failed prompt back to 'completed' when its answer is recovered late. */
   setPromptStatus(id: string, status: string): Promise<void>
 
-  appendFrame(promptId: string, seq: number, data: unknown): Promise<void>
+  /** Append one display frame. Delegated frames carry their stable source
+   *  identity so replay retries are idempotent across DO restarts and reloads. */
+  appendFrame(
+    promptId: string,
+    seq: number,
+    data: unknown,
+    source?: { subPromptId: string; eventIndex: number },
+  ): Promise<boolean>
   framesSince(promptId: string, fromSeq: number): Promise<Frame[]>
+  /** Durable cursor for one delegated prompt's normalized event list. */
+  getSubPromptCursor(promptId: string, subPromptId: string): Promise<number>
+  setSubPromptCursor(promptId: string, subPromptId: string, nextEventIndex: number): Promise<void>
+  listSubPromptIds(promptId: string): Promise<string[]>
 
   // ── image/file attachments (display channel; see migrations/0005) ──────────
   /** Persist a file's display renditions (WebP BLOBs), keyed by the relay file id. Idempotent

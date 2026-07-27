@@ -111,7 +111,11 @@ export function createD1Store(db: D1Database): Store {
     },
     async finishPrompt(id, status) {
       await db
-        .prepare(`UPDATE prompts SET status = ?, completed_at = datetime('now') WHERE id = ? AND status = 'running'`)
+        .prepare(
+          `UPDATE prompts
+             SET status = ?, completed_at = datetime('now')
+           WHERE id = ? AND status IN ('running', 'waiting_for_answer')`,
+        )
         .bind(status, id)
         .run()
     },
@@ -119,18 +123,71 @@ export function createD1Store(db: D1Database): Store {
       await db.prepare(`UPDATE prompts SET status = ? WHERE id = ?`).bind(status, id).run()
     },
 
-    async appendFrame(promptId, seq, data) {
-      await db
-        .prepare(`INSERT INTO frames (prompt_id, seq, data) VALUES (?, ?, ?)`)
-        .bind(promptId, seq, JSON.stringify(data))
-        .run()
+    async appendFrame(promptId, seq, data, source) {
+      const result = source
+        ? await db
+            .prepare(
+              `INSERT OR IGNORE INTO frames
+                 (prompt_id, seq, data, source_sub_prompt_id, source_event_index)
+               VALUES (?, ?, ?, ?, ?)`,
+            )
+            .bind(promptId, seq, JSON.stringify(data), source.subPromptId, source.eventIndex)
+            .run()
+        : await db
+            .prepare(`INSERT INTO frames (prompt_id, seq, data) VALUES (?, ?, ?)`)
+            .bind(promptId, seq, JSON.stringify(data))
+            .run()
+      return result.meta.changes > 0
     },
     async framesSince(promptId, fromSeq) {
       const { results } = await db
-        .prepare(`SELECT seq, data FROM frames WHERE prompt_id = ? AND seq > ? ORDER BY seq`)
+        .prepare(
+          `SELECT seq, data,
+                  source_sub_prompt_id AS sourceSubPromptId,
+                  source_event_index AS sourceEventIndex
+             FROM frames
+            WHERE prompt_id = ? AND seq > ?
+            ORDER BY seq`,
+        )
         .bind(promptId, fromSeq)
-        .all<{ seq: number; data: string }>()
-      return results.map((r) => ({ seq: r.seq, data: JSON.parse(r.data) as unknown }))
+        .all<{
+          seq: number
+          data: string
+          sourceSubPromptId: string | null
+          sourceEventIndex: number | null
+        }>()
+      return results.map((r) => ({
+        seq: r.seq,
+        data: JSON.parse(r.data) as unknown,
+        ...(r.sourceSubPromptId !== null && r.sourceEventIndex !== null
+          ? { source: { subPromptId: r.sourceSubPromptId, eventIndex: r.sourceEventIndex } }
+          : {}),
+      }))
+    },
+    async getSubPromptCursor(promptId, subPromptId) {
+      const row = await db
+        .prepare(`SELECT next_event_index AS nextEventIndex FROM prompt_subprompts WHERE prompt_id = ? AND sub_prompt_id = ?`)
+        .bind(promptId, subPromptId)
+        .first<{ nextEventIndex: number }>()
+      return row?.nextEventIndex ?? 0
+    },
+    async setSubPromptCursor(promptId, subPromptId, nextEventIndex) {
+      await db
+        .prepare(
+          `INSERT INTO prompt_subprompts (prompt_id, sub_prompt_id, next_event_index)
+             VALUES (?, ?, ?)
+           ON CONFLICT(prompt_id, sub_prompt_id) DO UPDATE SET
+             next_event_index = MAX(prompt_subprompts.next_event_index, excluded.next_event_index)`,
+        )
+        .bind(promptId, subPromptId, nextEventIndex)
+        .run()
+    },
+    async listSubPromptIds(promptId) {
+      const { results } = await db
+        .prepare(`SELECT sub_prompt_id AS subPromptId FROM prompt_subprompts WHERE prompt_id = ? ORDER BY sub_prompt_id`)
+        .bind(promptId)
+        .all<{ subPromptId: string }>()
+      return results.map((row) => row.subPromptId)
     },
 
     async saveAttachment(fileId, userEmail, filename, contentType, thumb, large) {

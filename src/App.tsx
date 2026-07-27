@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
+import { useQueryClient } from '@tanstack/react-query'
 import { passengersFromFare, buildOrderPrompt, isBookableFare } from './booking.ts'
 import { ChatPanel } from './components/ChatPanel.tsx'
 import { Composer, type ComposerHandle } from './components/Composer.tsx'
@@ -13,6 +14,9 @@ import { useSessions } from './hooks/useSessions.ts'
 import { useConversation } from './hooks/useConversation.ts'
 import { useSendMessage } from './hooks/useSendMessage.ts'
 import { DebugConfigPanel } from './components/DebugConfigPanel.tsx'
+import { answerQuestion } from './api.ts'
+import type { UserQuestionAnswer } from './user-question.ts'
+import { restartStream } from './lib/stream.ts'
 import { busyTasksAtom } from './store/conversation.ts'
 import {
   taskIdAtom,
@@ -29,6 +33,7 @@ import {
  *  streaming state from jotai atoms. The presentational components below keep
  *  their existing prop signatures — App just sources the props differently. */
 export function App() {
+  const qc = useQueryClient()
   const me = useMe()
   const { data: sessions = [] } = useSessions(!me.isError)
   const { data: credit } = useCredit(!me.isError)
@@ -81,6 +86,12 @@ export function App() {
   // confirm gate) all render inline. The verify card's entry CTA is offered only while no write-flow
   // step is open (mode === 'auto'); ChatPanel further limits it to the latest fare card.
   const selectOption = (prompt: string) => send(prompt)
+  const answerAgentQuestion = async (promptId: string, answer: UserQuestionAnswer) => {
+    const answeredTaskId = taskId
+    if (!answeredTaskId) throw new Error('question has no active task')
+    await answerQuestion(promptId, answer)
+    restartStream(qc, answeredTaskId, promptId)
+  }
 
   if (me.isError) return <Unauthorized />
   if (me.isPending) return <div className="app-booting" aria-busy="true" />
@@ -120,6 +131,8 @@ export function App() {
             fareLatest={view.fare}
             onContinue={mode === 'auto' ? continueToPassengers : undefined}
             notice={view.notice}
+            waitingForAnswer={!!view.pendingQuestion}
+            onAnswerQuestion={answerAgentQuestion}
           >
             <WriteFlow
               mode={mode}

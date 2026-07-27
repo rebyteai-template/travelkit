@@ -66,6 +66,25 @@ test('a trailing tool_result after the answer does not un-answer the turn (late 
   assert.equal(framesHaveAnswerText(frames), true)
 })
 
+test('historically replayed tool frames after final text do not trigger duplicate answer recovery', () => {
+  const frames = [
+    { seq: 1, data: toolUse },
+    { seq: 2, data: toolResult },
+    { seq: 3, data: assistantText('最终方案如下……') },
+    {
+      seq: 4,
+      data: toolUse,
+      source: { subPromptId: 'sub_1', eventIndex: 0 },
+    },
+    {
+      seq: 5,
+      data: toolResult,
+      source: { subPromptId: 'sub_1', eventIndex: 1 },
+    },
+  ]
+  assert.equal(framesHaveAnswerText(frames), true)
+})
+
 test('a turn with no tool calls just needs any text', () => {
   assert.equal(framesHaveAnswerText([{ seq: 1, data: assistantText('您好！请提供出行日期…') }]), true)
   assert.equal(framesHaveAnswerText([{ seq: 1, data: { __rebyte_run: 'r' } }]), false)

@@ -62,6 +62,11 @@ app.use('/api/app/*', async (c, next) => {
   c.set('runTurn', async (taskId, _projectId, promptId, prompt, opts) => {
     await env.TASK_DO.getByName(taskId).runTurn(taskId, promptId, prompt, tenant, token, opts?.files)
   })
+  c.set('answerQuestion', async (promptId, answer) => {
+    const p = await store.getPrompt(promptId)
+    if (!p) return { ok: false, reason: 'not_waiting' }
+    return env.TASK_DO.getByName(p.task_id).answerQuestion(promptId, answer)
+  })
   // Upload one attachment via the relay's public file API (mint signed URL + stream the Blob). The
   // returned FileRef rides on a later turn (createTask/addPrompt) and stages the file into the
   // sandbox at /code/<filename>.

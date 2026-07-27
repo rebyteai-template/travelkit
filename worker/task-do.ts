@@ -10,7 +10,9 @@
  *
  *   runTurn() → persist intent + setAlarm(now)
  *   alarm()   → ensure relay task → stream a bounded /events window → translate → frames(D1)
+ *             → pause without a deadline when the manager asks the user
  *             → finalize when the relay task is terminal (or on timeout)
+ *   answerQuestion() → resume the same blocked relay action → re-arm alarm()
  *
  * Pure fetch: never imports the rebyte-sandbox SDK. Per-user sandbox is looked up by email
  * (agent_computers table), falling back to the legacy single kv.agent_computer. Frame fidelity
@@ -33,6 +35,12 @@ import { SKILL_REF, toSkillRef } from './skill-ref.ts'
 import { ensureAgentConfig } from '../server/rebyte/agent-config.ts'
 import { shouldDrainTerminal, shouldRetryWindowError, turnExpired, TERMINAL_STATUSES } from './turn-finalize.ts'
 import { framesHaveAnswerText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
+import {
+  isUserQuestionAnswer,
+  parseUserQuestionRequest,
+  type UserQuestionAnswer,
+  type UserQuestionRequest,
+} from '../src/user-question.ts'
 import type { Env } from './env.ts'
 
 // No model/executor here on purpose: POST /v1/tasks IGNORES both (cctools relay
@@ -51,12 +59,31 @@ interface RelayEvent {
   payload?: Record<string, unknown>
 }
 
+interface FrameSource {
+  subPromptId: string
+  eventIndex: number
+}
+
+/** The subset of turn state needed while translating relay events. A terminal
+ *  prompt can reconstruct this from D1 + relay content to recover delegated
+ *  frames after the live TurnState has been deleted. */
+interface TranslationState {
+  promptId: string
+  relayTaskId?: string
+  /** Prompt-local frame sequence. Each live/recovery translation owns its allocator,
+   *  so concurrent recoverPrompt RPCs for different prompts cannot overwrite it. */
+  frameSeq: number
+  sawText: boolean
+  emittedText: string
+  subPromptCursors: Record<string, number>
+  waitingForAnswer?: UserQuestionRequest
+}
+
 /** The in-flight turn, persisted in DO storage so alarm() resumes idempotently. The
  *  session's relay task id lives separately (DO storage key 'relayTaskId') so it
  *  survives across turns — follow-ups continue that SAME relay task. */
-interface TurnState {
+interface TurnState extends TranslationState {
   taskId: string
-  promptId: string
   prompt: string
   userEmail: string
   /** The caller's travelkit token (from the iframe handoff), seeded into their sandbox on
@@ -74,11 +101,9 @@ interface TurnState {
    *  Reset when a tool_use streams: an opening ack before the delegation must not
    *  count, or the terminal-drain guard is skipped and the turn's whole tail (the
    *  delegated tool_result + final summary) is lost to the finalize race. */
-  sawText: boolean
   /** Whitespace-stripped concat of all assistant text emitted this turn, so the
    *  `result` event + final `finalResult` (which echo the same answer on another
    *  channel) are emitted once, not duplicated. */
-  emittedText: string
   /** Consecutive windows where GET /tasks reported terminal but we hadn't yet
    *  drained the relay's trailing text + `done` (which carries the final summary).
    *  The status flips a beat before finalResult populates, so we drain a few more
@@ -89,12 +114,14 @@ interface TurnState {
    *  the NEW events: the relay can persist a sub-session's search-result compact a
    *  beat AFTER the delegation result signals done, so a one-shot replay (the old
    *  behavior) raced and dropped the flight card in prod. Cursor = idempotent catch-up. */
-  subPromptCursors: Record<string, number>
   deadline: number
   /** Absolute cap — even an alive relay can't run the turn past this. */
   hardDeadline: number
   /** Consecutive alarm-window failures (reset on any successful window). */
   errors: number
+  /** A top-level manager question parks the relay turn until /answer resumes the
+   *  SAME action. While present, alarm polling is intentionally suspended and
+   *  the human wait does not consume the execution deadline. */
 }
 
 /** Hex sha256 — lets us detect a rotated travelkit token without storing the raw token. */
@@ -110,16 +137,14 @@ interface CachedAgentComputer {
 
 export class TaskDO extends DurableObject<Env> {
   private store: Store = createD1Store(this.env.DB)
-  /** D1-derived frame seq for the current window (set at window start, never in-memory across ticks). */
-  private frameSeq = 0
 
   private rebyteConfig(): RebyteConfig {
     return { apiUrl: this.env.REBYTE_API_URL ?? DEFAULT_API_URL, apiKey: this.env.REBYTE_API_KEY }
   }
 
   // ── frame emission (durable seq from D1 so resumed ticks never collide) ──
-  private emit(promptId: string, data: unknown): Promise<void> {
-    return this.store.appendFrame(promptId, ++this.frameSeq, data)
+  private emit(t: TranslationState, data: unknown, source?: FrameSource): Promise<boolean> {
+    return this.store.appendFrame(t.promptId, ++t.frameSeq, data, source)
   }
   private async maxFrameSeq(promptId: string): Promise<number> {
     const row = await this.env.DB.prepare(`SELECT COALESCE(MAX(seq),0) AS m FROM frames WHERE prompt_id = ?`)
@@ -127,9 +152,9 @@ export class TaskDO extends DurableObject<Env> {
       .first<{ m: number }>()
     return row?.m ?? 0
   }
-  private async emitText(promptId: string, text: string): Promise<void> {
+  private async emitText(t: TranslationState, text: string): Promise<void> {
     if (!text.trim()) return
-    await this.emit(promptId, { type: 'assistant', message: { content: [{ type: 'text', text }] } })
+    await this.emit(t, { type: 'assistant', message: { content: [{ type: 'text', text }] } })
   }
   /** Emit assistant text and record it in t.emittedText. When `dedupe`, skip text the
    *  turn has already shown — the relay echoes the final answer on both the `text` and
@@ -139,16 +164,77 @@ export class TaskDO extends DurableObject<Env> {
     const trimmed = text.trim()
     if (!trimmed) return
     if (dedupe && t.emittedText.includes(normText(trimmed))) return
-    await this.emitText(t.promptId, trimmed)
+    await this.emitText(t, trimmed)
     t.emittedText += normText(trimmed)
     t.sawText = true
   }
-  private async emitToolUse(promptId: string, id: string, name: string, input: unknown): Promise<void> {
-    await this.emit(promptId, { type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input: input ?? {} }] } })
+  private async emitToolUse(
+    t: TranslationState,
+    id: string,
+    name: string,
+    input: unknown,
+    source?: FrameSource,
+  ): Promise<void> {
+    await this.emit(
+      t,
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input: input ?? {} }] } },
+      source,
+    )
   }
-  private async emitToolResult(promptId: string, toolUseId: string, output: unknown): Promise<void> {
+  private async emitToolResult(
+    t: TranslationState,
+    toolUseId: string,
+    output: unknown,
+    source?: FrameSource,
+  ): Promise<void> {
     const content = typeof output === 'string' ? output : JSON.stringify(output ?? '')
-    await this.emit(promptId, { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, content }] } })
+    await this.emit(
+      t,
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, content }] } },
+      source,
+    )
+  }
+
+  private async translateToolUse(
+    t: TranslationState,
+    p: Record<string, unknown>,
+    source?: FrameSource,
+  ): Promise<void> {
+    const name = String(p.name ?? p.tool_name ?? '')
+    const id = String(p.id ?? p.tool_id ?? '') || crypto.randomUUID()
+    await this.emitToolUse(t, id, name, p.input ?? p.params ?? {}, source)
+    // PublicView exposes a delegated action's subPromptId on tool_use as soon
+    // as the action starts. Register it here instead of waiting for the
+    // synthesized tool_result: a late status change can insert tool_result at
+    // a seq already occupied by final text, so seq de-duplication may never
+    // deliver that event. catchUpSubPrompts() will keep pulling until the
+    // delegated prompt has flushed its structured domain results.
+    const subPromptId = typeof p.subPromptId === 'string' ? p.subPromptId : ''
+    if (subPromptId) {
+      if (!(subPromptId in t.subPromptCursors)) t.subPromptCursors[subPromptId] = 0
+      await this.replaySubPrompt(t, subPromptId)
+    }
+    // A tool call after any prior text means that text was an ack, not the answer —
+    // the answer is whatever the manager says AFTER this tool resolves.
+    t.sawText = false
+  }
+
+  private async translateToolResult(
+    t: TranslationState,
+    p: Record<string, unknown>,
+    source?: FrameSource,
+  ): Promise<void> {
+    await this.emitToolResult(
+      t,
+      String(p.id ?? p.tool_id ?? ''),
+      p.output ?? p.content,
+      source,
+    )
+    const subPromptId = typeof p.subPromptId === 'string' ? p.subPromptId : ''
+    if (subPromptId) {
+      if (!(subPromptId in t.subPromptCursors)) t.subPromptCursors[subPromptId] = 0
+      await this.replaySubPrompt(t, subPromptId)
+    }
   }
 
   /** Translate one relay event into stream-json frame(s), updating turn bookkeeping. */
@@ -168,32 +254,37 @@ export class TaskDO extends DurableObject<Env> {
         await this.emitTurnText(t, String(p.result ?? p.content ?? p.text ?? ''), true)
         return
       }
-      case 'tool_use': {
-        const name = String(p.name ?? p.tool_name ?? '')
-        const id = String(p.id ?? p.tool_id ?? '') || crypto.randomUUID()
-        await this.emitToolUse(t.promptId, id, name, p.input ?? p.params ?? {})
-        // A tool call after any prior text means that text was an ack, not the answer —
-        // the answer is whatever the manager says AFTER this tool resolves.
+      case 'ask_user_question': {
+        const question = parseUserQuestionRequest(p)
+        if (!question) throw new Error('rebyte ask_user_question event is malformed')
+        t.waitingForAnswer = question
         t.sawText = false
+        // Persist the resume ids before exposing the frame to the browser. A
+        // very fast click can then never race ahead of the durable waiting state.
+        await this.ctx.storage.put('turn', t)
+        try {
+          await this.emit(t, { __ask_user_question: question })
+        } catch (error) {
+          delete t.waitingForAnswer
+          await this.ctx.storage.put('turn', t)
+          throw error
+        }
+        // State and frame are durable now. If this status write fails, keep the
+        // waiting state: the retried alarm below converges the D1 status instead
+        // of forgetting an action that is still blocked in Relay.
+        await this.store.setPromptStatus(t.promptId, 'waiting_for_answer')
+        return
+      }
+      case 'tool_use': {
+        await this.translateToolUse(t, p)
         return
       }
       case 'tool_result': {
-        await this.emitToolResult(t.promptId, String(p.id ?? p.tool_id ?? ''), p.output)
-        // Agent-loop delegates domain tool calls (flight_search / verify) to a sandbox
-        // sub-session whose STRUCTURED tool_results never ride the parent stream — only
-        // this delegation's text summary does (REBYTE-ISSUE.md). The relay tags the
-        // delegation result with `subPromptId`; resolve it into the sub-session's real
-        // travelkit tool_use/tool_result and replay those into THIS prompt's frames so
-        // the bench cards populate. frames.ts already routes by tool name — no change there.
-        const subPromptId = typeof p.subPromptId === 'string' ? p.subPromptId : ''
-        if (subPromptId) {
-          if (!(subPromptId in t.subPromptCursors)) t.subPromptCursors[subPromptId] = 0
-          await this.replaySubPrompt(t, subPromptId)
-        }
+        await this.translateToolResult(t, p)
         return
       }
       default:
-        await this.emit(t.promptId, { __relay: type || 'unknown', payload: p })
+        await this.emit(t, { __relay: type || 'unknown', payload: p })
         return
     }
   }
@@ -209,25 +300,34 @@ export class TaskDO extends DurableObject<Env> {
   /** Replay a delegated sub-session's tool_use/tool_result into this prompt's frames,
    *  resuming from the cursor so re-calls each window only emit NEW events (the search
    *  compact often persists after the delegation result, so we must re-fetch). */
-  private async replaySubPrompt(t: TurnState, subPromptId: string): Promise<void> {
+  private async replaySubPrompt(t: TranslationState, subPromptId: string): Promise<void> {
     if (!t.relayTaskId) return
     const data = await rebyteJSON<{ events?: RelayEvent[] }>(
       `/tasks/${t.relayTaskId}/prompts/${subPromptId}/events`,
       { config: this.rebyteConfig() },
     ).catch(() => null)
-    if (!data?.events?.length) return
-    const start = t.subPromptCursors[subPromptId] ?? 0
+    if (!data?.events) return
+    const durableStart = await this.store.getSubPromptCursor(t.promptId, subPromptId)
+    const start = Math.max(t.subPromptCursors[subPromptId] ?? 0, durableStart)
     if (data.events.length <= start) return
-    for (const ev of data.events.slice(start)) {
+    for (let eventIndex = start; eventIndex < data.events.length; eventIndex++) {
+      const ev = data.events[eventIndex]
+      if (!ev) continue
       const type = String(ev.eventType ?? '')
-      if (type === 'tool_use' || type === 'tool_result') await this.translate(t, ev)
+      if (type === 'tool_use' || type === 'tool_result') {
+        const payload = isObj(ev.payload) ? ev.payload : {}
+        const source = { subPromptId, eventIndex }
+        if (type === 'tool_use') await this.translateToolUse(t, payload, source)
+        else await this.translateToolResult(t, payload, source)
+      }
     }
     t.subPromptCursors[subPromptId] = data.events.length
+    await this.store.setSubPromptCursor(t.promptId, subPromptId, data.events.length)
   }
 
   /** Re-pull every known delegated sub-session so late-persisted events (esp. the
    *  flight search compact) reach the frames. Idempotent via the per-sub cursor. */
-  private async catchUpSubPrompts(t: TurnState): Promise<void> {
+  private async catchUpSubPrompts(t: TranslationState): Promise<void> {
     for (const subPromptId of Object.keys(t.subPromptCursors)) {
       await this.replaySubPrompt(t, subPromptId)
     }
@@ -335,6 +435,7 @@ export class TaskDO extends DurableObject<Env> {
       files,
       submitted: false,
       lastRelaySeq: 0,
+      frameSeq: 0,
       sawText: false,
       emittedText: '',
       terminalDrains: 0,
@@ -345,6 +446,62 @@ export class TaskDO extends DurableObject<Env> {
     }
     await this.ctx.storage.put('turn', t)
     await this.ctx.storage.setAlarm(Date.now())
+  }
+
+  /** Resume the exact relay action that parked this turn. The browser supplies
+   *  only the answer; relay ids come from the DO's durable waiting state so a
+   *  caller cannot redirect an answer to another message/action. */
+  async answerQuestion(promptId: string, answer: unknown): Promise<{ ok: boolean; reason?: string }> {
+    const t = await this.ctx.storage.get<TurnState>('turn')
+    if (!t || t.promptId !== promptId || !t.relayTaskId || !t.waitingForAnswer) {
+      return { ok: false, reason: 'not_waiting' }
+    }
+    if (!isUserQuestionAnswer(answer)) return { ok: false, reason: 'invalid_answer' }
+
+    const question = t.waitingForAnswer
+    const actionId = Number(question.actionId)
+    if (!Number.isSafeInteger(actionId) || actionId < 0) {
+      throw new Error('rebyte ask_user_question actionId is invalid')
+    }
+
+    try {
+      await rebyteJSON(`/tasks/${t.relayTaskId}/answer`, {
+        method: 'POST',
+        body: JSON.stringify({
+          messageId: question.messageId,
+          actionId,
+          answer: answer as UserQuestionAnswer,
+        }),
+        config: this.rebyteConfig(),
+      })
+    } catch (error) {
+      // If the relay accepted the answer but its response was lost, a retry sees
+      // no blocked action. Continue polling: the same action is already resumed.
+      if (!(error instanceof RebyteError) || error.status !== 409) throw error
+    }
+
+    t.frameSeq = await this.maxFrameSeq(t.promptId)
+    try {
+      await this.emit(t, {
+        __ask_user_answer: {
+          actionId: question.actionId,
+          messageId: question.messageId,
+          answer: answer as UserQuestionAnswer,
+        },
+      })
+    } catch (error) {
+      // The relay is already resumed; a display-frame failure must not strand it.
+      console.warn('[task-do] failed to persist ask_user_answer frame:', error)
+    }
+
+    await this.store.setPromptStatus(t.promptId, 'running')
+    delete t.waitingForAnswer
+    t.deadline = Date.now() + TURN_TIMEOUT_MS
+    t.hardDeadline = Date.now() + TURN_HARD_CAP_MS
+    t.errors = 0
+    await this.ctx.storage.put('turn', t)
+    await this.ctx.storage.setAlarm(Date.now())
+    return { ok: true }
   }
 
   /** Debug "new VM": provision + seed a FRESH sandbox for this user and repoint their
@@ -360,9 +517,8 @@ export class TaskDO extends DurableObject<Env> {
     return { sandboxId: ac.sandboxId ?? undefined }
   }
 
-  /** Append assistant text frames to a terminal prompt, computing seq locally rather
-   *  than via the shared `frameSeq` (which belongs to the in-flight prompt). Targets
-   *  only terminal prompts, so it never races the running turn's frame writer. */
+  /** Append assistant text frames to a terminal prompt with a prompt-local sequence.
+   *  Targets only terminal prompts, so it never races the running turn's frame writer. */
   private async backfillText(promptId: string, texts: string[]): Promise<void> {
     let seq = await this.maxFrameSeq(promptId)
     for (const text of texts) {
@@ -370,51 +526,113 @@ export class TaskDO extends DurableObject<Env> {
     }
   }
 
-  /** Self-heal a finalized turn whose answer is missing OR present-but-unrendered, so a
-   *  browser refresh (which reads only the store) shows the complete message. Two cases:
-   *    1. Answer is in the store on the `result` channel but never rendered as chat text
-   *       (the agent-loop delivers the final summary there) → render it locally, no relay.
-   *    2. Answer never reached the store at all → backfill the relay's retained per-prompt
-   *       response. Returns true iff it wrote a recovered frame. Idempotent: re-running
-   *       finds the text already rendered and no-ops, so repeated loads don't duplicate. */
+  /** Make a terminal prompt converge to the same frames the live stream should have
+   *  produced. Text can be recovered from the result/final response; delegated
+   *  structure is recovered by discovering stable subPromptIds in the retained parent
+   *  events and replaying those prompts with durable source cursors. */
   async recoverPrompt(promptId: string): Promise<boolean> {
     const p = await this.store.getPrompt(promptId)
-    if (!p || p.status === 'running') return false // the live turn owns its own frames
+    if (!p || p.status === 'running' || p.status === 'waiting_for_answer') {
+      return false // the live turn owns its own frames
+    }
     const frames = await this.store.framesSince(promptId, 0)
+    let changed = false
 
-    // Case 1 (local, no relay call): final text sits on the result channel, unrendered.
+    // Final text may already be local on the result channel but not represented as a
+    // chat frame. Fix that without a relay request.
     const pending = unrenderedResultTexts(frames)
     if (pending.length) {
       await this.backfillText(promptId, pending)
-      await this.unfailRecovered(p)
-      return true
+      changed = true
     }
-    // Case 2: no answer rendered (text after the last tool_use — an opening ack
-    // alone doesn't count) → recover from the relay's retained response.
-    if (framesHaveAnswerText(frames)) return false
+
+    const hasAnswerText = framesHaveAnswerText(frames) || pending.length > 0
+    const hasDelegationToolUse = frames.some((frame) => {
+      if (!isObj(frame.data) || !isObj(frame.data.message)) return false
+      const content = frame.data.message.content
+      if (!Array.isArray(content)) return false
+      return content.some(
+        (block) =>
+          isObj(block)
+          && block.type === 'tool_use'
+          && typeof block.name === 'string'
+          && block.name.startsWith('coding_agent__'),
+      )
+    })
+    let subPromptIds = await this.store.listSubPromptIds(promptId)
+    const needsSubPromptDiscovery = hasDelegationToolUse && subPromptIds.length === 0
+    const needsRelayResponse = !hasAnswerText
+    if (!subPromptIds.length && !needsSubPromptDiscovery && !needsRelayResponse) {
+      if (changed) await this.unfailRecovered(p)
+      return changed
+    }
 
     let relayTaskId = await this.ctx.storage.get<string>('relayTaskId')
     if (!relayTaskId) relayTaskId = (await this.store.getTask(p.task_id))?.relay_task_id ?? undefined
-    if (!relayTaskId) return false
+    if (!relayTaskId) {
+      if (changed) await this.unfailRecovered(p)
+      return changed
+    }
 
     const ordered = await this.store.listPrompts(p.task_id)
     const idx = ordered.findIndex((row) => row.id === promptId)
-    if (idx < 0) return false
+    if (idx < 0) {
+      if (changed) await this.unfailRecovered(p)
+      return changed
+    }
 
-    // The relay keeps each prompt's final response in /content. Only trust positional
-    // indexing when the prompt counts match (else bail rather than backfill wrong text).
-    const content = await rebyteJSON<{ prompts?: Array<{ response?: string }> }>(
-      `/tasks/${relayTaskId}/content?include=events`,
-      { config: this.rebyteConfig() },
-    ).catch(() => null)
-    const relayPrompts = content?.prompts
-    if (!Array.isArray(relayPrompts) || relayPrompts.length !== ordered.length) return false
-    const text = relayPrompts[idx]?.response?.trim()
-    if (!text) return false
+    let relayPrompt: { response?: string; events?: RelayEvent[] } | undefined
+    if (needsSubPromptDiscovery || needsRelayResponse) {
+      // Only trust positional matching when prompt counts agree. The local prompt id
+      // and relay prompt id are intentionally different namespaces.
+      const content = await rebyteJSON<{
+        prompts?: Array<{ response?: string; events?: RelayEvent[] }>
+      }>(`/tasks/${relayTaskId}/content?include=events`, {
+        config: this.rebyteConfig(),
+      }).catch(() => null)
+      const relayPrompts = content?.prompts
+      if (Array.isArray(relayPrompts) && relayPrompts.length === ordered.length) {
+        relayPrompt = relayPrompts[idx]
+      }
+    }
 
-    await this.backfillText(promptId, [text])
-    await this.unfailRecovered(p)
-    return true
+    if (needsSubPromptDiscovery && relayPrompt?.events) {
+      subPromptIds = [
+        ...new Set(
+          relayPrompt.events.flatMap((event) => {
+            const id = event.payload?.subPromptId
+            return typeof id === 'string' && id ? [id] : []
+          }),
+        ),
+      ]
+    }
+
+    if (subPromptIds.length) {
+      const before = await this.maxFrameSeq(promptId)
+      const replayState: TranslationState = {
+        promptId,
+        relayTaskId,
+        frameSeq: before,
+        sawText: false,
+        emittedText: '',
+        subPromptCursors: {},
+      }
+      for (const subPromptId of subPromptIds) {
+        await this.replaySubPrompt(replayState, subPromptId)
+      }
+      if ((await this.maxFrameSeq(promptId)) > before) changed = true
+    }
+
+    if (needsRelayResponse) {
+      const text = relayPrompt?.response?.trim()
+      if (text) {
+        await this.backfillText(promptId, [text])
+        changed = true
+      }
+    }
+
+    if (changed) await this.unfailRecovered(p)
+    return changed
   }
 
   /** A 'failed' verdict was premature if the answer later proved recoverable (seen in prod:
@@ -440,9 +658,16 @@ export class TaskDO extends DurableObject<Env> {
   async alarm(): Promise<void> {
     const t = await this.ctx.storage.get<TurnState>('turn')
     if (!t) return // canceled / already finalized
+    if (t.waitingForAnswer) {
+      // A failed first status write must converge on alarm retry. Once D1 says
+      // waiting, the browser SSE exits and produces no reads until answerQuestion().
+      await this.store.setPromptStatus(t.promptId, 'waiting_for_answer')
+      return
+    }
     const config = this.rebyteConfig()
 
     try {
+      t.frameSeq = await this.maxFrameSeq(t.promptId)
       if (!t.submitted) {
         // One relay task per SESSION (not per turn): the first turn creates it; every
         // follow-up appends its prompt to that same task so the hosted agent keeps the
@@ -494,12 +719,15 @@ export class TaskDO extends DurableObject<Env> {
         t.submitted = true
         await this.ctx.storage.put('turn', t)
         // Surface this turn's rebyte run so the UI can link to app.rebyte.ai/run/<id>.
-        this.frameSeq = await this.maxFrameSeq(t.promptId)
-        await this.emit(t.promptId, { __rebyte_run: relayTaskId })
+        await this.emit(t, { __rebyte_run: relayTaskId })
       }
 
       const done = await this.streamWindow(t, config)
       t.errors = 0 // the window ran — whatever failed before, the relay is reachable again
+      if (done.awaitingUser) {
+        await this.ctx.storage.put('turn', t)
+        return
+      }
       // Re-pull delegated sub-sessions every window before we might finalize: their search
       // compact can land after the delegation result, and a one-shot replay dropped it (no card).
       await this.catchUpSubPrompts(t)
@@ -524,7 +752,7 @@ export class TaskDO extends DurableObject<Env> {
       // alive keeps the turn going (delegated turns routinely run past 4 min); the hard
       // cap bounds everything. An unreachable relay gets no extension.
       if (turnExpired({ now: Date.now(), deadline: t.deadline, hardDeadline: t.hardDeadline ?? t.deadline, relayStatus: st.status })) {
-        await this.emit(t.promptId, { __error: '处理超时，已停止等待。结果可能稍后就绪——刷新页面可找回。' })
+        await this.emit(t, { __error: '处理超时，已停止等待。结果可能稍后就绪——刷新页面可找回。' })
         return this.finalize(t, 'failed')
       }
 
@@ -548,7 +776,7 @@ export class TaskDO extends DurableObject<Env> {
       const friendly = e instanceof RebyteError && e.status >= 500
         ? `上游服务暂时不可用（${e.status}），请稍后重试。`
         : e instanceof Error ? e.message : String(e)
-      await this.emit(t.promptId, { __error: friendly })
+      await this.emit(t, { __error: friendly })
       await this.finalize(t, 'failed')
     }
   }
@@ -559,8 +787,7 @@ export class TaskDO extends DurableObject<Env> {
   private async streamWindow(
     t: TurnState,
     config: RebyteConfig,
-  ): Promise<{ terminal: boolean; status?: string; finalResult?: string }> {
-    this.frameSeq = await this.maxFrameSeq(t.promptId)
+  ): Promise<{ terminal: boolean; awaitingUser?: boolean; status?: string; finalResult?: string }> {
     const abort = new AbortController()
     const timer = setTimeout(() => abort.abort(), WINDOW_MS)
     try {
@@ -570,7 +797,7 @@ export class TaskDO extends DurableObject<Env> {
         config,
       })
       if (res.status === 401 || res.status === 403) {
-        await this.emit(t.promptId, { __error: `rebyte 鉴权失败 (${res.status})；检查 REBYTE_API_KEY / 模型授权。` })
+        await this.emit(t, { __error: `rebyte 鉴权失败 (${res.status})；检查 REBYTE_API_KEY / 模型授权。` })
         return { terminal: true, status: 'failed' }
       }
       if (!res.ok || !res.body) return { terminal: false }
@@ -602,6 +829,7 @@ export class TaskDO extends DurableObject<Env> {
         if (seq <= t.lastRelaySeq) continue
         t.lastRelaySeq = seq
         await this.translate(t, ev)
+        if (t.waitingForAnswer) return { terminal: false, awaitingUser: true }
       }
       return { terminal: false } // stream closed without done (window timeout or relay close)
     } catch (e) {

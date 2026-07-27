@@ -11,6 +11,12 @@
  * may surface in this internal workbench; credentials and request secrets must not.
  */
 import type { Attachment, PromptContent } from './api.ts'
+import {
+  isUserQuestionAnswer,
+  parseUserQuestionRequest,
+  type UserQuestionAnswer,
+  type UserQuestionRequest,
+} from './user-question.ts'
 
 // ── search (simplifly-flyai-skill CLI JSON) ────────────────────────────────
 // `displayOptions` contains the skill CLI's curated recommendations, each fully
@@ -344,6 +350,11 @@ export interface ChatBubble {
   /** Images/files the user attached to this turn — rendered above the user bubble (thumbnails /
    *  file chips). Set only on user bubbles, only when non-empty. */
   attachments?: Attachment[]
+  /** A top-level manager clarification that pauses this prompt until answered.
+   *  It is a first-class chat item, not assistant prose or a new user turn. */
+  question?: UserQuestionRequest
+  questionAnswer?: UserQuestionAnswer
+  promptId?: string
 }
 
 export type Stage = 'idle' | 'search' | 'verify' | 'recommendation' | 'order' | 'payment'
@@ -356,6 +367,9 @@ export interface DerivedView {
   recommendations: FlightRecommendations | null
   /** Last domain-tool failure surfaced to the user (e.g. price expired). */
   notice: string | null
+  /** The latest unanswered manager question. While present, the normal composer
+   *  stays disabled and the inline question owns user input. */
+  pendingQuestion: ChatBubble | null
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -845,6 +859,36 @@ export function derive(prompts: PromptContent[]): DerivedView {
       const data = f.data
       if (!isObj(data)) continue
 
+      if (data.__ask_user_question !== undefined) {
+        const question = parseUserQuestionRequest(data.__ask_user_question)
+        if (question) {
+          chat.push({
+            key: `q-${p.id}-${question.messageId}-${question.actionId}`,
+            role: 'assistant',
+            text: '',
+            question,
+            promptId: p.id,
+            ts: replyTs,
+          })
+        }
+        continue
+      }
+
+      if (isObj(data.__ask_user_answer)) {
+        const actionId = String(data.__ask_user_answer.actionId ?? '')
+        const messageId = String(data.__ask_user_answer.messageId ?? '')
+        const answer = data.__ask_user_answer.answer
+        if (actionId && messageId && isUserQuestionAnswer(answer)) {
+          const questionBubble = [...chat].reverse().find(
+            (bubble) =>
+              bubble.question?.actionId === actionId
+              && bubble.question.messageId === messageId,
+          )
+          if (questionBubble) questionBubble.questionAnswer = answer
+        }
+        continue
+      }
+
       // rebyte run link for this turn (emitted by the DO when the relay task starts)
       if (typeof data.__rebyte_run === 'string') {
         chat.push({ key: `r-${p.id}-${f.seq}`, role: 'assistant', text: '', runUrl: `https://app.rebyte.ai/run/${data.__rebyte_run}` })
@@ -1026,10 +1070,13 @@ export function derive(prompts: PromptContent[]): DerivedView {
   const deduped: ChatBubble[] = []
   for (const b of chat) {
     const prev = deduped[deduped.length - 1]
-    if (!b.cards && !b.fare && !b.proposal && !b.recommendations && !b.attachments && prev && prev.role === b.role && prev.text === b.text && prev.runUrl === b.runUrl && !prev.cards && !prev.fare && !prev.proposal && !prev.recommendations && !prev.attachments) continue
+    if (!b.cards && !b.fare && !b.proposal && !b.recommendations && !b.attachments && !b.question && prev && prev.role === b.role && prev.text === b.text && prev.runUrl === b.runUrl && !prev.cards && !prev.fare && !prev.proposal && !prev.recommendations && !prev.attachments && !prev.question) continue
     deduped.push(b)
   }
-  return { chat: deduped, stage, search, fare, recommendations, notice }
+  const pendingQuestion = [...deduped].reverse().find(
+    (bubble) => bubble.question && !bubble.questionAnswer,
+  ) ?? null
+  return { chat: deduped, stage, search, fare, recommendations, notice, pendingQuestion }
 }
 
 function parseToolJson(raw: string): Record<string, unknown> | null {

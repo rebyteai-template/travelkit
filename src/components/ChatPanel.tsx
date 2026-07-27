@@ -9,6 +9,8 @@ import { FlightRecommendationsView } from './FlightRecommendations.tsx'
 import { FareDetailTable } from './FareDetailTable.tsx'
 import { FileCard } from './FileCard.tsx'
 import { Lightbox } from './Lightbox.tsx'
+import { UserQuestion } from './UserQuestion.tsx'
+import type { UserQuestionAnswer } from '../user-question.ts'
 
 /** Local-timezone send time shown under a bubble (HH:MM today, M月D日 HH:MM otherwise); the full
  *  date + timezone is on hover. Renders nothing when the bubble carries no timestamp. */
@@ -42,6 +44,8 @@ export function ChatPanel({
   fareLatest,
   onContinue,
   notice,
+  waitingForAnswer,
+  onAnswerQuestion,
   children,
 }: {
   sessionKey: string | null
@@ -57,6 +61,8 @@ export function ChatPanel({
    *  the CTA hides; when defined it shows only on the latest fare card. */
   onContinue?: () => void
   notice: string | null
+  waitingForAnswer: boolean
+  onAnswerQuestion: (promptId: string, answer: UserQuestionAnswer) => Promise<void>
   /** The active write-flow step (passenger form / confirm gate), rendered at the chat tail. */
   children?: ReactNode
 }) {
@@ -94,6 +100,19 @@ export function ChatPanel({
         </div>
       ) : (
         chat.map((b) => {
+          if (b.question && b.promptId) {
+            return (
+              <div key={b.key} className="msg full">
+                <UserQuestion
+                  promptId={b.promptId}
+                  request={b.question}
+                  answered={b.questionAnswer}
+                  onAnswer={onAnswerQuestion}
+                />
+                <MsgTime ts={b.ts} />
+              </div>
+            )
+          }
           if (b.runUrl) {
             return (
               <a key={b.key} className="run-link" href={b.runUrl} target="_blank" rel="noreferrer">
@@ -160,7 +179,7 @@ export function ChatPanel({
       )}
       {notice ? <div className="chat-notice">{notice}</div> : null}
       {children}
-      {busy ? <div className="bubble assistant typing">正在处理…</div> : null}
+      {busy && !waitingForAnswer ? <div className="bubble assistant typing">正在处理…</div> : null}
       <div ref={endRef} />
       {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
     </div>

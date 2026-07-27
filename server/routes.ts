@@ -7,6 +7,7 @@
  *   GET  /tasks                 → the caller's sessions (conversations)
  *   POST /tasks                 → create session + first turn
  *   POST /tasks/:id/prompts     → follow-up turn (same session)
+ *   POST /prompts/:id/answer    → resume this turn's blocked agent question
  *   GET  /tasks/:id/content     → prompts + their frames (for reload)
  *   GET  /prompts/:id/stream    → SSE of frames until the turn ends
  *   POST /prompts/:id/cancel    → cancel the running turn
@@ -19,7 +20,7 @@ import { streamSSE } from 'hono/streaming'
 import type { Store, Task } from './store.ts'
 import { MAX_UPLOAD_BYTES, attachmentPromptSuffix } from './attachments.ts'
 import type { FileRef } from './rebyte/client.ts'
-import { framesHaveAnswerText, unrenderedResultTexts } from './frame-text.ts'
+import { isUserQuestionAnswer, type UserQuestionAnswer } from '../src/user-question.ts'
 // Built-in defaults surfaced to the debug panel (placeholder / "填入默认") and used as the fallback
 // when the global config field is empty. Single source of truth stays in these two modules.
 import { SKILL_REF as DEFAULT_SKILL_REF } from '../worker/skill-ref.ts'
@@ -33,6 +34,8 @@ export interface RouteVars {
   userEmail: string
   store: Store
   runTurn: (taskId: string, projectId: string, promptId: string, prompt: string, opts?: { files?: FileRef[] }) => Promise<void>
+  /** Resume a top-level relay ask_user_question action for this exact prompt. */
+  answerQuestion: (promptId: string, answer: UserQuestionAnswer) => Promise<{ ok: boolean; reason?: string }>
   cancelTurn: (promptId: string) => Promise<boolean>
   /** Upload one file to the relay (mint signed URL + stream the Blob); returns its FileRef. The ref
    *  rides on a turn and is staged into the workspace VM at /code/<filename>. See POST /files. */
@@ -132,6 +135,28 @@ app.post('/tasks/:id/prompts', async (c) => {
   return c.json({ promptId })
 })
 
+// Resume a question-blocked relay action in-place. This is deliberately NOT a
+// normal follow-up: creating another prompt would leave the original action
+// blocked and eventually time out.
+app.post('/prompts/:id/answer', async (c) => {
+  const { store, answerQuestion, userEmail } = c.var
+  const promptId = c.req.param('id')
+  const prompt = await store.getPrompt(promptId)
+  if (!prompt || !(await ownedTask(store, prompt.task_id, userEmail))) {
+    return c.json({ error: 'prompt not found' }, 404)
+  }
+
+  const body = await c.req.json<{ answer?: unknown }>()
+  if (!isUserQuestionAnswer(body.answer)) return c.json({ error: 'invalid answer' }, 400)
+
+  const result = await answerQuestion(promptId, body.answer)
+  if (!result.ok) {
+    const status = result.reason === 'invalid_answer' ? 400 : 409
+    return c.json({ error: result.reason ?? 'question is not waiting' }, status)
+  }
+  return c.json({ ok: true })
+})
+
 app.post('/files', async (c) => {
   // Eager upload of ONE attachment (multipart): `file` (the original → relay → staged into the
   // sandbox at /code/<filename>) plus optional `thumb`/`large` WebP renditions, persisted keyed by
@@ -180,13 +205,13 @@ app.get('/tasks/:id/content', async (c) => {
   const prompts = await Promise.all(
     rows.map(async (p) => {
       let frames = await store.framesSince(p.id, 0)
-      // Self-heal a terminal turn whose answer the UI can't show: nothing landed after
-      // the last tool_use (truncation — an opening ack alone doesn't count as whole),
-      // or the answer is stored on the `result` channel but never rendered as chat
-      // text. A browser refresh reads only the store, so it can't recover on its
-      // own — ask the backend to backfill, then re-read. No-op for turns already whole.
-      const needsHeal = p.status !== 'running' && (!framesHaveAnswerText(frames) || unrenderedResultTexts(frames).length > 0)
-      if (needsHeal && (await c.var.recoverPrompt(task.id, p.id))) frames = await store.framesSince(p.id, 0)
+      // A terminal prompt must converge on reload, including delegated structured
+      // tool results. recoverPrompt is idempotent: persisted subPrompt cursors make
+      // already-complete prompts a no-op.
+      const isActive = p.status === 'running' || p.status === 'waiting_for_answer'
+      if (!isActive && (await c.var.recoverPrompt(task.id, p.id))) {
+        frames = await store.framesSince(p.id, 0)
+      }
       // Metadata only — the client derives the rendition URLs (single source: api.toAttachment), so
       // the reloaded bubble matches the optimistic one (streaming-experience-contract I0).
       const attachments = await store.listPromptAttachments(p.id)
@@ -218,6 +243,13 @@ app.get('/prompts/:id/stream', async (c) => {
         lastSeq = f.seq
       }
       const cur = await store.getPrompt(promptId)
+      if (cur?.status === 'waiting_for_answer') {
+        // The question frame is already flushed above. End this EventSource
+        // deliberately so an idle tab performs zero D1 polling while a human
+        // decides; the answer path reopens from lastSeq.
+        await stream.write(`event: waiting\ndata: ${JSON.stringify({ status: cur.status })}\n\n`)
+        return
+      }
       if (cur && cur.status !== 'running') {
         const tail = await store.framesSince(promptId, lastSeq)
         for (const f of tail) {
