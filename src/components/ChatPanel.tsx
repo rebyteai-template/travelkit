@@ -66,23 +66,16 @@ export function ChatPanel({
   /** The active write-flow step (passenger form / confirm gate), rendered at the chat tail. */
   children?: ReactNode
 }) {
-  const endRef = useRef<HTMLDivElement>(null)
-  const sessionRef = useRef<string | null>(sessionKey)
-  const needsInstantScrollRef = useRef(false)
+  const chatRef = useRef<HTMLDivElement>(null)
   const [lightbox, setLightbox] = useState<string | null>(null)
   useLayoutEffect(() => {
-    if (sessionRef.current !== sessionKey) {
-      sessionRef.current = sessionKey
-      needsInstantScrollRef.current = !!sessionKey
-    }
     if (loading || (!chat.length && !busy && !children)) return
-    const behavior = needsInstantScrollRef.current ? 'auto' : 'smooth'
-    needsInstantScrollRef.current = false
-    endRef.current?.scrollIntoView({ behavior, block: 'end' })
+    const el = chatRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [sessionKey, chat.length, busy, !!children, loading])
 
   return (
-    <div className="chat">
+    <div className="chat" ref={chatRef}>
       {loading ? (
         <div className="chat-loading" aria-busy="true">正在加载会话…</div>
       ) : chat.length === 0 ? (
@@ -180,7 +173,6 @@ export function ChatPanel({
       {notice ? <div className="chat-notice">{notice}</div> : null}
       {children}
       {busy && !waitingForAnswer ? <div className="bubble assistant typing">正在处理…</div> : null}
-      <div ref={endRef} />
       {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
     </div>
   )
