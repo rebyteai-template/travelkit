@@ -17,6 +17,7 @@ import {
   type UserQuestionAnswer,
   type UserQuestionRequest,
 } from './user-question.ts'
+import { deriveAgentActivityRun, type AgentActivityRun } from './agent-activity.ts'
 
 // ── search (simplifly-flyai-skill CLI JSON) ────────────────────────────────
 // `displayOptions` contains the skill CLI's curated recommendations, each fully
@@ -244,6 +245,14 @@ export interface FlightRecommendations {
   diagnostics?: Record<string, unknown>
   capabilities: { canRetry: boolean; canReverify: boolean; canCopy: boolean }
   plans: RecommendationPlan[]
+  continuation?: {
+    hasMore: true
+    token: string
+    expiresAt: string
+    nextPage: number
+    pageSize: number
+    modes: Array<'global_more' | 'unseen_variants'>
+  }
 }
 
 // ── verify (simplifly-flyai-skill CLI JSON) ──────────
@@ -324,10 +333,8 @@ export interface ChatBubble {
   text: string
   /** UTC timestamp this bubble was "sent": the prompt's created_at for the user turn, its
    *  completed_at (falling back to created_at while running) for assistant turns. The UI converts
-   *  to the viewer's local timezone — see src/lib/time.ts. Absent on the rebyte run link. */
+   *  to the viewer's local timezone — see src/lib/time.ts. */
   ts?: string
-  /** When set, the bubble renders as a link to this turn's rebyte run. */
-  runUrl?: string
   /** Turn-level failure (DO `__error` frame) — rendered in the error palette. */
   error?: boolean
   /** Inline 方案 cards attached to this assistant turn (chat-stream): the simplifly-flyai-skill
@@ -355,6 +362,8 @@ export interface ChatBubble {
   question?: UserQuestionRequest
   questionAnswer?: UserQuestionAnswer
   promptId?: string
+  /** One compact, collapsible run summary. Structured business results stay separate. */
+  activity?: AgentActivityRun
 }
 
 export type Stage = 'idle' | 'search' | 'verify' | 'recommendation' | 'order' | 'payment'
@@ -770,6 +779,38 @@ function parseRecommendations(raw: Record<string, unknown>): FlightRecommendatio
       : null
   if (missingFareConstructions === null) return null
   if (raw.diagnostics !== undefined && !isObj(raw.diagnostics)) return null
+  let continuation: FlightRecommendations['continuation']
+  if (raw.continuation !== undefined) {
+    if (!isObj(raw.continuation) || raw.continuation.hasMore !== true) return null
+    const token = str(raw.continuation.token).trim()
+    const expiresAt = str(raw.continuation.expiresAt).trim()
+    const nextPage = raw.continuation.nextPage
+    const pageSize = raw.continuation.pageSize
+    const modes = raw.continuation.modes
+    if (
+      !token
+      || !expiresAt
+      || !Number.isFinite(Date.parse(expiresAt))
+      || typeof nextPage !== 'number'
+      || !Number.isInteger(nextPage)
+      || nextPage < 2
+      || typeof pageSize !== 'number'
+      || !Number.isInteger(pageSize)
+      || pageSize < 1
+      || pageSize > MAX_RECOMMENDATION_PLANS
+      || !Array.isArray(modes)
+      || !modes.length
+      || modes.some((mode) => mode !== 'global_more' && mode !== 'unseen_variants')
+    ) return null
+    continuation = {
+      hasMore: true,
+      token,
+      expiresAt,
+      nextPage,
+      pageSize,
+      modes: modes as Array<'global_more' | 'unseen_variants'>,
+    }
+  }
   return {
     schemaVersion: RECOMMENDATIONS_SCHEMA_VERSION,
     resultType: RECOMMENDATIONS_RESULT_TYPE,
@@ -783,6 +824,7 @@ function parseRecommendations(raw: Record<string, unknown>): FlightRecommendatio
     ...(isObj(raw.diagnostics) ? { diagnostics: raw.diagnostics } : {}),
     capabilities,
     plans: typedPlans,
+    ...(continuation ? { continuation } : {}),
   }
 }
 
@@ -854,10 +896,49 @@ export function derive(prompts: PromptContent[]): DerivedView {
     let successfulVerifyCount = 0
     let lastAssistantTextBubble: ChatBubble | null = null
     const assistantTextBubbles: ChatBubble[] = []
+    const activityRun = deriveAgentActivityRun(p)
+    const toolNames = new Map<string, string>()
+    const toolInputs = new Map<string, Record<string, unknown>>()
+    for (const frame of p.frames) {
+      if (!isObj(frame.data) || !isObj(frame.data.message)) continue
+      const blocks = frame.data.message.content
+      if (!Array.isArray(blocks)) continue
+      for (const block of blocks) {
+        if (
+          isObj(block)
+          && block.type === 'tool_use'
+          && typeof block.id === 'string'
+          && typeof block.name === 'string'
+        ) {
+          toolNames.set(block.id, block.name)
+          toolInputs.set(block.id, isObj(block.input) ? block.input : {})
+        }
+      }
+    }
+    // Output files an execution result explicitly handed over to the agent (see
+    // trustedOutputFile). Prompt-scoped: sub-session isolation needs frame.source,
+    // which the SSE channel does not carry today — tightening that is its own change.
+    const trustedOutputFiles = new Set<string>()
+    let activityInserted = false
 
-    for (const f of p.frames) {
+    for (const f of [...p.frames].sort((a, b) => a.seq - b.seq)) {
       const data = f.data
       if (!isObj(data)) continue
+
+      if (
+        !activityInserted
+        && activityRun
+        && activityRun.firstSeq <= f.seq
+      ) {
+        chat.push({
+          key: activityRun.id,
+          role: 'assistant',
+          text: '',
+          activity: activityRun,
+          ts: replyTs,
+        })
+        activityInserted = true
+      }
 
       if (data.__ask_user_question !== undefined) {
         const question = parseUserQuestionRequest(data.__ask_user_question)
@@ -889,9 +970,8 @@ export function derive(prompts: PromptContent[]): DerivedView {
         continue
       }
 
-      // rebyte run link for this turn (emitted by the DO when the relay task starts)
+      // Run metadata is internal; the customer status is derived from business phases.
       if (typeof data.__rebyte_run === 'string') {
-        chat.push({ key: `r-${p.id}-${f.seq}`, role: 'assistant', text: '', runUrl: `https://app.rebyte.ai/run/${data.__rebyte_run}` })
         continue
       }
 
@@ -924,14 +1004,45 @@ export function derive(prompts: PromptContent[]): DerivedView {
         if (!Array.isArray(content)) continue
         for (const block of content) {
           if (!isObj(block) || block.type !== 'tool_result') continue
+          const toolUseId = typeof block.tool_use_id === 'string' ? block.tool_use_id : ''
+          const sourceTool = toolUseId ? toolNames.get(toolUseId) : undefined
+          // Read/Write/Edit/Skill results are documents or acknowledgements, not
+          // domain-result channels. A tool-level failure is likewise local to its
+          // event. The sole Read exception is an exact file that a successful
+          // execution handed the payload over in: Claude Code stores oversized stdout
+          // there, and the subsequent Read is still that same result transport.
+          if (
+            block.is_error === true
+            || sourceTool === 'Write'
+            || sourceTool === 'Edit'
+            || sourceTool === 'Skill'
+          ) continue
           const raw = textFromContent(block.content)
+          if (sourceTool === 'TaskOutput' || sourceTool === 'Bash') {
+            const outputFile = trustedOutputFile(raw, sourceTool)
+            if (outputFile) trustedOutputFiles.add(outputFile)
+          }
+          let trustedOutputFileRead = false
+          if (sourceTool === 'Read') {
+            const filePath = str(toolInputs.get(toolUseId)?.file_path).trim()
+            trustedOutputFileRead = !!filePath && trustedOutputFiles.has(filePath)
+            if (!trustedOutputFileRead) continue
+          }
+          const payload = parseBusinessPayload(raw, sourceTool, trustedOutputFileRead)
+          const resultType = typeof payload?.resultType === 'string' ? payload.resultType : ''
+          const schemaVersion = typeof payload?.schemaVersion === 'string' ? payload.schemaVersion : ''
 
           // The explicit recommendation contract is the sole primary result for
-          // this turn. An explicit but malformed/unknown version fails closed so
-          // search evidence or Agent prose cannot masquerade as the final answer.
-          if (raw.includes('"flight.recommendations"') || raw.includes('"flight-recommendations/')) {
-            const payload = parseToolJson(raw)
-            const parsed = payload ? parseRecommendations(payload) : null
+          // this turn. Route only a parsed TOP-LEVEL envelope: Skill docs, source
+          // files and logs may mention the same strings and must remain tool events.
+          if (
+            payload
+            && (
+              resultType === RECOMMENDATIONS_RESULT_TYPE
+              || schemaVersion.startsWith('flight-recommendations/')
+            )
+          ) {
+            const parsed = parseRecommendations(payload)
             if (parsed?.plans.length) {
               planBearingRecommendationSignatures.add(parsed.plans.map((plan) => plan.planId).sort().join('|'))
               conflictingRecommendationResults = planBearingRecommendationSignatures.size > 1
@@ -950,9 +1061,8 @@ export function derive(prompts: PromptContent[]): DerivedView {
 
           // A proposal is the only customer-facing summary for this turn. It
           // replaces all search/pricing tables used to assemble the plan.
-          if (raw.includes('"flight.proposal"')) {
-            const payload = parseToolJson(raw)
-            const parsed = payload && parseProposal(payload)
+          if (payload && resultType === 'flight.proposal') {
+            const parsed = parseProposal(payload)
             if (parsed && !pendingRecommendations) {
               pendingProposal = parsed
               recommendations = null
@@ -963,15 +1073,15 @@ export function derive(prompts: PromptContent[]): DerivedView {
           // Pricing is intermediate evidence, never a search table. Older
           // payloads lacked this discriminator and remain handled by the legacy
           // shape adapter below for saved history only.
-          if (raw.includes('"flight.pricing"')) continue
+          if (resultType === 'flight.pricing') continue
 
-          // compact search — cheap signature gate before parsing the (large) JSON
-          if (raw.includes('"displayOptions"') && raw.includes('"displayMapping"')) {
-            const payload = parseToolJson(raw)
-            if (payload?.resultType && payload.resultType !== 'flight.search') continue
-            const parsed = payload && parseCompactSearch(payload)
+          // Compact search: current envelopes use resultType; saved legacy results
+          // are still accepted by their parsed top-level shape.
+          if (payload && Array.isArray(payload.displayOptions) && isObj(payload.displayMapping)) {
+            if (resultType && resultType !== 'flight.search') continue
+            const parsed = parseCompactSearch(payload)
             if (parsed) {
-              if (payload?.resultType === 'flight.search') hasVersionedSearch = true
+              if (resultType === 'flight.search') hasVersionedSearch = true
               search = parsed
               if (!pendingRecommendations) {
                 fare = null; recommendations = null; notice = null; stage = 'search'
@@ -992,9 +1102,13 @@ export function derive(prompts: PromptContent[]): DerivedView {
 
           // Every recognized verify attempt invalidates the prior actionable fare.
           // Only a valid result restores verify stage; failures fall back to search/idle.
-          if (raw.includes('"flight.verify"') || (raw.includes('"verifiedOption"') && raw.includes('"selectedOption"'))) {
-            const payload = parseToolJson(raw)
-            if (!payload) continue
+          if (
+            payload
+            && (
+              resultType === VERIFY_RESULT_TYPE
+              || isObj(payload.verifiedOption) && isObj(payload.selectedOption)
+            )
+          ) {
             if (pendingRecommendations) continue
             fare = null
             recommendations = null
@@ -1016,6 +1130,37 @@ export function derive(prompts: PromptContent[]): DerivedView {
           // order / payment stages parsed in a later milestone
         }
       }
+    }
+
+    if (activityRun) {
+      if (pendingSearches.length) {
+        activityRun.candidateCount = pendingSearches.reduce(
+          (total, result) => total + (result.totalCount ?? result.options.length),
+          0,
+        )
+      }
+      const recommendationCount = pendingRecommendations?.plans.length ?? 0
+      const verifiedCount = successfulVerifyCount || recommendationCount
+      if (verifiedCount) activityRun.verifiedCount = verifiedCount
+      // Once a search envelope has returned, the agent is no longer searching:
+      // it is comparing the real candidates even if no new tool call has started.
+      if (
+        activityRun.state === 'active'
+        && activityRun.phase === 'searching'
+        && activityRun.candidateCount !== undefined
+      ) {
+        activityRun.phase = 'comparing'
+      }
+    }
+
+    if (activityRun && !activityInserted) {
+      chat.push({
+        key: activityRun.id,
+        role: 'assistant',
+        text: '',
+        activity: activityRun,
+        ts: replyTs,
+      })
     }
 
     // Domain cards render at the turn tail so a retry/ack text frame cannot consume them before the
@@ -1070,7 +1215,7 @@ export function derive(prompts: PromptContent[]): DerivedView {
   const deduped: ChatBubble[] = []
   for (const b of chat) {
     const prev = deduped[deduped.length - 1]
-    if (!b.cards && !b.fare && !b.proposal && !b.recommendations && !b.attachments && !b.question && prev && prev.role === b.role && prev.text === b.text && prev.runUrl === b.runUrl && !prev.cards && !prev.fare && !prev.proposal && !prev.recommendations && !prev.attachments && !prev.question) continue
+    if (!b.cards && !b.fare && !b.proposal && !b.recommendations && !b.attachments && !b.question && !b.activity && prev && prev.role === b.role && prev.text === b.text && !prev.cards && !prev.fare && !prev.proposal && !prev.recommendations && !prev.attachments && !prev.question && !prev.activity) continue
     deduped.push(b)
   }
   const pendingQuestion = [...deduped].reverse().find(
@@ -1080,12 +1225,15 @@ export function derive(prompts: PromptContent[]): DerivedView {
 }
 
 function parseToolJson(raw: string): Record<string, unknown> | null {
-  if (!raw.trim()) return null
+  const envelope = raw.trimStart()
+  // Tool results are data only when stdout STARTS with the JSON envelope.
+  // Never mine arbitrary prose, Skill docs, source code or logs for an object.
+  if (!envelope.startsWith('{')) return null
   try {
-    const json = JSON.parse(raw)
+    const json = JSON.parse(envelope)
     return isObj(json) ? json : null
   } catch {
-    const extracted = firstJsonObject(raw)
+    const extracted = firstJsonObject(envelope)
     if (!extracted) return null
     try {
       const json = JSON.parse(extracted)
@@ -1094,6 +1242,72 @@ function parseToolJson(raw: string): Record<string, unknown> | null {
       return null
     }
   }
+}
+
+/** Claude Code moves long-running Bash commands into the background and returns their
+ * eventual stdout through TaskOutput. That transport wraps stdout in a small tagged
+ * status envelope, so unwrap only a successful, completed TaskOutput before applying
+ * the same top-level JSON boundary used for direct Bash results.
+ *
+ * When stdout is too large for either transport it lands in a file instead — see
+ * trustedOutputFile; the Read of that exact path arrives here numbered and is unwrapped
+ * with the same top-level boundary. */
+function parseBusinessPayload(
+  raw: string,
+  sourceTool?: string,
+  trustedOutputFileRead = false,
+): Record<string, unknown> | null {
+  const direct = parseToolJson(raw)
+  if (direct) return direct
+  if (sourceTool === 'Read' && trustedOutputFileRead) {
+    const unnumbered = raw
+      .split('\n')
+      .map((line) => line.replace(/^\s*\d+\t/, ''))
+      .join('\n')
+    return parseToolJson(unnumbered)
+  }
+  if (sourceTool !== 'TaskOutput') return null
+
+  const envelope = raw.trim()
+  if (!envelope.startsWith('<retrieval_status>')) return null
+  if (!/<retrieval_status>\s*success\s*<\/retrieval_status>/.test(envelope)) return null
+  if (!/<status>\s*completed\s*<\/status>/.test(envelope)) return null
+  if (!/<exit_code>\s*0\s*<\/exit_code>/.test(envelope)) return null
+
+  const outputStartTag = '<output>'
+  const outputEndTag = '</output>'
+  const outputStart = envelope.indexOf(outputStartTag)
+  const outputEnd = envelope.lastIndexOf(outputEndTag)
+  if (outputStart < 0 || outputEnd <= outputStart) return null
+
+  return parseToolJson(envelope.slice(outputStart + outputStartTag.length, outputEnd))
+}
+
+/** Oversized stdout never reaches us inline: the executor writes it to a file and names
+ * that file in the tool result, expecting the agent to Read it next. Claude Code has TWO
+ * such transports and both are execution results, not documents:
+ *
+ *   background task (TaskOutput)  <retrieval_status>success…<output>[Truncated. Full output: <path>]
+ *   foreground Bash               <persisted-output>\nOutput too large (38KB). Full output saved to: <path>
+ *
+ * Return the announced path — and only from a top-level envelope of the tool that owns it,
+ * so a document that merely quotes one cannot authorize a Read. The `<persisted-output>`
+ * body also carries a "Preview (first 2KB)" of the same JSON: it is a TRUNCATED prefix and
+ * must never be parsed, only the exact Read of <path> is the whole result. */
+function trustedOutputFile(raw: string, sourceTool: string): string | null {
+  const envelope = raw.trim()
+  if (sourceTool === 'Bash') {
+    // A tool-level failure already skipped this event, so a `<persisted-output>` envelope
+    // here is stdout of a command the executor ran to completion.
+    if (!envelope.startsWith('<persisted-output>')) return null
+    return envelope.match(/Full output saved to:\s*([^\s\r\n]+)/)?.[1]?.trim() || null
+  }
+  if (!envelope.startsWith('<retrieval_status>')) return null
+  if (!/<retrieval_status>\s*success\s*<\/retrieval_status>/.test(envelope)) return null
+  if (!/<status>\s*completed\s*<\/status>/.test(envelope)) return null
+  if (!/<exit_code>\s*0\s*<\/exit_code>/.test(envelope)) return null
+  const match = envelope.match(/\[Truncated\. Full output: ([^\]\r\n]+)\]/)
+  return match?.[1]?.trim() || null
 }
 
 /** Bash tool_result sometimes appends shell bookkeeping after stdout. The skill's first stdout

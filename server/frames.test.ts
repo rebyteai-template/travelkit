@@ -375,7 +375,17 @@ test('a final proposal replaces search and pricing tables with one OP card', () 
 })
 
 test('a recommendation result is authoritative regardless of frame order and retains search as evidence', () => {
-  const recommendation = recommendationsResult()
+  const recommendation = {
+    ...recommendationsResult(),
+    continuation: {
+      hasMore: true,
+      token: 'opaque-token',
+      expiresAt: '2099-07-16T05:10:00.000Z',
+      nextPage: 2,
+      pageSize: 10,
+      modes: ['global_more', 'unseen_variants'],
+    },
+  }
   const search = compactSearch(1, 'CA165', 14932) as Record<string, unknown>
   search.schemaVersion = 'flight-search/v1'
   search.resultType = 'flight.search'
@@ -395,10 +405,262 @@ test('a recommendation result is authoritative regardless of frame order and ret
   assert.equal(view.recommendations?.plans[0]?.journeys[1]?.routeOptionId, 'hong-kong')
   assert.equal(view.recommendations?.plans[0]?.journeys[1]?.routePriority, 'alternate')
   assert.equal(view.recommendations?.plans[0]?.ticketGroups[0]?.segmentFacts?.[1]?.cabin, '商务 I舱')
+  assert.equal(view.recommendations?.continuation?.nextPage, 2)
+  assert.deepEqual(view.recommendations?.continuation?.modes, ['global_more', 'unseen_variants'])
   assert.equal(view.chat.filter((bubble) => bubble.recommendations).length, 1)
   assert.equal(view.chat.some((bubble) => bubble.cards || bubble.fare || bubble.proposal), false)
   assert.equal(view.chat.find((bubble) => bubble.recommendations)?.evidence?.length, 1)
   assert.equal(view.chat.find((bubble) => bubble.text.includes('中间表'))?.text, '中间表')
+})
+
+test('a recommendation returned through completed TaskOutput keeps the structured table', () => {
+  const recommendation = recommendationsResult()
+  const prompt = promptWithToolResult('')
+  prompt.frames = [
+    {
+      seq: 1,
+      data: {
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            id: 'recommend-background-result',
+            name: 'TaskOutput',
+            input: { task_id: 'background-task', block: true, timeout: 120000 },
+          }],
+        },
+      },
+    },
+    {
+      seq: 2,
+      data: {
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'recommend-background-result',
+            content: [
+              '<retrieval_status>success</retrieval_status>',
+              '<task_id>background-task</task_id>',
+              '<task_type>local_bash</task_type>',
+              '<status>completed</status>',
+              '<exit_code>0</exit_code>',
+              '<output>',
+              JSON.stringify(recommendation),
+              '</output>',
+            ].join('\n'),
+          }],
+        },
+      },
+    },
+    {
+      seq: 3,
+      data: {
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'text',
+            text: '推荐完成\n\n| 航班 | 价格 |\n| --- | --- |\n| CA165 | ¥14932 |',
+          }],
+        },
+      },
+    },
+  ]
+
+  const view = derive([prompt])
+  assert.equal(view.stage, 'recommendation')
+  assert.equal(view.recommendations?.plans[0]?.planId, 'plan-morning-evening')
+  assert.equal(view.chat.filter((bubble) => bubble.recommendations).length, 1)
+  assert.equal(view.chat.find((bubble) => bubble.text.includes('推荐完成'))?.text, '推荐完成')
+})
+
+test('a truncated TaskOutput followed by its exact numbered output-file Read keeps the structured table', () => {
+  const recommendation = recommendationsResult()
+  const outputFile = '/tmp/claude/tasks/recommend.output'
+  const prompt = promptWithToolResult('')
+  prompt.frames = [
+    {
+      seq: 1,
+      data: {
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            id: 'background-result',
+            name: 'TaskOutput',
+            input: { task_id: 'background-task', block: true, timeout: 120000 },
+          }],
+        },
+      },
+    },
+    {
+      seq: 2,
+      data: {
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'background-result',
+            content: [
+              '<retrieval_status>success</retrieval_status>',
+              '<status>completed</status>',
+              '<exit_code>0</exit_code>',
+              '<output>',
+              `[Truncated. Full output: ${outputFile}]`,
+              '"plans":[{"truncated":true}]',
+              '</output>',
+            ].join('\n'),
+          }],
+        },
+      },
+    },
+    {
+      seq: 3,
+      data: {
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            id: 'read-background-result',
+            name: 'Read',
+            input: { file_path: outputFile },
+          }],
+        },
+      },
+    },
+    {
+      seq: 4,
+      data: {
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'read-background-result',
+            content: `1\t${JSON.stringify(recommendation)}\n2\t`,
+          }],
+        },
+      },
+    },
+  ]
+
+  const view = derive([prompt])
+  assert.equal(view.stage, 'recommendation')
+  assert.equal(view.recommendations?.plans[0]?.planId, 'plan-morning-evening')
+  assert.equal(view.chat.filter((bubble) => bubble.recommendations).length, 1)
+})
+
+test('an arbitrary or mismatched Read cannot publish a business result', () => {
+  const recommendation = JSON.stringify(recommendationsResult())
+  const prompt = promptWithToolResult('')
+  prompt.frames = [
+    {
+      seq: 1,
+      data: {
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            id: 'background-result',
+            name: 'TaskOutput',
+            input: { task_id: 'background-task' },
+          }],
+        },
+      },
+    },
+    {
+      seq: 2,
+      data: {
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'background-result',
+            content: [
+              '<retrieval_status>success</retrieval_status>',
+              '<status>completed</status>',
+              '<exit_code>0</exit_code>',
+              '<output>[Truncated. Full output: /tmp/expected.output]</output>',
+            ].join('\n'),
+          }],
+        },
+      },
+    },
+    {
+      seq: 3,
+      data: {
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            id: 'unrelated-read',
+            name: 'Read',
+            input: { file_path: '/tmp/unrelated.output' },
+          }],
+        },
+      },
+    },
+    {
+      seq: 4,
+      data: {
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'unrelated-read',
+            content: `1\t${recommendation}`,
+          }],
+        },
+      },
+    },
+  ]
+
+  const view = derive([prompt])
+  assert.equal(view.recommendations, null)
+  assert.equal(view.chat.some((bubble) => bubble.recommendations), false)
+})
+
+test('failed TaskOutput never publishes nested business JSON', () => {
+  const prompt = promptWithToolResult('')
+  prompt.frames = [
+    {
+      seq: 1,
+      data: {
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            id: 'failed-background-result',
+            name: 'TaskOutput',
+            input: { task_id: 'background-task', block: true, timeout: 120000 },
+          }],
+        },
+      },
+    },
+    {
+      seq: 2,
+      data: {
+        type: 'user',
+        message: {
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'failed-background-result',
+            content: [
+              '<retrieval_status>success</retrieval_status>',
+              '<status>failed</status>',
+              '<exit_code>1</exit_code>',
+              '<output>',
+              JSON.stringify(recommendationsResult()),
+              '</output>',
+            ].join('\n'),
+          }],
+        },
+      },
+    },
+  ]
+
+  const view = derive([prompt])
+  assert.equal(view.recommendations, null)
+  assert.equal(view.chat.some((bubble) => bubble.recommendations), false)
 })
 
 test('a new recommendation result outranks a legacy proposal emitted later in the same turn', () => {

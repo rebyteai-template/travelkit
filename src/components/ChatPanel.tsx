@@ -10,6 +10,7 @@ import { FareDetailTable } from './FareDetailTable.tsx'
 import { FileCard } from './FileCard.tsx'
 import { Lightbox } from './Lightbox.tsx'
 import { UserQuestion } from './UserQuestion.tsx'
+import { AgentStatus } from './AgentStatus.tsx'
 import type { UserQuestionAnswer } from '../user-question.ts'
 
 /** Local-timezone send time shown under a bubble (HH:MM today, M月D日 HH:MM otherwise); the full
@@ -68,6 +69,8 @@ export function ChatPanel({
 }) {
   const chatRef = useRef<HTMLDivElement>(null)
   const [lightbox, setLightbox] = useState<string | null>(null)
+  const latestActivity = [...chat].reverse().find((bubble) => bubble.activity)?.activity
+  const hasLiveActivity = latestActivity?.state === 'active'
   useLayoutEffect(() => {
     if (loading || (!chat.length && !busy && !children)) return
     const el = chatRef.current
@@ -93,6 +96,14 @@ export function ChatPanel({
         </div>
       ) : (
         chat.map((b) => {
+          if (b.activity) {
+            if (b.activity.state === 'waiting') return null
+            return (
+              <div key={b.key} className="msg full agent-progress-message">
+                <AgentStatus run={b.activity} />
+              </div>
+            )
+          }
           if (b.question && b.promptId) {
             return (
               <div key={b.key} className="msg full">
@@ -104,13 +115,6 @@ export function ChatPanel({
                 />
                 <MsgTime ts={b.ts} />
               </div>
-            )
-          }
-          if (b.runUrl) {
-            return (
-              <a key={b.key} className="run-link" href={b.runUrl} target="_blank" rel="noreferrer">
-                ↗ 在 rebyte 查看本次运行
-              </a>
             )
           }
           // Inline card turn: the (table-stripped) assistant prose, then the search cards or the
@@ -172,7 +176,12 @@ export function ChatPanel({
       )}
       {notice ? <div className="chat-notice">{notice}</div> : null}
       {children}
-      {busy && !waitingForAnswer ? <div className="bubble assistant typing">正在处理…</div> : null}
+      {busy && !waitingForAnswer && !hasLiveActivity ? (
+        <div className="agent-status is-active" role="status" aria-live="polite">
+          <span className="agent-status-spinner" aria-hidden="true" />
+          <span>正在确认行程条件…</span>
+        </div>
+      ) : null}
       {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
     </div>
   )

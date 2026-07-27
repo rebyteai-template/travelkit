@@ -31,6 +31,12 @@ export function buildRecommendationRetryPrompt(planId?: string): string {
     : '请重新运行航班推荐，并返回新的 flight.recommendations 结构化结果。'
 }
 
+export function buildRecommendationContinuationPrompt(mode: 'global_more' | 'unseen_variants', count: number): string {
+  return mode === 'unseen_variants'
+    ? `请基于刚才的推荐，优先继续查找第一页未覆盖的其他出发城市或路线，最多返回${count}个未展示方案；使用已有 continuation，不要重新搜索。`
+    : `请基于刚才的推荐继续返回最多${count}个未展示方案；使用已有 continuation，不要重新搜索。`
+}
+
 function passengerSummary(group: RecommendationPlan['passengerGroups'][number]): string {
   const labels = [
     group.passengers.adult ? `${group.passengers.adult} ${paxLabel('adult')}` : '',
@@ -335,6 +341,9 @@ export function FlightRecommendationsView({ result, evidence = [], busy, onActio
   const explicitStatusText = result.message || result.reason
   const showState = result.plans.length === 0 || result.status === 'loading' || Boolean(explicitStatusText)
   const hasRetry = result.capabilities.canRetry
+  const continuation = result.continuation && Date.parse(result.continuation.expiresAt) > Date.now()
+    ? result.continuation
+    : undefined
 
   return (
     <section
@@ -366,6 +375,29 @@ export function FlightRecommendationsView({ result, evidence = [], busy, onActio
 
       {result.plans.length ? (
         <RecommendationTable plans={result.plans} busy={busy} onAction={onAction} />
+      ) : null}
+
+      {continuation ? (
+        <div className="recommendations-actions" aria-label="继续查看推荐">
+          {continuation.modes.includes('global_more') ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onAction(buildRecommendationContinuationPrompt('global_more', continuation.pageSize))}
+            >
+              再来{continuation.pageSize}个
+            </button>
+          ) : null}
+          {continuation.modes.includes('unseen_variants') ? (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onAction(buildRecommendationContinuationPrompt('unseen_variants', continuation.pageSize))}
+            >
+              看其他出发地或路线
+            </button>
+          ) : null}
+        </div>
       ) : null}
 
       {evidence.length ? (

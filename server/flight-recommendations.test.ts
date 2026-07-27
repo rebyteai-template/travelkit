@@ -4,6 +4,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import {
+  buildRecommendationContinuationPrompt,
   buildRecommendationRetryPrompt,
   FlightRecommendationsView,
   recommendationStatusLabel,
@@ -111,6 +112,28 @@ test('recommendation renderer uses one dense comparison table with exact segment
   assert.match(html, /<div class="recommend-plan-title-row"><strong class="recommend-plan-label">上午出发<\/strong><div class="recommend-copy">/)
   assert.match(html, /class="recommend-copy-action"[^>]*><svg[^>]*aria-hidden="true"[^>]*>.*<span>复制<\/span><\/button>/)
   assert.doesNotMatch(html, />Copy<\/button>/)
+})
+
+test('recommendation continuation renders explicit more and unseen-route actions', () => {
+  const result = resultFixture()
+  result.continuation = {
+    hasMore: true,
+    token: 'opaque-token',
+    expiresAt: '2099-07-16T05:10:00.000Z',
+    nextPage: 2,
+    pageSize: 10,
+    modes: ['global_more', 'unseen_variants'],
+  }
+  const html = renderToStaticMarkup(createElement(FlightRecommendationsView, {
+    result,
+    busy: false,
+    onAction: () => {},
+  }))
+
+  assert.match(html, />再来10个<\/button>/)
+  assert.match(html, />看其他出发地或路线<\/button>/)
+  assert.match(buildRecommendationContinuationPrompt('global_more', 10), /已有 continuation/)
+  assert.match(buildRecommendationContinuationPrompt('unseen_variants', 10), /未覆盖的其他出发城市或路线/)
 })
 
 test('each physical segment becomes one standard table row while plan and journey facts print once', () => {
