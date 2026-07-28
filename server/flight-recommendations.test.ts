@@ -4,11 +4,13 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import {
-  buildRecommendationContinuationPrompt,
-  buildRecommendationRetryPrompt,
   FlightRecommendationsView,
   recommendationStatusLabel,
 } from '../src/components/FlightRecommendations.tsx'
+import {
+  buildRecommendationContinuationPrompt,
+  buildRecommendationRetryPrompt,
+} from '../src/operator-actions.ts'
 import type { FlightRecommendations, SearchResult } from '../src/frames.ts'
 
 function resultFixture(): FlightRecommendations {
@@ -109,7 +111,7 @@ test('recommendation renderer uses one dense comparison table with exact segment
   assert.doesNotMatch(html, />验价<\/button>/)
   assert.doesNotMatch(html, /实时查询价/)
   assert.match(html, /<ul class="recommend-plan-journeys"><li><span>第1程<\/span><span class="mono">09:00-18:00<\/span><\/li><\/ul>/)
-  assert.match(html, /<div class="recommend-plan-title-row"><strong class="recommend-plan-label">上午出发<\/strong><div class="recommend-copy">/)
+  assert.match(html, /<div class="recommend-plan-title-row"><strong class="recommend-plan-label">上午出发<\/strong><div class="recommend-title-actions"><div class="recommend-copy">/)
   assert.match(html, /class="recommend-copy-action"[^>]*><svg[^>]*aria-hidden="true"[^>]*>.*<span>复制<\/span><\/button>/)
   assert.doesNotMatch(html, />Copy<\/button>/)
 })

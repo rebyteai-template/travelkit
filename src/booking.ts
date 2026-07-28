@@ -4,7 +4,8 @@
  * natural-language prompt we hand the agent — the agent owns all the internal
  * order/passenger IDs (DESIGN §4.3, §5).
  */
-import type { FareVerification, FareJourney } from './frames.ts'
+import type { CompactPrice, FareVerification, FareJourney, RecommendationPlan } from './frames.ts'
+import { flightMoney } from './lib/flight-display.ts'
 
 export type DocType = 'idcard' | 'passport' | 'mtp' | 'ttp'
 export type PaxType = 'adult' | 'child' | 'infant'
@@ -138,10 +139,62 @@ export function amountLine(fare: FareVerification): string {
   return `金额：${c}${fare.total}（票面价 未返回 + 税价 未返回）`
 }
 
+// ── recommended-plan booking helpers (conversational collection, then recommend-book) ──
+// Operators receive passenger details as WeChat text or spreadsheets, so collection is
+// the AGENT's conversation (paste-friendly, field-level fix loops from the skill), not a
+// form. Prompt builders + their chip recognizers live together in operator-actions.ts;
+// this file keeps the plan/passenger display vocabulary they share with components.
+
+/** Operator-facing labels for changed verification fields (superset shared with the
+ *  legacy verify comparison — see buildChangeNotice in frames.ts). */
+export const CHANGE_FIELD_LABELS: Record<string, string> = {
+  flights: '航班',
+  price: '价格',
+  cabin: '舱位',
+  baggage: '行李额',
+  hasCheckedBaggage: '是否含托运',
+}
+
+export function planBookingChangeLabels(changedFields: string[]): string {
+  return changedFields.map((field) => CHANGE_FIELD_LABELS[field] ?? field).join('、')
+}
+
+/** "N 成人、N 儿童、N 婴儿" from a bare count — the one summary both the plan table
+ *  and the booking gate render. */
+export function paxSummary(count: { adult: number; child: number; infant: number }): string {
+  return [
+    count.adult ? `${count.adult} ${PAX_LABELS.adult}` : '',
+    count.child ? `${count.child} ${PAX_LABELS.child}` : '',
+    count.infant ? `${count.infant} ${PAX_LABELS.infant}` : '',
+  ].filter(Boolean).join('、')
+}
+
+/** The total the customer sees for a plan — quote total when the skill priced one. */
+export function planTotal(plan: RecommendationPlan): CompactPrice {
+  return plan.customerQuoteTotal ?? plan.verifiedFareTotal
+}
+
+/** "SHA→SIN、SIN→SHA" for any journey list (a plan's, or a ticket group's subset). */
+export function journeyRoute(journeys: Array<{ origin: string; destination: string }>): string {
+  return journeys.map((journey) => `${journey.origin}→${journey.destination}`).join('、')
+}
+
+/** Human-readable identity of a plan for prompts and chips: route/flights/total. */
+export function planDisplayFacts(plan: RecommendationPlan): string {
+  const total = planTotal(plan)
+  const flights = plan.journeys
+    .flatMap((journey) => journey.segments.map((segment) => segment.flightNo))
+    .join('/')
+  return `${journeyRoute(plan.journeys)} ${flights}，总价 ${flightMoney(total.amount, total.currency)}`
+}
+
+/** Shared with the legacy prompt's chip recognizer in operator-actions.ts. */
+export const ORDER_PROMPT_HEADER = '请根据以下乘机人信息创建订单（我已确认，创建后请勿自动支付）：'
+
 /** The single prompt sent after the user clears the confirm gate: passenger
  *  details + explicit creation confirmation, so the agent can create directly. */
 export function buildOrderPrompt(passengers: PassengerDraft[], fare: FareVerification): string {
-  const lines: string[] = ['请根据以下乘机人信息创建订单（我已确认，创建后请勿自动支付）：', '']
+  const lines: string[] = [ORDER_PROMPT_HEADER, '']
 
   passengers.forEach((p, i) => {
     lines.push(`【乘机人 ${i + 1} · ${PAX_LABELS[p.paxType]}】`)

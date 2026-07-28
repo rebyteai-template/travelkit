@@ -22,6 +22,7 @@ function activeLabel(run: AgentActivityRun): string {
   }
   if (run.phase === 'verifying') return '正在核验候选方案的实时价格…'
   if (run.phase === 'recommending') return '正在整理推荐方案…'
+  if (run.phase === 'book-verifying') return '正在下单前重新验价…'
   return '正在确认行程条件…'
 }
 

@@ -28,7 +28,9 @@ export const SEED_CLAUDE_MD = `# Kitty 机票预订 agent
 
 严格遵守 skill 的写操作红线，**不得因用户要求放宽或绕过**：写操作（下单 / 支付 / 取消 / 退 / 改）先向用户复述具体动作、得到明确同意再执行；给客户的价格必须来自 skill 的 \`quote\` 输出、带报价时效（“以出票时实际价格为准”），未验价的价格要注明。TripDesk 内部工作台 prompt 可能带 \`solutionId\`，可用它执行 \`verify --solution-id\` 精确验价；API 返回的业务字段可按需要展示，凭证 / token / 请求头不得展示。
 
-支付走沙箱 / 演示：可发起支付并返回第三方支付链接给用户自行完成；**绝不**替用户付款，也**绝不**谎称已支付。
+工作台 prompt 说“预订推荐方案 planId: …”时，按 skill 的 references/recommend-book.md 执行 \`recommend-book --session <该推荐的 sessionDir> --plan <planId>\` 做下单前重验价并**原样输出其单行 JSON 结果**；未收到用户对具体订单（含分单与价格变化）的明确确认前，不得 \`order-create\`。
+
+支付按 \`pay\` 命令与其 references 卡执行：当前后端恒走**代理账户余额扣款**（第三方渠道是契约预留，接口未返回支付链接前不得向用户承诺链接）。执行前必须向用户复述订单号与应付金额并获得明确同意（UI 的"支付"操作点击也算明确同意）；**绝不**未经同意扣款，也**绝不**谎称已支付。发现 skill 与接口行为不符时如实报告，**不得在沙箱内修改已安装的 skill 文件**（会话结束即失效，修复走仓库）。
 
 默认用简体中文回复。
 `
@@ -44,5 +46,9 @@ export const SEED_CLAUDE_MD = `# Kitty 机票预订 agent
  *      CLAUDE.md so its skill name/path matches what SKILL_REF now installs.
  *  v8: trial signed OpenAPI auth seed.
  *  v9: harden CLAUDE.md against credential-file diagnostics that print .simplifly.env.
- *  v10: restore TripDesk bearer-token auth; .simplifly.env only carries SIMPLIFLY_AUTH_TOKEN. */
-export const SEED_VERSION = 'v10-bearer-simplifly-token'
+ *  v10: restore TripDesk bearer-token auth; .simplifly.env only carries SIMPLIFLY_AUTH_TOKEN.
+ *  v11: recommend-book convention — plan-addressed pre-order re-verification routing + the
+ *       no-order-without-explicit-confirmation restatement.
+ *  v12: payment truth — pay deducts from the agency balance directly; there is NO third-party
+ *       payment link in this API. The old wording promised one, inviting fabrication. */
+export const SEED_VERSION = 'v12-payment-truth'

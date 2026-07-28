@@ -1,10 +1,18 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { useQueryClient } from '@tanstack/react-query'
 import { passengersFromFare, buildOrderPrompt, isBookableFare } from './booking.ts'
+import {
+  buildPlanOrderConfirmPrompt,
+  buildRecommendBookPrompt,
+  buildRecommendBookRetryPrompt,
+  buildRecommendationRetryPrompt,
+} from './operator-actions.ts'
+import { findRecommendationPlan, type PlanBooking, type RecommendationPlan } from './frames.ts'
 import { ChatPanel } from './components/ChatPanel.tsx'
 import { Composer, type ComposerHandle } from './components/Composer.tsx'
 import { WriteFlow } from './components/WriteFlow.tsx'
+import { PlanBookingFlow } from './components/PlanBookingFlow.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { Unauthorized } from './components/Unauthorized.tsx'
 import { CreditBanner } from './components/CreditBanner.tsx'
@@ -22,6 +30,7 @@ import {
   taskIdAtom,
   flowModeAtom,
   orderDraftAtom,
+  planBookingPlanIdAtom,
   navOpenAtom,
   themeAtom,
   debugAtom,
@@ -46,6 +55,7 @@ export function App() {
   const newSession = useSetAtom(newSessionAtom)
   const [mode, setMode] = useAtom(flowModeAtom)
   const [orderDraft, setOrderDraft] = useAtom(orderDraftAtom)
+  const [bookingPlanId, setBookingPlanId] = useAtom(planBookingPlanIdAtom)
   const [navOpen, setNavOpen] = useAtom(navOpenAtom)
   const [theme, setTheme] = useAtom(themeAtom)
   const [debugOn, setDebugOn] = useAtom(debugAtom)
@@ -64,6 +74,26 @@ export function App() {
     setMode('auto')
   }, [view.stage, view.fare?.canBook, view.fare?.verifiedAt, setMode])
 
+  // Booking is planId-addressed and re-verified, so the flow's plan may live in ANY
+  // recommendation table of the task — an older page's plans stay bookable. Memoized:
+  // this runs on every streamed frame while a booking is open.
+  const bookingPlan = useMemo(
+    () => (bookingPlanId ? findRecommendationPlan(view.chat, bookingPlanId) : null),
+    [view.chat, bookingPlanId],
+  )
+  useEffect(() => {
+    if (bookingPlanId && !bookingPlan) setBookingPlanId(null)
+  }, [bookingPlanId, bookingPlan, setBookingPlanId])
+
+  // The skill's explicit verdict that a booking failure killed the whole page (shared
+  // verification window); ChatPanel applies it to the bubble whose table holds the plan.
+  const bookingStale = view.planBooking?.invalidatesRecommendationPage
+    ? {
+        planId: view.planBooking.planId,
+        notice: '该方案已不可售：同批推荐共享同一验价窗口，本页报价已过期，需要重新给客户报价。',
+      }
+    : undefined
+
   function tapBrand() {
     if (debugOn) return
     if (++brandTaps.current >= 10) setDebugOn(true)
@@ -80,6 +110,30 @@ export function App() {
     const need = passengersFromFare(view.fare)
     setOrderDraft((prev) => (prev.length === need.length ? prev : need))
     setMode('passengers')
+  }
+
+  // ── recommended-plan booking (conversational collection, then recommend-book) ──
+  // 预订 button → one intent turn. The agent collects passengers over conversation
+  // (WeChat text / spreadsheet pastes), re-verifies, and the confirm gate renders from
+  // the structured result. The flow marker survives the collection turns.
+  function startBooking(plan: RecommendationPlan) {
+    send(buildRecommendBookPrompt(plan))
+    setBookingPlanId(plan.planId)
+  }
+  function retryBookingVerify() {
+    if (!bookingPlanId) return
+    send(buildRecommendBookRetryPrompt(bookingPlanId))
+  }
+  // Confirm gate cleared → the one write handoff. No PII rides this turn; passengers
+  // stay where they were collected, in the conversation.
+  function confirmBookingOrders(booking: PlanBooking) {
+    send(buildPlanOrderConfirmPrompt(booking))
+    setBookingPlanId(null)
+  }
+  // Stale page → a fresh quote for the customer (full recommend re-run).
+  function requoteBooking() {
+    send(buildRecommendationRetryPrompt())
+    setBookingPlanId(null)
   }
 
   // Single-column chat stream: search cards, verify card, and the write-flow (passenger form /
@@ -131,6 +185,8 @@ export function App() {
             fareLatest={view.fare}
             recommendationsLatest={view.recommendations}
             onContinue={mode === 'auto' ? continueToPassengers : undefined}
+            onStartBooking={bookingPlanId ? undefined : startBooking}
+            bookingStale={bookingStale}
             notice={view.notice}
             waitingForAnswer={!!view.pendingQuestion}
             onAnswerQuestion={answerAgentQuestion}
@@ -144,6 +200,15 @@ export function App() {
               onConfirmOrder={() => { if (isBookableFare(view.fare)) send(buildOrderPrompt(orderDraft, view.fare)) }}
               onCancelConfirm={() => setMode('passengers')}
               busy={busy}
+            />
+            <PlanBookingFlow
+              plan={bookingPlan}
+              booking={view.planBooking}
+              busy={busy}
+              onConfirmOrders={confirmBookingOrders}
+              onRetryVerify={retryBookingVerify}
+              onRequote={requoteBooking}
+              onClose={() => setBookingPlanId(null)}
             />
           </ChatPanel>
           <Composer onSend={send} busy={busy} ref={composerRef} />

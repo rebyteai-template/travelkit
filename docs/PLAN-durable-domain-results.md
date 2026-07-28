@@ -69,6 +69,7 @@ interface NormalizedDomainResult {
     | 'flight.search'
     | 'flight.verify'
     | 'flight.recommendations'
+    | 'flight.plan-booking'
   schemaVersion: string
   payload: unknown
   source: {

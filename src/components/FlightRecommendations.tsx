@@ -8,7 +8,8 @@ import type {
   RecommendationStatus,
   SearchResult,
 } from '../frames.ts'
-import { paxLabel } from '../booking.ts'
+import { paxSummary, planTotal } from '../booking.ts'
+import { buildRecommendationContinuationPrompt, buildRecommendationRetryPrompt } from '../operator-actions.ts'
 import { flightDateCn, flightMoney, flightRouteCell, journeyRoleLabel } from '../lib/flight-display.ts'
 import { FlightResultsTable } from './FlightResultsTable.tsx'
 
@@ -25,24 +26,8 @@ export function recommendationStatusLabel(status: RecommendationStatus): string 
   return '航班推荐'
 }
 
-export function buildRecommendationRetryPrompt(planId?: string): string {
-  return planId
-    ? `请重新验证推荐方案 planId: ${planId}，并返回新的 flight.recommendations 结构化结果。`
-    : '请重新运行航班推荐，并返回新的 flight.recommendations 结构化结果。'
-}
-
-/** Sent as the customer's own chat turn — page size, mode and snapshot reuse stay the skill's rules. */
-export function buildRecommendationContinuationPrompt(): string {
-  return '再来一些方案。'
-}
-
 function passengerSummary(group: RecommendationPlan['passengerGroups'][number]): string {
-  const labels = [
-    group.passengers.adult ? `${group.passengers.adult} ${paxLabel('adult')}` : '',
-    group.passengers.child ? `${group.passengers.child} ${paxLabel('child')}` : '',
-    group.passengers.infant ? `${group.passengers.infant} ${paxLabel('infant')}` : '',
-  ].filter(Boolean)
-  return labels.join('、')
+  return paxSummary(group.passengers)
 }
 
 function roleLabel(journey: RecommendationJourney, index: number): string {
@@ -53,10 +38,6 @@ function fareSourceLabel(source: FareSource): string {
   if (source === 'roundtrip') return '往返查询'
   if (source === 'joint') return '联合查询'
   return '单独查询'
-}
-
-function planTotal(plan: RecommendationPlan) {
-  return plan.customerQuoteTotal ?? plan.verifiedFareTotal
 }
 
 function passengerCount(group: RecommendationPlan['passengerGroups'][number]): number {
@@ -153,17 +134,27 @@ function SegmentFactLines({ plan, journeyIndex, segmentIndex, field }: {
   )
 }
 
-function PlanSummary({ plan, busy, onAction }: {
+function PlanSummary({ plan, busy, onAction, onStartBooking }: {
   plan: RecommendationPlan
   busy: boolean
   onAction: (prompt: string) => void
+  onStartBooking?: (plan: RecommendationPlan) => void
 }) {
   const total = planTotal(plan)
+  const canBook = Boolean(onStartBooking) && plan.capabilities.canBook && plan.validity.status === 'verified'
   return (
     <div className="recommend-plan-summary">
       <div className="recommend-plan-title-row">
         <strong className="recommend-plan-label">{plan.label || '未返回'}</strong>
-        <CopyAction plan={plan} />
+        <div className="recommend-title-actions">
+          <CopyAction plan={plan} />
+          {canBook ? (
+            <button type="button" className="recommend-book-action" disabled={busy} onClick={() => onStartBooking!(plan)}>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h9M8 4.5 11.5 8 8 11.5" /></svg>
+              <span>预订</span>
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="recommend-plan-total">
         <span className="recommend-plan-total-label">总价</span>
@@ -248,10 +239,11 @@ function recommendationRows(plan: RecommendationPlan) {
   )
 }
 
-function RecommendationTable({ plans, busy, onAction }: {
+function RecommendationTable({ plans, busy, onAction, onStartBooking }: {
   plans: RecommendationPlan[]
   busy: boolean
   onAction: (prompt: string) => void
+  onStartBooking?: (plan: RecommendationPlan) => void
 }) {
   return (
     <div className="table-scroll recommend-table-scroll">
@@ -282,7 +274,7 @@ function RecommendationTable({ plans, busy, onAction }: {
               >
                 {row.isFirstPlanRow ? (
                   <th scope="rowgroup" rowSpan={rows.length} className="recommend-plan-cell">
-                    <PlanSummary plan={plan} busy={busy} onAction={onAction} />
+                    <PlanSummary plan={plan} busy={busy} onAction={onAction} onStartBooking={onStartBooking} />
                   </th>
                 ) : null}
                 {row.isFirstJourneyRow ? (
@@ -329,7 +321,7 @@ function RecommendationTable({ plans, busy, onAction }: {
   )
 }
 
-export function FlightRecommendationsView({ result, evidence = [], busy, onAction, isLatest = false }: {
+export function FlightRecommendationsView({ result, evidence = [], busy, onAction, isLatest = false, onStartBooking, staleNotice }: {
   result: FlightRecommendations
   evidence?: SearchResult[]
   busy: boolean
@@ -339,6 +331,12 @@ export function FlightRecommendationsView({ result, evidence = [], busy, onActio
    *  page and mints a new one, so an older page's token is already dead. Withheld by default
    *  — a caller that forgets loses a button rather than offering one that fails. */
   isLatest?: boolean
+  /** Grants the per-plan 预订 entry. Scope (which tables offer it) is the CALLER's rule —
+   *  see ChatPanel — the button itself is additionally gated on the plan's canBook capability. */
+  onStartBooking?: (plan: RecommendationPlan) => void
+  /** A failed pre-order re-verification invalidates the WHOLE page (all plans shared one
+   *  verification window) — shown as a banner, and the booking entries are withdrawn. */
+  staleNotice?: string
 }) {
   const [evidenceOpened, setEvidenceOpened] = useState(false)
   const isAlert = result.status === 'fatal_error' || result.status === 'empty'
@@ -383,8 +381,17 @@ export function FlightRecommendationsView({ result, evidence = [], busy, onActio
         </div>
       ) : null}
 
+      {staleNotice ? (
+        <div className="recommendations-stale" role="alert">{staleNotice}</div>
+      ) : null}
+
       {result.plans.length ? (
-        <RecommendationTable plans={result.plans} busy={busy} onAction={onAction} />
+        <RecommendationTable
+          plans={result.plans}
+          busy={busy}
+          onAction={onAction}
+          onStartBooking={staleNotice ? undefined : onStartBooking}
+        />
       ) : null}
 
       {/* One row under the table: ask for more, or start over. Retry sits quiet at the far end.

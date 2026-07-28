@@ -11,6 +11,8 @@
  * may surface in this internal workbench; credentials and request secrets must not.
  */
 import type { Attachment, PromptContent } from './api.ts'
+import { CHANGE_FIELD_LABELS } from './booking.ts'
+import { recognizeOperatorAction } from './operator-actions.ts'
 import {
   isUserQuestionAnswer,
   parseUserQuestionRequest,
@@ -172,6 +174,9 @@ export interface RecommendationTicketGroup {
   verifiedAt: string
   validity: { status: RecommendationValidityStatus; validUntil: string }
   verifiedPrice: CompactPrice
+  /** API-declared passenger fields this fare requires before order creation —
+   *  folded into the booking prompt so collection happens in one pass. */
+  requiredPassengerInfos?: string[]
 }
 
 export interface RecommendationTicketSegmentFact {
@@ -294,11 +299,69 @@ export interface FareVerification {
   changeNotice?: string
 }
 
+// ── plan booking (recommend-book: pre-order re-verification of one plan) ──
+// The skill re-verifies a recommended plan's ticket groups right before order
+// creation, keeps the fresh orderKeys session-private, and reports bookability
+// plus the diff against what the plan originally showed. sessionDir is a
+// sandbox path and is deliberately not carried into UI state.
+export type PlanBookingStatus = 'ready' | 'changed' | 'failed'
+
+export interface PlanBookingTicketGroup {
+  ticketGroupId: string
+  /** order-create --option address for this group, staged by the skill in its session. */
+  option: number
+  passengerGroupId: string
+  journeyIndexes: number[]
+  fareSource: FareSource
+  source?: string
+  cabin?: string
+  baggage?: string
+  exactPassengerCount: { adult: number; child: number; infant: number }
+  verifiedPrice: CompactPrice
+  /** What the recommendation showed for this group when it was quoted. */
+  previousPrice: CompactPrice
+  requiredPassengerInfos?: string[]
+  changedFields: string[]
+  verifiedAt: string
+  validity: { status: 'verified'; validUntil: string }
+  /** The skill's transfer advisory notice, verbatim; absent for direct flights. */
+  transitNotice?: string
+  bookable: boolean
+}
+
+export interface PlanBooking {
+  schemaVersion: 'flight-plan-booking/v1'
+  resultType: 'flight.plan-booking'
+  ok: boolean
+  status: PlanBookingStatus
+  planId: string
+  bookable: boolean
+  changed: boolean
+  changedFields: string[]
+  verifiedAt?: string
+  validity?: { status: 'verified'; validUntil: string }
+  verifiedFareTotal?: CompactPrice
+  previousFareTotal?: CompactPrice
+  orderCount: number
+  splitOrder: boolean
+  ticketGroups: PlanBookingTicketGroup[]
+  errorType?: string
+  message?: string
+  /** The skill's explicit verdict that this failure killed the whole recommendation
+   *  page (shared verification window) — applied mechanically, never inferred. */
+  invalidatesRecommendationPage?: boolean
+  capabilities: { canCreateOrders: boolean; canRetryVerification: boolean; canRequote: boolean }
+}
+
 // ── chat + combined view ───────────────────────────────────────────────
 export interface ChatBubble {
   key: string
   role: 'user' | 'assistant'
   text: string
+  /** Set when this user turn is a recognized workbench action (a button-built protocol
+   *  prompt, not something a person typed). The UI renders a compact action chip with
+   *  this label instead of a fake user-speech bubble; the wire prompt stays verbatim. */
+  action?: string
   /** UTC timestamp this bubble was "sent": the prompt's created_at for the user turn, its
    *  completed_at (falling back to created_at while running) for assistant turns. The UI converts
    *  to the viewer's local timezone — see src/lib/time.ts. */
@@ -319,6 +382,10 @@ export interface ChatBubble {
    *  collapsed, read-only evidence on the same bubble and never regain primary status. */
   recommendations?: FlightRecommendations
   evidence?: SearchResult[]
+  /** Pre-order re-verification result for one recommended plan (recommend-book). The chat
+   *  bubble is a compact status record; the interactive confirm surface renders from
+   *  `DerivedView.planBooking` in the booking flow at the chat tail. */
+  planBooking?: PlanBooking
   /** Images/files the user attached to this turn — rendered above the user bubble (thumbnails /
    *  file chips). Set only on user bubbles, only when non-empty. */
   attachments?: Attachment[]
@@ -341,6 +408,8 @@ export interface DerivedView {
   search: SearchResult | null
   fare: FareVerification | null
   recommendations: FlightRecommendations | null
+  /** Newest recommend-book result in the task (last-wins), matched to the booking flow by planId. */
+  planBooking: PlanBooking | null
   /** Last domain-tool failure surfaced to the user (e.g. price expired). */
   notice: string | null
   /** The latest unanswered manager question. While present, the normal composer
@@ -356,7 +425,7 @@ function isObj(v: unknown): v is Record<string, unknown> {
  *  in one place instead of being negated twice inside the de-dupe condition. */
 function carriesPayload(b: ChatBubble): boolean {
   return Boolean(
-    b.cards || b.fare || b.recommendations
+    b.cards || b.fare || b.recommendations || b.planBooking
     || b.attachments || b.question || b.activity || b.runUrl,
   )
 }
@@ -404,6 +473,15 @@ function parseCapabilities(raw: unknown): NonNullable<CompactOption['capabilitie
 
 const RECOMMENDATIONS_SCHEMA_VERSION = 'flight-recommendations/v1'
 const RECOMMENDATIONS_RESULT_TYPE = 'flight.recommendations'
+
+/** Absent → []; present but malformed → null (caller fails closed). */
+function parseRequiredPassengerInfos(raw: unknown): string[] | null {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) return null
+  const fields = raw.filter((field): field is string => typeof field === 'string' && field.trim() !== '')
+  if (fields.length !== raw.length || new Set(fields).size !== fields.length) return null
+  return fields
+}
 
 function parsePositivePrice(raw: unknown): CompactPrice | null {
   if (!isObj(raw) || typeof raw.amount !== 'number' || !Number.isFinite(raw.amount) || raw.amount <= 0) return null
@@ -570,6 +648,8 @@ function parseRecommendationPlan(raw: unknown): RecommendationPlan | null {
         })
       }
     }
+    const requiredPassengerInfos = parseRequiredPassengerInfos(item.requiredPassengerInfos)
+    if (requiredPassengerInfos === null) return null
     ticketGroupIds.add(ticketGroupId)
     ticketGroups.push({
       ticketGroupId,
@@ -584,6 +664,7 @@ function parseRecommendationPlan(raw: unknown): RecommendationPlan | null {
       verifiedAt,
       validity: { status: validityStatus, validUntil },
       verifiedPrice,
+      ...(requiredPassengerInfos.length ? { requiredPassengerInfos } : {}),
     })
   }
 
@@ -750,6 +831,203 @@ function invalidRecommendations(message = '推荐结果版本或必备字段不�
   }
 }
 
+const PLAN_BOOKING_SCHEMA_VERSION = 'flight-plan-booking/v1'
+const PLAN_BOOKING_RESULT_TYPE = 'flight.plan-booking'
+const PLAN_BOOKING_CHANGED_FIELDS = ['price', 'cabin', 'baggage'] as const
+
+function parsePlanBookingChangedFields(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null
+  if (!raw.every((field) => typeof field === 'string' && (PLAN_BOOKING_CHANGED_FIELDS as readonly string[]).includes(field))) return null
+  if (new Set(raw).size !== raw.length) return null
+  return raw as string[]
+}
+
+function parsePlanBookingCapabilities(raw: unknown): PlanBooking['capabilities'] | null {
+  if (!isObj(raw)) return null
+  const flags = [raw.canCreateOrders, raw.canRetryVerification, raw.canRequote]
+  if (!flags.every((flag) => typeof flag === 'boolean')) return null
+  return {
+    canCreateOrders: raw.canCreateOrders === true,
+    canRetryVerification: raw.canRetryVerification === true,
+    canRequote: raw.canRequote === true,
+  }
+}
+
+function parsePlanBookingTicketGroup(raw: unknown): PlanBookingTicketGroup | null {
+  if (!isObj(raw)) return null
+  if (typeof raw.ticketGroupId !== 'string' || !raw.ticketGroupId.trim()) return null
+  if (typeof raw.option !== 'number' || !Number.isInteger(raw.option) || raw.option < 1) return null
+  if (typeof raw.passengerGroupId !== 'string' || !raw.passengerGroupId.trim()) return null
+  if (!Array.isArray(raw.journeyIndexes) || raw.journeyIndexes.length === 0) return null
+  if (!raw.journeyIndexes.every((index) => typeof index === 'number' && Number.isInteger(index) && index >= 0)) return null
+  if (new Set(raw.journeyIndexes).size !== raw.journeyIndexes.length) return null
+  const fareSource = raw.fareSource
+  if (fareSource !== 'oneway' && fareSource !== 'roundtrip' && fareSource !== 'joint') return null
+  const passengers = parseRecommendationPassengerCount(raw.exactPassengerCount)
+  if (!passengers) return null
+  const verifiedPrice = parsePositivePrice(raw.verifiedPrice)
+  const previousPrice = parsePositivePrice(raw.previousPrice)
+  if (!verifiedPrice || !previousPrice) return null
+  const changedFields = parsePlanBookingChangedFields(raw.changedFields)
+  if (!changedFields) return null
+  if (typeof raw.verifiedAt !== 'string' || !raw.verifiedAt.trim()) return null
+  if (!isObj(raw.validity) || raw.validity.status !== 'verified') return null
+  if (typeof raw.validity.validUntil !== 'string' || !raw.validity.validUntil.trim()) return null
+  if (raw.bookable !== true) return null
+  const requiredPassengerInfos = parseRequiredPassengerInfos(raw.requiredPassengerInfos)
+  if (requiredPassengerInfos === null) return null
+  const transitNotice = isObj(raw.transitAdvisory) ? str(raw.transitAdvisory.notice).trim() : ''
+  return {
+    ticketGroupId: raw.ticketGroupId,
+    option: raw.option,
+    passengerGroupId: raw.passengerGroupId,
+    journeyIndexes: raw.journeyIndexes as number[],
+    fareSource,
+    ...(str(raw.source) ? { source: str(raw.source) } : {}),
+    ...(str(raw.cabin) ? { cabin: str(raw.cabin) } : {}),
+    ...(str(raw.baggage) ? { baggage: str(raw.baggage) } : {}),
+    exactPassengerCount: passengers,
+    verifiedPrice,
+    previousPrice,
+    changedFields,
+    verifiedAt: raw.verifiedAt,
+    validity: { status: 'verified', validUntil: raw.validity.validUntil },
+    ...(transitNotice ? { transitNotice } : {}),
+    ...(requiredPassengerInfos.length ? { requiredPassengerInfos } : {}),
+    bookable: true,
+  }
+}
+
+/** The one shape every failed PlanBooking shares — parsed failures and the fail-closed
+ *  substitutes differ only in these four fields. */
+function failedPlanBooking(
+  planId: string,
+  errorType: string,
+  message: string,
+  capabilities: PlanBooking['capabilities'],
+  invalidatesRecommendationPage = false,
+): PlanBooking {
+  return {
+    schemaVersion: PLAN_BOOKING_SCHEMA_VERSION,
+    resultType: PLAN_BOOKING_RESULT_TYPE,
+    ok: false,
+    status: 'failed',
+    planId,
+    bookable: false,
+    changed: false,
+    changedFields: [],
+    orderCount: 0,
+    splitOrder: false,
+    ticketGroups: [],
+    errorType,
+    message,
+    invalidatesRecommendationPage,
+    capabilities,
+  }
+}
+
+/** Fail-closed decode of the recommend-book envelope. A failed envelope (ok:false) is a VALID
+ *  parse — it is the authoritative "this plan is no longer sellable" signal; only contract
+ *  violations return null. */
+function parsePlanBooking(raw: Record<string, unknown>): PlanBooking | null {
+  if (raw.schemaVersion !== PLAN_BOOKING_SCHEMA_VERSION || raw.resultType !== PLAN_BOOKING_RESULT_TYPE) return null
+  const status = raw.status
+  if (status !== 'ready' && status !== 'changed' && status !== 'failed') return null
+  // Equality against the derived value also rejects non-booleans — no typeof needed.
+  if (raw.ok !== (status !== 'failed')) return null
+  if (typeof raw.planId !== 'string' || !raw.planId.trim()) return null
+  const capabilities = parsePlanBookingCapabilities(raw.capabilities)
+  if (!capabilities) return null
+  if (capabilities.canCreateOrders !== raw.ok) return null
+
+  if (status === 'failed') {
+    const message = str(raw.message).trim()
+    const errorType = str(raw.errorType).trim()
+    if (!message || !errorType) return null
+    if (raw.bookable !== false) return null
+    return failedPlanBooking(raw.planId, errorType, message, capabilities, raw.invalidatesRecommendationPage === true)
+  }
+
+  if (raw.bookable !== true) return null
+  if ((status === 'changed') !== raw.changed) return null
+  const changedFields = parsePlanBookingChangedFields(raw.changedFields)
+  if (!changedFields) return null
+  if ((changedFields.length > 0) !== raw.changed) return null
+  if (!Array.isArray(raw.ticketGroups) || raw.ticketGroups.length === 0) return null
+  const groups: PlanBookingTicketGroup[] = []
+  for (const rawGroup of raw.ticketGroups) {
+    const group = parsePlanBookingTicketGroup(rawGroup)
+    if (!group) return null
+    groups.push(group)
+  }
+  if (new Set(groups.map((group) => group.ticketGroupId)).size !== groups.length) return null
+  if (new Set(groups.map((group) => group.option)).size !== groups.length) return null
+  // The envelope's diff must be exactly the union of the per-group diffs.
+  const unionChanged = new Set(groups.flatMap((group) => group.changedFields))
+  if (unionChanged.size !== changedFields.length || !changedFields.every((field) => unionChanged.has(field))) return null
+  if (raw.orderCount !== groups.length) return null
+  if (raw.splitOrder !== (groups.length > 1)) return null
+  const verifiedFareTotal = parsePositivePrice(raw.verifiedFareTotal)
+  const previousFareTotal = parsePositivePrice(raw.previousFareTotal)
+  if (!verifiedFareTotal || !previousFareTotal) return null
+  const currencies = new Set([
+    verifiedFareTotal.currency,
+    previousFareTotal.currency,
+    ...groups.flatMap((group) => [group.verifiedPrice.currency, group.previousPrice.currency]),
+  ])
+  if (currencies.size !== 1) return null
+  const groupSum = groups.reduce((sum, group) => sum + group.verifiedPrice.amount, 0)
+  if (Math.abs(groupSum - verifiedFareTotal.amount) > 0.001) return null
+  if (typeof raw.verifiedAt !== 'string' || !raw.verifiedAt.trim()) return null
+  if (!isObj(raw.validity) || raw.validity.status !== 'verified') return null
+  if (typeof raw.validity.validUntil !== 'string' || !raw.validity.validUntil.trim()) return null
+  const latestVerifiedAt = groups.map((group) => group.verifiedAt).sort().at(-1)
+  const earliestValidUntil = groups.map((group) => group.validity.validUntil).sort().at(0)
+  if (raw.verifiedAt !== latestVerifiedAt || raw.validity.validUntil !== earliestValidUntil) return null
+
+  return {
+    schemaVersion: PLAN_BOOKING_SCHEMA_VERSION,
+    resultType: PLAN_BOOKING_RESULT_TYPE,
+    ok: true,
+    status,
+    planId: raw.planId,
+    bookable: true,
+    changed: status === 'changed',
+    changedFields,
+    verifiedAt: raw.verifiedAt,
+    validity: { status: 'verified', validUntil: raw.validity.validUntil },
+    verifiedFareTotal,
+    previousFareTotal,
+    orderCount: groups.length,
+    splitOrder: groups.length > 1,
+    ticketGroups: groups,
+    capabilities,
+  }
+}
+
+/** Fail-closed substitute when a recommend-book envelope is present but violates the
+ *  contract — surfaced as a failed booking with no retry affordances. */
+function invalidPlanBooking(planId: string, message = '下单前验价结果版本或必备字段不受支持，请重新发起预订。'): PlanBooking {
+  return failedPlanBooking(planId, 'invalid_plan_booking_contract', message, {
+    canCreateOrders: false,
+    canRetryVerification: false,
+    canRequote: false,
+  })
+}
+
+/** Resolve a plan by id across every recommendation table in the chat, newest first —
+ *  booking is planId-addressed and re-verified, so older pages' plans stay resolvable. */
+export function findRecommendationPlan(chat: ChatBubble[], planId: string): RecommendationPlan | null {
+  for (let index = chat.length - 1; index >= 0; index -= 1) {
+    const plans = chat[index]?.recommendations?.plans
+    if (!plans) continue
+    for (const plan of plans) {
+      if (plan.planId === planId) return plan
+    }
+  }
+  return null
+}
+
 function containsMarkdownTable(text: string): boolean {
   const lines = text.split('\n')
   return lines.some((line, index) => /^\s*\|.*\|\s*$/.test(line) && /^\s*\|?\s*:?-{3,}/.test(lines[index + 1] ?? ''))
@@ -778,6 +1056,7 @@ export function derive(prompts: PromptContent[]): DerivedView {
   let search: SearchResult | null = null
   let fare: FareVerification | null = null
   let recommendations: FlightRecommendations | null = null
+  let planBooking: PlanBooking | null = null
   let notice: string | null = null
   let stage: Stage = 'idle'
   // Signature of the last rendered card set, so a re-surfaced identical compact (the verify
@@ -791,13 +1070,23 @@ export function derive(prompts: PromptContent[]): DerivedView {
     const replyTs = p.completed_at ?? p.created_at
     // Attach the key only when there are attachments, so an optimistic turn (undefined) and a
     // reloaded one (server may send []) derive the identical user bubble (I0).
-    chat.push({ key: `u-${p.id}`, role: 'user', text: p.prompt, ts: userTs, ...(p.attachments?.length ? { attachments: p.attachments } : {}) })
+    const operatorAction = recognizeOperatorAction(p.prompt)
+    chat.push({
+      key: `u-${p.id}`,
+      role: 'user',
+      text: p.prompt,
+      ts: userTs,
+      ...(operatorAction ? { action: operatorAction } : {}),
+      ...(p.attachments?.length ? { attachments: p.attachments } : {}),
+    })
     // Hold this prompt's latest search / verify; attach to the next assistant text (stripping its
     // redundant markdown table), else flush as a standalone card bubble at prompt end.
     let pendingSearches: SearchResult[] = []
     let hasVersionedSearch = false
     let pendingFare: FareVerification | null = null
     let pendingRecommendations: FlightRecommendations | null = null
+    let pendingPlanBooking: PlanBooking | null = null
+    const planBookingPlanIds = new Set<string>()
     const planBearingRecommendationSignatures = new Set<string>()
     let conflictingRecommendationResults = false
     let successfulVerifyCount = 0
@@ -1025,6 +1314,30 @@ export function derive(prompts: PromptContent[]): DerivedView {
             }
             continue
           }
+
+          // Pre-order re-verification of one recommended plan (recommend-book). Booking is
+          // orthogonal to the recommendation itself: the plan table stays authoritative and
+          // visible; this result only drives the booking flow and its status record. A turn
+          // that re-runs recommend-book for the SAME plan is a refresh (last wins); results
+          // for two DIFFERENT plans in one turn violate the protocol and fail closed.
+          if (
+            payload
+            && (
+              resultType === PLAN_BOOKING_RESULT_TYPE
+              || schemaVersion.startsWith('flight-plan-booking/')
+            )
+          ) {
+            const parsed = parsePlanBooking(payload)
+            if (parsed) planBookingPlanIds.add(parsed.planId)
+            pendingPlanBooking = planBookingPlanIds.size > 1
+              ? invalidPlanBooking(
+                  parsed?.planId ?? '',
+                  '本次运行对多个不同方案返回了下单前验价结果，无法确定要预订哪一个。请重新从推荐表发起预订。',
+                )
+              : parsed ?? invalidPlanBooking(str(payload.planId))
+            planBooking = pendingPlanBooking
+            continue
+          }
           // order / payment stages parsed in a later milestone
         }
       }
@@ -1104,6 +1417,9 @@ export function derive(prompts: PromptContent[]): DerivedView {
     if (!pendingRecommendations && pendingFare && successfulVerifyCount === 1) {
       chat.push({ key: `fare-${p.id}`, role: 'assistant', text: '', fare: pendingFare, ts: replyTs })
     }
+    if (pendingPlanBooking) {
+      chat.push({ key: `plan-booking-${p.id}`, role: 'assistant', text: '', planBooking: pendingPlanBooking, ts: replyTs })
+    }
   }
 
   // de-dupe consecutive identical assistant bubbles; never drop a payload-bearing one
@@ -1116,7 +1432,7 @@ export function derive(prompts: PromptContent[]): DerivedView {
   const pendingQuestion = [...deduped].reverse().find(
     (bubble) => bubble.question && !bubble.questionAnswer,
   ) ?? null
-  return { chat: deduped, stage, search, fare, recommendations, notice, pendingQuestion }
+  return { chat: deduped, stage, search, fare, recommendations, planBooking, notice, pendingQuestion }
 }
 
 function parseToolJson(raw: string): Record<string, unknown> | null {
@@ -1154,6 +1470,17 @@ function parseBusinessPayload(
 ): Record<string, unknown> | null {
   const direct = parseToolJson(raw)
   if (direct) return direct
+  // The skill's fail-closed protocol prints a structured failure envelope and exits
+  // non-zero; Claude Code prefixes that Bash result with "Exit code N", which hid
+  // every FAILED envelope (the stale-page signal) from this parser. Strip exactly
+  // that one prefix line — the remainder must still start at the JSON boundary.
+  if (sourceTool === 'Bash') {
+    const bashFailure = raw.match(/^Exit code -?\d+\r?\n([\s\S]*)$/)
+    if (bashFailure) {
+      const parsed = parseToolJson(bashFailure[1]!)
+      if (parsed) return parsed
+    }
+  }
   if (sourceTool === 'Read' && trustedOutputFileRead) {
     const unnumbered = raw
       .split('\n')
@@ -1167,7 +1494,10 @@ function parseBusinessPayload(
   if (!envelope.startsWith('<retrieval_status>')) return null
   if (!/<retrieval_status>\s*success\s*<\/retrieval_status>/.test(envelope)) return null
   if (!/<status>\s*completed\s*<\/status>/.test(envelope)) return null
-  if (!/<exit_code>\s*0\s*<\/exit_code>/.test(envelope)) return null
+  // No exit-code gate: the skill's fail-closed protocol prints a structured failure
+  // envelope and exits non-zero, and that envelope (the stale-page signal) must
+  // survive this transport exactly like the direct-Bash "Exit code N" prefix does.
+  // Contract validation downstream keeps arbitrary failed output from routing.
 
   const outputStartTag = '<output>'
   const outputEndTag = '</output>'
@@ -1200,7 +1530,7 @@ function trustedOutputFile(raw: string, sourceTool: string): string | null {
   if (!envelope.startsWith('<retrieval_status>')) return null
   if (!/<retrieval_status>\s*success\s*<\/retrieval_status>/.test(envelope)) return null
   if (!/<status>\s*completed\s*<\/status>/.test(envelope)) return null
-  if (!/<exit_code>\s*0\s*<\/exit_code>/.test(envelope)) return null
+  // Deliberately no exit-code gate — see unwrapTaskOutput above.
   const match = envelope.match(/\[Truncated\. Full output: ([^\]\r\n]+)\]/)
   return match?.[1]?.trim() || null
 }
@@ -1564,9 +1894,8 @@ function parseCompactVerify(json: Record<string, unknown>): FareVerification | n
  *  advisory the card shows before continuing. Undefined when nothing material changed. */
 function buildChangeNotice(comparison: unknown): string | undefined {
   if (!isObj(comparison) || comparison.changed !== true) return undefined
-  const labels: Record<string, string> = { flights: '航班', price: '价格', cabin: '舱位', baggage: '行李额', hasCheckedBaggage: '是否含托运' }
   const fields = (Array.isArray(comparison.changedFields) ? comparison.changedFields : [])
-    .map((f) => labels[str(f)])
+    .map((f) => CHANGE_FIELD_LABELS[str(f)])
     .filter((x): x is string => Boolean(x))
   if (!fields.length) return undefined
   return `验价后${fields.join('、')}较所选有变化，请确认后再继续预订。`

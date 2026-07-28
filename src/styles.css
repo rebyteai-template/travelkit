@@ -480,6 +480,39 @@ tr.cheapest td { background: var(--good-soft); }
 .recommend-plan-journeys li span + span { margin-left: 6px; }
 .recommend-validity { display: inline-flex; padding: 2px 7px; border-radius: var(--radius-pill); background: var(--warn-soft); color: var(--warn); font-size: 11px; font-weight: 700; }
 .recommend-actions { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+/* Compact plan actions in the title row: 复制 stays quiet, 预订 is the same small
+   shape but carries the accent — the primary action without a big block. */
+.recommend-title-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.recommend-book-action {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 5px; border: 0;
+  border-radius: 6px; background: transparent; color: var(--accent); cursor: pointer;
+  font: inherit; font-size: 11px; font-weight: 700; line-height: 1.3;
+}
+.recommend-book-action svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.recommend-book-action:hover { background: var(--accent-soft); }
+.recommend-book-action:disabled { opacity: .5; cursor: default; }
+/* Whole-page invalidation after a failed pre-order re-verification (all plans shared one window). */
+.recommendations-stale {
+  padding: 11px 14px; border: 1px solid var(--err-border); border-radius: var(--radius-md);
+  background: var(--err-soft); font-size: 13px; font-weight: 600;
+}
+/* A button-built protocol turn renders as an operator-action chip, not fake user speech. */
+.action-chip {
+  display: inline-flex; align-items: center; gap: 6px; align-self: flex-end;
+  padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-pill);
+  background: var(--panel-2); color: var(--muted); font-size: 12px; font-weight: 600;
+}
+.action-chip svg { flex-shrink: 0; }
+
+/* Durable chat record of one recommend-book check (the interactive gate lives at the chat tail). */
+.plan-booking-record {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px; border: 1px solid var(--good-border); border-radius: var(--radius-md);
+  background: var(--good-soft); font-size: 13px;
+}
+.plan-booking-record.is-changed { border-color: var(--warn-border); background: var(--warn-soft); }
+.plan-booking-record.is-failed { border-color: var(--err-border); background: var(--err-soft); }
+.plan-booking-record strong { font-size: 12px; white-space: nowrap; }
 .recommend-copy { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0; }
 .recommend-copy-action {
   display: inline-flex; align-items: center; gap: 4px; padding: 3px 5px; border: 0;

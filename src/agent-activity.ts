@@ -10,6 +10,7 @@ export type AgentActivityPhase =
   | 'comparing'
   | 'verifying'
   | 'recommending'
+  | 'book-verifying'
 
 export interface AgentActivityEvent {
   id: string
@@ -81,14 +82,24 @@ function callState(prompt: PromptContent, call: ToolCall): AgentActivityState {
   return 'active'
 }
 
+// Longest alternatives first: `recommend\b` also matches `recommend-book` /
+// `recommend-next` (the boundary holds before `-`), which mislabeled a booking
+// re-verification turn as "整理推荐方案".
+const FLIGHT_COMMAND_PHASES: Record<string, AgentActivityPhase> = {
+  search: 'searching',
+  pricing: 'comparing',
+  verify: 'verifying',
+  recommend: 'recommending',
+  'recommend-next': 'recommending',
+  'recommend-book': 'book-verifying',
+}
+
 function flightPhase(command: unknown): AgentActivityPhase | undefined {
   if (typeof command !== 'string') return undefined
-  const phase = command.match(/flight\.(?:ts|js)["']?\s+(search|pricing|verify|recommend)\b/i)?.[1]
-  if (phase === 'search') return 'searching'
-  if (phase === 'pricing') return 'comparing'
-  if (phase === 'verify') return 'verifying'
-  if (phase === 'recommend') return 'recommending'
-  return undefined
+  const phase = command
+    .match(/flight\.(?:ts|js)["']?\s+(recommend-book|recommend-next|recommend|search|pricing|verify)\b/i)?.[1]
+    ?.toLowerCase()
+  return phase ? FLIGHT_COMMAND_PHASES[phase] : undefined
 }
 
 function activityKind(name: string): AgentActivityKind {

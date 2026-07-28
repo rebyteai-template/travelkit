@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { ChatBubble, FareVerification, FlightRecommendations } from '../frames.ts'
+import type { ChatBubble, FareVerification, FlightRecommendations, RecommendationPlan } from '../frames.ts'
+import { planBookingChangeLabels } from '../booking.ts'
+import { flightMoney } from '../lib/flight-display.ts'
 import { parseTs, shortStamp, fullStamp } from '../lib/time.ts'
 import { Markdown } from './Markdown.tsx'
 import { FlightResultsTable } from './FlightResultsTable.tsx'
@@ -44,6 +46,8 @@ export function ChatPanel({
   fareLatest,
   recommendationsLatest,
   onContinue,
+  onStartBooking,
+  bookingStale,
   notice,
   waitingForAnswer,
   onAnswerQuestion,
@@ -64,6 +68,15 @@ export function ChatPanel({
   /** Entry CTA for the verify card. Undefined while a write-flow step is open (mode != 'auto') so
    *  the CTA hides; when defined it shows only on the latest fare card. */
   onContinue?: () => void
+  /** Per-plan 预订 entry. Offered on EVERY recommendation table of the task — booking is
+   *  planId-addressed and re-verified, so an older page's plans stay bookable (unlike the
+   *  continuation token, which really does die with its page). Undefined while a booking
+   *  flow is already open. */
+  onStartBooking?: (plan: RecommendationPlan) => void
+  /** A failed, non-retryable pre-order re-verification invalidates the PAGE holding that
+   *  plan (its plans shared one verification window) — applied to the bubble whose table
+   *  contains the planId, where it banners and withdraws the booking entries. */
+  bookingStale?: { planId: string; notice: string }
   notice: string | null
   waitingForAnswer: boolean
   onAnswerQuestion: (promptId: string, answer: UserQuestionAnswer) => Promise<void>
@@ -129,19 +142,66 @@ export function ChatPanel({
               </div>
             )
           }
+          // Durable status record of a pre-order re-verification (recommend-book). The
+          // INTERACTIVE confirm surface renders in the booking flow at the chat tail; this
+          // stays in history so a reloaded conversation still shows what the check said.
+          if (b.planBooking) {
+            const pb = b.planBooking
+            const summary = pb.ok
+              ? pb.changed
+                ? `${planBookingChangeLabels(pb.changedFields)}有变化 · 新总额 ${flightMoney(pb.verifiedFareTotal!.amount, pb.verifiedFareTotal!.currency)}（原 ${flightMoney(pb.previousFareTotal!.amount, pb.previousFareTotal!.currency)}）`
+                : `通过 · 总额 ${flightMoney(pb.verifiedFareTotal!.amount, pb.verifiedFareTotal!.currency)} · 共 ${pb.orderCount} 张订单`
+              : pb.message || '失败'
+            return (
+              <div key={b.key} className="msg full">
+                <div className={`plan-booking-record ${pb.ok ? (pb.changed ? 'is-changed' : 'is-ready') : 'is-failed'}`}>
+                  <strong>下单前验价</strong>
+                  <span>{summary}</span>
+                </div>
+                <MsgTime ts={b.ts} />
+              </div>
+            )
+          }
           // Inline card turn: the (table-stripped) assistant prose, then the search cards or the
           // verify fare card. The fare card shows its CTA only on the latest fare and only while no
           // write-flow step is open (onContinue is undefined otherwise → the form is showing below).
           if (b.cards || b.fare || b.recommendations) {
+            const staleNotice = bookingStale
+              && b.recommendations?.plans.some((plan) => plan.planId === bookingStale.planId)
+              ? bookingStale.notice
+              : undefined
             return (
               <div key={b.key} className="msg full">
                 <div className="chat-cards">
                   {b.text.trim() ? <div className="bubble assistant"><Markdown text={b.text} /></div> : null}
                   {b.recommendations
-                    ? <FlightRecommendationsView result={b.recommendations} evidence={b.evidence} busy={busy} onAction={onBook} isLatest={b.recommendations === recommendationsLatest} />
+                    ? (
+                      <FlightRecommendationsView
+                        result={b.recommendations}
+                        evidence={b.evidence}
+                        busy={busy}
+                        onAction={onBook}
+                        isLatest={b.recommendations === recommendationsLatest}
+                        onStartBooking={onStartBooking}
+                        staleNotice={staleNotice}
+                      />
+                    )
                     : b.cards
                       ? <FlightResultsTable options={b.cards} totalCount={b.totalCount} coverage={b.coverage} onBook={onBook} busy={busy} />
                       : <FareDetailTable fare={b.fare!} busy={busy} onContinue={b.fare === fareLatest ? onContinue : undefined} />}
+                </div>
+                <MsgTime ts={b.ts} />
+              </div>
+            )
+          }
+          // A workbench action turn: the operator clicked a button, they did not type the
+          // protocol prompt. Show an honest action chip; the wire prompt stays in the data.
+          if (b.role === 'user' && b.action) {
+            return (
+              <div key={b.key} className="msg user">
+                <div className="action-chip" title="工作台操作">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
+                  <span>{b.action}</span>
                 </div>
                 <MsgTime ts={b.ts} />
               </div>

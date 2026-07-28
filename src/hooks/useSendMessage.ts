@@ -42,6 +42,9 @@ export function useSendMessage() {
         setCreating(true)
       }
       setMode('auto') // any new turn closes a half-open write-flow step (form/confirm)
+      // The plan-booking flow deliberately survives here: ordinary user turns ARE its
+      // passenger collection (the agent asks, the operator pastes). App clears it on
+      // cancel/confirm/plan-vanish instead.
       // An attachment-only send (empty text) is allowed (like rebyte): the bubble shows just the
       // thumbnail, and the server supplies a neutral wire-prompt stand-in for the manager. So we
       // pass the user's text through verbatim (possibly empty) — the empty UI text keeps the bubble

@@ -1,5 +1,43 @@
 # Booking a recommended plan
 
+> **Status (2026-07-27): implemented on both sides; pending E2E in dev.**
+>
+> - **Skill** (`simplifly-flyai-skill`): `recommend-book --session <dir> --plan <planId>` re-verifies
+>   every ticket group of a recommended plan and emits `flight-plan-booking/v1` /
+>   `flight.plan-booking` (`status: ready | changed | failed`, per-group diff vs the quoted facts,
+>   fresh totals, `orderCount` / `splitOrder`). Fresh orderKeys never reach stdout: each group is
+>   written into the session's `mapping.json` as a verified `OptionEntry` (append-only option
+>   numbers, tag `book:<planId>`), so **`order-create --session <dir> --option <n>` works with all
+>   its existing gates unchanged** (5-minute freshness, orderKey binding, transit gate, local
+>   validation, `--confirm`). Prerequisites that landed with it: `recommend` now persists
+>   `recommendation-continuation.json` unconditionally (it is the only durable planId → solutionId
+>   mapping), and `publicRecommendationPlan` emits a real `canBook` (every emitted plan verified
+>   with a single orderKey per group). Not gated on the continuation token or its expiry.
+> - **TravelKit**: 预订这个方案 on the latest table (gated `capabilities.canBook`) sends one
+>   intent turn; **passenger collection is conversational** (product decision 2026-07-28 after
+>   dev E2E: operators hold passenger data as WeChat text or spreadsheets, so the agent asks and
+>   fixes fields over chat — the earlier `PassengerForm` step was deleted). The prompt orders the
+>   agent: collect first, then recommend-book, never order unconfirmed — so the 5-minute window
+>   still opens only after passengers are ready. The parsed envelope (`src/frames.ts`
+>   `parsePlanBooking`, fail-closed cross-checks) materializes `PlanBookingFlow`: `ConfirmGate`
+>   with per-order rows, price diff and split-order notice, or the stale-page card. Confirm sends
+>   `buildPlanOrderConfirmPrompt` — acknowledgements only, no PII rides that turn. A failed
+>   re-verification banners the whole table (`recommendations-stale`) and withdraws booking
+>   entries. Flow state: `planBookingFlowAtom` = `{ planId }`, deliberately SURVIVES ordinary
+>   user turns (they are the collection); cleared on cancel/confirm/plan-vanish/session switch.
+>   Button-built protocol prompts render as operator-action chips (`recognizeOperatorAction`),
+>   not fake user speech.
+> - **Decisions on the previously open items** — (1) split-order UX: the count is disclosed in the
+>   confirm gate and acknowledged in the order prompt; partial failure is reported per order by the
+>   agent, no automatic rollback (cancel is a separate user-confirmed write). (2) A failed
+>   re-verification only marks the page stale and offers 重新报价 / 重试验价 buttons per the
+>   envelope's capabilities — recommend never re-runs automatically. (3) No change threshold:
+>   every `changed` result requires the second confirmation; any future threshold belongs in the
+>   skill.
+> - **Still genuinely open**: dev E2E (needs the skill change pushed to `main` — Rebyte installs
+>   from there); structured order-result parsing stays a later milestone (agent prose reports
+>   PNRs today, matching the legacy flow).
+
 ## Why this is a plan and not a task
 
 `flight.recommendations` is the authoritative result and every plan it carries is already

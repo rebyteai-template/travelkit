@@ -65,6 +65,15 @@ export const flowModeAtom = atom<FlowMode>('auto')
 /** In-progress passenger details for the current order draft. */
 export const orderDraftAtom = atom<PassengerDraft[]>([])
 
+/** planId of the ONE recommended plan being booked, or null. Passenger collection is
+ *  conversational (the agent asks; operators paste WeChat text / spreadsheets), so this
+ *  is the entire flow state: while set, the matching recommend-book result renders the
+ *  confirm gate at the chat tail. It deliberately SURVIVES ordinary user turns (they are
+ *  the collection); cleared on cancel, on confirm, when the plan leaves every table, or
+ *  on session switch — keyed by planId so a stale plan can never be confirmed against a
+ *  fresh result. */
+export const planBookingPlanIdAtom = atom<string | null>(null)
+
 /** Mobile session drawer open/closed. */
 export const navOpenAtom = atom(false)
 
@@ -109,6 +118,7 @@ export const newSessionAtom = atom(null, (get, set) => {
   set(taskIdAtom, null)
   set(orderDraftAtom, [])
   set(flowModeAtom, 'auto')
+  set(planBookingPlanIdAtom, null)
   set(navOpenAtom, false)
   set(creatingAtom, false) // a prior new-session createTask must not keep this slot busy
   set(navEpochAtom, get(navEpochAtom) + 1)
@@ -119,6 +129,7 @@ export const openSessionAtom = atom(null, (get, set, id: string) => {
   set(taskIdAtom, id)
   set(orderDraftAtom, [])
   set(flowModeAtom, 'auto')
+  set(planBookingPlanIdAtom, null)
   set(navOpenAtom, false)
   set(creatingAtom, false)
   set(navEpochAtom, get(navEpochAtom) + 1)

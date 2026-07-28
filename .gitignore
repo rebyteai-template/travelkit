@@ -36,3 +36,4 @@ whitelist.json
 # generated (embeds travelkit token)
 worker/seed-assets.generated.ts
 .dev.vars.*
+travelkit-dev/
