@@ -203,6 +203,10 @@ export const Composer = forwardRef<ComposerHandle, { onSend: (text: string, atts
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
+                  // An IME Enter confirms the composition (pinyin candidate), not the message.
+                  // Chrome/Firefox fire it with isComposing=true; Safari fires it AFTER
+                  // compositionend (isComposing already false) but still with keyCode 229.
+                  if (e.nativeEvent.isComposing || e.keyCode === 229) return
                   e.preventDefault()
                   submit()
                 }
