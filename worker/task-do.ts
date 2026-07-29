@@ -339,8 +339,31 @@ export class TaskDO extends DurableObject<Env> {
     return 'failed'
   }
 
+  /** Is `t` still the turn this DO is driving? False after a cancel() (deleted 'turn') or a
+   *  newer runTurn() (replaced it) landed during one of our awaits — the in-flight alarm's
+   *  in-memory copy is then stale and must NOT write itself back (that "resurrects" a
+   *  canceled turn, or clobbers the newer turn's state). */
+  private async isCurrentTurn(t: TurnState): Promise<boolean> {
+    const cur = await this.ctx.storage.get<TurnState>('turn')
+    return !!cur && cur.promptId === t.promptId
+  }
+
+  /** Persist `t` only while it still owns the DO (see isCurrentTurn). Returns false —
+   *  caller must stop driving this turn — when a cancel/newer turn won the race. */
+  private async persistTurnIfCurrent(t: TurnState): Promise<boolean> {
+    if (!(await this.isCurrentTurn(t))) return false
+    await this.ctx.storage.put('turn', t)
+    return true
+  }
+
   private async finalize(t: TurnState, status: string): Promise<void> {
     await this.store.finishPrompt(t.promptId, status) // no-op if already non-running
+    // Only the CURRENT turn may close out the task. A stale copy (its turn was canceled or
+    // replaced during an await) still records its own prompt's terminal status above, but
+    // must not overwrite the task status (canceled → completed was a real bug: the post-
+    // cancel drain finalized 'completed' over the user's stop) or touch the newer turn's
+    // state/alarm.
+    if (!(await this.isCurrentTurn(t))) return
     await this.store.setTaskStatus(t.taskId, status)
     await this.ctx.storage.delete('turn')
     await this.ctx.storage.deleteAlarm()
@@ -356,7 +379,7 @@ export class TaskDO extends DurableObject<Env> {
   private async drainOrFinalize(t: TurnState, status: string, finalResult?: string): Promise<void> {
     if (shouldDrainTerminal({ sawText: t.sawText, terminalDrains: t.terminalDrains, now: Date.now(), hardDeadline: t.hardDeadline ?? t.deadline })) {
       t.terminalDrains++
-      await this.ctx.storage.put('turn', t)
+      if (!(await this.persistTurnIfCurrent(t))) return
       await this.ctx.storage.setAlarm(Date.now() + 100)
       return
     }
@@ -494,6 +517,10 @@ export class TaskDO extends DurableObject<Env> {
       console.warn('[task-do] failed to persist ask_user_answer frame:', error)
     }
 
+    // Ownership re-check before resuming: the /answer + frame writes above are await
+    // points — a cancel() may have finalized this turn meanwhile, and flipping the
+    // prompt back to 'running' + re-persisting the turn would resurrect it.
+    if (!(await this.isCurrentTurn(t))) return { ok: false, reason: 'not_waiting' }
     await this.store.setPromptStatus(t.promptId, 'running')
     delete t.waitingForAnswer
     t.deadline = Date.now() + TURN_TIMEOUT_MS
@@ -650,6 +677,19 @@ export class TaskDO extends DurableObject<Env> {
   async cancel(promptId: string): Promise<boolean> {
     const t = await this.ctx.storage.get<TurnState>('turn')
     if (!t || t.promptId !== promptId) return false
+    // Stop the relay-side run too — v1 POST /tasks/:id/cancel kills the agent loop AND any
+    // delegated sandbox prompt, and the task accepts new /prompts afterwards (so the session
+    // continues). Without this the relay kept running the "canceled" turn: its answer landed
+    // in the frames anyway and the next follow-up raced it. Best-effort with a short timeout:
+    // an unreachable relay must not block the local cancel — worst case that run leaks and
+    // burns tokens, but this session stops tracking it either way.
+    if (t.submitted && t.relayTaskId) {
+      await rebyteJSON(`/tasks/${t.relayTaskId}/cancel`, {
+        method: 'POST',
+        config: this.rebyteConfig(),
+        signal: AbortSignal.timeout(5000),
+      }).catch((e) => console.log(`[task-do] relay cancel failed (non-fatal): ${(e as Error).message}`))
+    }
     await this.finalize(t, 'canceled')
     return true
   }
@@ -717,6 +757,17 @@ export class TaskDO extends DurableObject<Env> {
         }
         t.relayTaskId = relayTaskId
         t.submitted = true
+        // The submit RPCs above are await points — a cancel() may have finalized this turn
+        // meanwhile. It skipped the relay-side cancel (we weren't marked submitted yet), so
+        // the prompt that just reached the relay is orphaned: stop it there before bowing
+        // out. (A NEWER turn owning the DO shares this relayTaskId — a task-level cancel
+        // would kill its run too, so only compensate when the turn is gone, not replaced.)
+        const cur = await this.ctx.storage.get<TurnState>('turn')
+        if (!cur) {
+          await rebyteJSON(`/tasks/${relayTaskId}/cancel`, { method: 'POST', config }).catch(() => {})
+          return
+        }
+        if (cur.promptId !== t.promptId) return
         await this.ctx.storage.put('turn', t)
         // Surface this turn's rebyte run so the UI can link to app.rebyte.ai/run/<id>.
         await this.emit(t, { __rebyte_run: relayTaskId })
@@ -725,7 +776,7 @@ export class TaskDO extends DurableObject<Env> {
       const done = await this.streamWindow(t, config)
       t.errors = 0 // the window ran — whatever failed before, the relay is reachable again
       if (done.awaitingUser) {
-        await this.ctx.storage.put('turn', t)
+        await this.persistTurnIfCurrent(t)
         return
       }
       // Re-pull delegated sub-sessions every window before we might finalize: their search
@@ -756,7 +807,9 @@ export class TaskDO extends DurableObject<Env> {
         return this.finalize(t, 'failed')
       }
 
-      await this.ctx.storage.put('turn', t) // persist lastRelaySeq / sawText / terminalDrains
+      // persist lastRelaySeq / sawText / terminalDrains — unless a cancel/newer turn took
+      // the DO during this window; then this alarm chain simply ends here.
+      if (!(await this.persistTurnIfCurrent(t))) return
       await this.ctx.storage.setAlarm(Date.now() + 100) // continue promptly
     } catch (e: unknown) {
       // A transient hiccup (relay fetch, D1 write) must not kill a turn whose agent is
@@ -767,7 +820,7 @@ export class TaskDO extends DurableObject<Env> {
       const errors = (t.errors ?? 0) + 1
       if (shouldRetryWindowError({ errors, now: Date.now(), hardDeadline: t.hardDeadline ?? t.deadline })) {
         t.errors = errors
-        await this.ctx.storage.put('turn', t)
+        if (!(await this.persistTurnIfCurrent(t))) return
         await this.ctx.storage.setAlarm(Date.now() + 1500 * errors)
         return
       }

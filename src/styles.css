@@ -337,6 +337,9 @@ body {
 .composer .send-btn { background: var(--accent); color: var(--on-accent); }
 .composer .send-btn:hover:not(:disabled) { background: var(--accent-deep); }
 .composer .send-btn:disabled { background: var(--panel-2); color: var(--kami-silver); cursor: default; }
+.composer .stop-btn { background: var(--accent); color: var(--on-accent); }
+.composer .stop-btn:hover:not(:disabled) { background: var(--accent-deep); }
+.composer .stop-btn:disabled { background: var(--panel-2); color: var(--kami-silver); cursor: default; }
 
 /* Attachment previews live inside the shell, above the input row. */
 .composer-attachments { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 6px 2px; }

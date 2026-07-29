@@ -21,6 +21,7 @@ import { useCredit } from './hooks/useCredit.ts'
 import { useSessions } from './hooks/useSessions.ts'
 import { useConversation } from './hooks/useConversation.ts'
 import { useSendMessage } from './hooks/useSendMessage.ts'
+import { useStopTurn } from './hooks/useStopTurn.ts'
 import { DebugConfigPanel } from './components/DebugConfigPanel.tsx'
 import { answerQuestion } from './api.ts'
 import type { UserQuestionAnswer } from './user-question.ts'
@@ -48,6 +49,7 @@ export function App() {
   const { data: credit } = useCredit(!me.isError)
   const { view, busy, loadingExistingTask } = useConversation()
   const send = useSendMessage()
+  const stopTurn = useStopTurn()
 
   const taskId = useAtomValue(taskIdAtom)
   const busyTasks = useAtomValue(busyTasksAtom)
@@ -211,7 +213,7 @@ export function App() {
               onClose={() => setBookingPlanId(null)}
             />
           </ChatPanel>
-          <Composer onSend={send} busy={busy} ref={composerRef} />
+          <Composer onSend={send} busy={busy} onStop={stopTurn} ref={composerRef} />
         </main>
         {/* Right-side debug config panel (revealed by the 10× brand tap): skill-URL override +
             "new VM" for the current account. Hidden for end users. */}
