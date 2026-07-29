@@ -57,6 +57,7 @@ function resultFixture(): FlightRecommendations {
       verifiedAt: '2099-07-16T05:00:00.000Z',
       validity: { status: 'verified', validUntil: '2099-07-16T05:10:00.000Z' },
       copyText: 'CA165\n客户报价总价 CNY 21000',
+      ctripUrl: 'https://flights.ctrip.com/online/list/oneway-pek-mel?depdate=2026-08-14',
       capabilities: { canCopy: true, canReverify: false, canBook: false },
     }],
   }
@@ -111,6 +112,7 @@ test('recommendation renderer uses one dense comparison table with exact segment
   assert.doesNotMatch(html, />验价<\/button>/)
   assert.doesNotMatch(html, /实时查询价/)
   assert.match(html, /<ul class="recommend-plan-journeys"><li><span>第1程<\/span><span class="mono">09:00-18:00<\/span><\/li><\/ul>/)
+  assert.match(html, /<a class="recommend-ctrip-link" href="https:\/\/flights\.ctrip\.com\/online\/list\/oneway-pek-mel\?depdate=2026-08-14" target="_blank" rel="noreferrer noopener">去携程比价 ↗<\/a>/)
   assert.match(html, /<div class="recommend-plan-title-row"><strong class="recommend-plan-label">上午出发<\/strong><div class="recommend-title-actions"><div class="recommend-copy">/)
   assert.match(html, /class="recommend-copy-action"[^>]*><svg[^>]*aria-hidden="true"[^>]*>.*<span>复制<\/span><\/button>/)
   assert.doesNotMatch(html, />Copy<\/button>/)

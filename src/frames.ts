@@ -200,6 +200,8 @@ export interface RecommendationPlan {
   validity: { status: RecommendationValidityStatus; validUntil: string }
   explanation?: { reason: string; limitation?: string }
   copyText: string
+  /** Skill-built Ctrip flight-list deep link for manual price comparison; display-only. */
+  ctripUrl?: string
   capabilities: { canCopy: boolean; canReverify: boolean; canBook: boolean }
 }
 
@@ -726,6 +728,8 @@ function parseRecommendationPlan(raw: unknown): RecommendationPlan | null {
     validity: { status: validityStatus, validUntil },
     ...(explanation ? { explanation } : {}),
     copyText,
+    // Display-only link; an absent or non-Ctrip URL just drops the field, never the plan.
+    ...(str(raw.ctripUrl).startsWith('https://flights.ctrip.com/') ? { ctripUrl: str(raw.ctripUrl) } : {}),
     capabilities,
   }
 }

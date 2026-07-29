@@ -478,6 +478,8 @@ tr.cheapest td { background: var(--good-soft); }
 .recommend-plan-journeys { margin: 1px 0 2px; padding-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .recommend-plan-journeys li { padding-left: 1px; }
 .recommend-plan-journeys li span + span { margin-left: 6px; }
+.recommend-ctrip-link { align-self: flex-start; color: var(--accent); font-size: 12px; font-weight: 600; text-decoration: none; }
+.recommend-ctrip-link:hover { text-decoration: underline; }
 .recommend-validity { display: inline-flex; padding: 2px 7px; border-radius: var(--radius-pill); background: var(--warn-soft); color: var(--warn); font-size: 11px; font-weight: 700; }
 .recommend-actions { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
 /* Compact plan actions in the title row: 复制 stays quiet, 预订 is the same small

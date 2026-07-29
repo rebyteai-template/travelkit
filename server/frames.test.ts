@@ -177,6 +177,7 @@ function recommendationsResult() {
         validity: { status: 'verified', validUntil: '2099-07-16T05:10:00.000Z' },
         explanation: { reason: '覆盖早去晚回，价格最低。', limitation: '回程跨夜。' },
         copyText: '早去晚回\nCA165 / HX18\n总价 CNY 46250',
+        ctripUrl: 'https://flights.ctrip.com/online/list/round-pek-mel?depdate=2026-08-14_2026-08-24',
         capabilities: { canCopy: true, canReverify: false, canBook: false },
       },
     ],
@@ -339,12 +340,29 @@ test('a recommendation result is authoritative regardless of frame order and ret
   assert.equal(view.recommendations?.plans[0]?.journeys[1]?.routeOptionId, 'hong-kong')
   assert.equal(view.recommendations?.plans[0]?.journeys[1]?.routePriority, 'alternate')
   assert.equal(view.recommendations?.plans[0]?.ticketGroups[0]?.segmentFacts?.[1]?.cabin, '商务 I舱')
+  assert.equal(
+    view.recommendations?.plans[0]?.ctripUrl,
+    'https://flights.ctrip.com/online/list/round-pek-mel?depdate=2026-08-14_2026-08-24',
+  )
   assert.equal(view.recommendations?.continuation?.nextPage, 2)
   assert.deepEqual(view.recommendations?.continuation?.modes, ['global_more', 'unseen_variants'])
   assert.equal(view.chat.filter((bubble) => bubble.recommendations).length, 1)
   assert.equal(view.chat.some((bubble) => bubble.cards || bubble.fare), false)
   assert.equal(view.chat.find((bubble) => bubble.recommendations)?.evidence?.length, 1)
   assert.equal(view.chat.find((bubble) => bubble.text.includes('中间表'))?.text, '中间表')
+})
+
+test('a non-Ctrip ctripUrl is dropped from the plan without rejecting the plan itself', () => {
+  const recommendation = recommendationsResult()
+  ;(recommendation.plans[0] as Record<string, unknown>).ctripUrl = 'javascript:alert(1)'
+  const prompt = promptWithToolResult('')
+  prompt.frames = [
+    { seq: 1, data: { type: 'user', message: { content: [{ type: 'tool_result', content: JSON.stringify(recommendation) }] } } },
+  ]
+
+  const view = derive([prompt])
+  assert.equal(view.recommendations?.plans[0]?.planId, 'plan-morning-evening')
+  assert.equal(view.recommendations?.plans[0]?.ctripUrl, undefined)
 })
 
 test('a recommendation returned through completed TaskOutput keeps the structured table', () => {

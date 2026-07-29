@@ -168,6 +168,11 @@ function PlanSummary({ plan, busy, onAction, onStartBooking }: {
           </li>
         ))}
       </ul>
+      {plan.ctripUrl ? (
+        <a className="recommend-ctrip-link" href={plan.ctripUrl} target="_blank" rel="noreferrer noopener">
+          去携程比价 ↗
+        </a>
+      ) : null}
       {plan.validity.status === 'expired' ? (
         <span className="recommend-validity">价格已过期</span>
       ) : null}
