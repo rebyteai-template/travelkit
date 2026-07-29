@@ -144,17 +144,21 @@ function PlanSummary({ plan, busy, onAction, onStartBooking }: {
   const canBook = Boolean(onStartBooking) && plan.capabilities.canBook && plan.validity.status === 'verified'
   return (
     <div className="recommend-plan-summary">
-      <div className="recommend-plan-title-row">
-        <strong className="recommend-plan-label">{plan.label || '未返回'}</strong>
-        <div className="recommend-title-actions">
-          <CopyAction plan={plan} />
-          {canBook ? (
-            <button type="button" className="recommend-book-action" disabled={busy} onClick={() => onStartBooking!(plan)}>
-              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h9M8 4.5 11.5 8 8 11.5" /></svg>
-              <span>预订</span>
-            </button>
-          ) : null}
-        </div>
+      <strong className="recommend-plan-label">{plan.label || '未返回'}</strong>
+      <div className="recommend-plan-actions">
+        <CopyAction plan={plan} />
+        {plan.ctripUrl ? (
+          <a className="recommend-ctrip-action" href={plan.ctripUrl} target="_blank" rel="noreferrer noopener">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 3.5h3.5V7M12.5 3.5 7.5 8.5M12 9.5v2a1 1 0 0 1-1 1H4.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h2" /></svg>
+            <span>携程比价</span>
+          </a>
+        ) : null}
+        {canBook ? (
+          <button type="button" className="recommend-book-action" disabled={busy} onClick={() => onStartBooking!(plan)}>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8h9M8 4.5 11.5 8 8 11.5" /></svg>
+            <span>预订</span>
+          </button>
+        ) : null}
       </div>
       <div className="recommend-plan-total">
         <span className="recommend-plan-total-label">总价</span>
@@ -168,11 +172,6 @@ function PlanSummary({ plan, busy, onAction, onStartBooking }: {
           </li>
         ))}
       </ul>
-      {plan.ctripUrl ? (
-        <a className="recommend-ctrip-link" href={plan.ctripUrl} target="_blank" rel="noreferrer noopener">
-          去携程比价 ↗
-        </a>
-      ) : null}
       {plan.validity.status === 'expired' ? (
         <span className="recommend-validity">价格已过期</span>
       ) : null}

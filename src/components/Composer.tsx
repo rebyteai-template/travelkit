@@ -33,14 +33,24 @@ const SendIcon = () => (
     <path d="M12 19V5M5 12l7-7 7 7" />
   </svg>
 )
+const StopIcon = () => (
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <rect x="6.5" y="6.5" width="11" height="11" rx="2" />
+  </svg>
+)
 
 /** Composer: one rounded shell holding a borderless auto-growing textarea, a quiet attach button,
- *  and a send button. Enter sends, Shift+Enter newlines. Image/file attachments via 📎, paste, or
- *  drag-drop upload IMMEDIATELY (preview + loading; send is gated until uploads finish) and ride on
- *  the next turn (staged into /code + shown as a bubble thumbnail). Draft state lives here (not in
- *  App) so typing only re-renders the composer; App pokes text in via the `fill` handle for chips. */
-export const Composer = forwardRef<ComposerHandle, { onSend: (text: string, atts?: AttachmentMeta[]) => void; busy: boolean }>(
-  function Composer({ onSend, busy }, ref) {
+ *  and a send button. Enter sends, Shift+Enter newlines. While the turn runs (`busy`) the send
+ *  button becomes a stop button (`onStop`; disabled when undefined — nothing cancelable yet).
+ *  Image/file attachments via 📎, paste, or drag-drop upload IMMEDIATELY (preview + loading; send
+ *  is gated until uploads finish) and ride on the next turn (staged into /code + shown as a bubble
+ *  thumbnail). Draft state lives here (not in App) so typing only re-renders the composer; App
+ *  pokes text in via the `fill` handle for chips. */
+export const Composer = forwardRef<
+  ComposerHandle,
+  { onSend: (text: string, atts?: AttachmentMeta[]) => void; busy: boolean; onStop?: () => void }
+>(
+  function Composer({ onSend, busy, onStop }, ref) {
     const [text, setText] = useState('')
     const [atts, setAtts] = useState<Attach[]>([])
     const [dragging, setDragging] = useState(false)
@@ -203,14 +213,24 @@ export const Composer = forwardRef<ComposerHandle, { onSend: (text: string, atts
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
+                  // An IME Enter confirms the composition (pinyin candidate), not the message.
+                  // Chrome/Firefox fire it with isComposing=true; Safari fires it AFTER
+                  // compositionend (isComposing already false) but still with keyCode 229.
+                  if (e.nativeEvent.isComposing || e.keyCode === 229) return
                   e.preventDefault()
                   submit()
                 }
               }}
             />
-            <button className="icon-btn send-btn" type="button" onClick={submit} disabled={!canSend} title="发送" aria-label="发送">
-              <SendIcon />
-            </button>
+            {busy ? (
+              <button className="icon-btn stop-btn" type="button" onClick={onStop} disabled={!onStop} title="停止" aria-label="停止">
+                <StopIcon />
+              </button>
+            ) : (
+              <button className="icon-btn send-btn" type="button" onClick={submit} disabled={!canSend} title="发送" aria-label="发送">
+                <SendIcon />
+              </button>
+            )}
           </div>
         </div>
       </div>

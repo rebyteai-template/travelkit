@@ -153,6 +153,11 @@ export const answerQuestion = (
   answer: import('./user-question.ts').UserQuestionAnswer,
 ): Promise<{ ok: boolean }> => postJson(`/prompts/${promptId}/answer`, { answer })
 
+/** Cancel the in-flight turn. The server finalizes it as 'canceled'; a live SSE then ends with
+ *  `done`. ok:false = the turn was already finalized (raced completion) — nothing to do. */
+export const cancelPrompt = (promptId: string): Promise<{ ok: boolean }> =>
+  postJson(`/prompts/${promptId}/cancel`, {})
+
 /** Debug-only: provision a fresh sandbox VM for the caller (old one abandoned). Slow — it waits
  *  for the VM to boot. Hidden behind the sidebar-brand 10-click easter egg in App.tsx. */
 export const newSandbox = (): Promise<{ sandboxId?: string }> => postJson('/debug/new-sandbox', {})
