@@ -3,8 +3,13 @@
  * Durable Object. The per-user Simplifly/travelkit token is NOT a binding here — it arrives
  * at runtime from the iframe handoff and is written into each sandbox VM's seeded
  * .claude/settings.json `env` (by the bootstrap); the bindings only need the rebyte relay key.
+ *
+ * The delegated-credential secrets (signing key, relay client credentials, service token) are
+ * declared on `OAuthEnv` in server/oauth.ts, next to the endpoints that read them.
  */
-export interface Env {
+import type { OAuthEnv } from '../server/oauth.ts'
+
+export interface Env extends OAuthEnv {
   /** D1 database (tasks/prompts/frames + kv). */
   DB: D1Database
   /** Durable Object namespace for the per-task runner. */

@@ -10,6 +10,10 @@
  */
 import type { Store, Task, Prompt, TaskSummary, AgentComputerRow, AttachmentMeta } from './store.ts'
 
+/** Reserved `tenant_credentials` key for the write-plane probe. Deliberately colon-free: a tenant
+ *  key is always `<org>:<uid>`, so this row is unreachable through any tenant lookup. */
+export const CREDENTIAL_PROBE_KEY = '__write_probe__'
+
 export function createD1Store(db: D1Database): Store {
   return {
     async createTask(id, projectId, userEmail) {
@@ -32,6 +36,46 @@ export function createD1Store(db: D1Database): Store {
         .bind(userEmail)
         .all<TaskSummary>()
       return results
+    },
+    async saveTenantCredential(userEmail, token) {
+      // Two timestamps, two questions (migrations/0008):
+      //   updated_at   moves only when the VALUE changes → "when did this employee last re-login"
+      //   last_seen_at moves on every accepted intake    → "is this tenant still alive"
+      // The old guarded upsert wrote zero rows in the common case, which made an abandoned row
+      // indistinguishable from a live one — the observability gate in PLAN §6 needs both.
+      await db
+        .prepare(
+          `INSERT INTO tenant_credentials (user_email, token, updated_at, last_seen_at)
+             VALUES (?, ?, datetime('now'), datetime('now'))
+           ON CONFLICT(user_email) DO UPDATE SET
+             token = excluded.token,
+             updated_at = CASE WHEN tenant_credentials.token <> excluded.token
+                               THEN excluded.updated_at ELSE tenant_credentials.updated_at END,
+             last_seen_at = excluded.last_seen_at`,
+        )
+        .bind(userEmail, token)
+        .run()
+    },
+    async probeCredentialStore() {
+      // A real WRITE, because that is the plane whose failure we have to detect — a SELECT would
+      // still succeed against a read replica while writes are refused, and it would not notice a
+      // missing column. Touches one reserved row: PROBE_KEY has no `:`, and every tenant key is
+      // `<org>:<uid>` (formatActor), so it can never collide with, or be read back as, a tenant.
+      await db
+        .prepare(
+          `INSERT INTO tenant_credentials (user_email, token, updated_at, last_seen_at)
+             VALUES (?, '', datetime('now'), datetime('now'))
+           ON CONFLICT(user_email) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+        )
+        .bind(CREDENTIAL_PROBE_KEY)
+        .run()
+    },
+    async getTenantCredential(userEmail) {
+      const row = await db
+        .prepare(`SELECT token FROM tenant_credentials WHERE user_email = ?`)
+        .bind(userEmail)
+        .first<{ token: string }>()
+      return row?.token ?? undefined
     },
     async getAgentComputer(userEmail) {
       const row = await db

@@ -68,6 +68,29 @@ export interface Store {
   setTaskStatus(id: string, status: string): Promise<void>
   setTaskRelayId(id: string, relayTaskId: string): Promise<void>
 
+  // ── the tenant's current Simplifly credential (see migrations/0007 + 0008) ────────
+  /** Overwrite this tenant's current travelkit/Simplifly token. Called on EVERY request carrying
+   *  one — the token rides on each one, it IS the caller's credential — so a re-login refreshes it
+   *  without anything scheduled. Writing the same value again is not a no-op: it bumps
+   *  `last_seen_at` (liveness) while leaving `updated_at` (last rotation) alone.
+   *  Go through persistTenantCredential (server/tenant-credential.ts) rather than calling this
+   *  directly: it carries the audit line. Nothing may gate this write on the value being written —
+   *  that module explains why a single refused write strands the employee permanently. */
+  saveTenantCredential(userEmail: string, token: string): Promise<void>
+  /** The last token received for this tenant, or undefined if we have never seen one. There is
+   *  no validity check to make: the token carries no `exp`. Read by the delegated-credential
+   *  endpoints (server/oauth.ts) and by nothing else. */
+  getTenantCredential(userEmail: string): Promise<string | undefined>
+  /** Prove the credential store can still be WRITTEN, by writing. Rejects if it cannot.
+   *
+   *  This exists because `getTenantCredential` returning nothing is ambiguous, and the two
+   *  meanings need opposite answers: "we have never seen this tenant" is a legitimate,
+   *  non-retryable `400 invalid_grant` ("reopen FlyAI"), while "the write plane is down" (an
+   *  unapplied migration, a quota event) must be a RETRYABLE 5xx. Answering 400 in the second
+   *  case tells every employee to reopen the iframe, and reopening re-runs the same failing
+   *  write — a permanent loop with no alarm and no 5xx. Called only on the miss path. */
+  probeCredentialStore(): Promise<void>
+
   getAgentComputer(userEmail: string): Promise<AgentComputerRow | undefined>
   /** Idempotent (INSERT OR IGNORE): first writer per email wins, losers no-op. */
   saveAgentComputer(userEmail: string, acId: string, sandboxId: string | null, tokenHash: string, seedVersion: string): Promise<void>

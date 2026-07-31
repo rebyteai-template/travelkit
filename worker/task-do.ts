@@ -739,7 +739,11 @@ export class TaskDO extends DurableObject<Env> {
             method: 'POST',
             // `files` (if any) ride here so the relay stages them into the sandbox /code/<filename>
             // before the first turn runs; the wire prompt's attachment suffix points the manager at them.
-            body: JSON.stringify({ prompt: t.prompt, workspaceId: ac.id, skills: [toSkillRef(cfg.skillRef.trim() || SKILL_REF)], ...(t.files?.length ? { files: t.files } : {}) }),
+            // `actor` names the END USER behind this task (t.userEmail IS `<org>:<uid>`). The relay
+            // treats it as an opaque identifier and hands it back to our /oauth/token when the agent
+            // reaches for an MCP tool — that is how the tool call gets THIS employee's credential
+            // instead of an org-wide one. Relay keys are org-scoped, so nothing else carries a person.
+            body: JSON.stringify({ prompt: t.prompt, workspaceId: ac.id, actor: t.userEmail, skills: [toSkillRef(cfg.skillRef.trim() || SKILL_REF)], ...(t.files?.length ? { files: t.files } : {}) }),
             config,
           })
           relayTaskId = task.id
@@ -750,8 +754,10 @@ export class TaskDO extends DurableObject<Env> {
           // user's prompt alone. /events then streams this latest prompt.
           await rebyteJSON(`/tasks/${relayTaskId}/prompts`, {
             method: 'POST',
-            // Follow-up files stage into the SAME sandbox before this prompt runs.
-            body: JSON.stringify({ prompt: t.prompt, ...(t.files?.length ? { files: t.files } : {}) }),
+            // Follow-up files stage into the SAME sandbox before this prompt runs. `actor` rides on
+            // every turn, not just the first: a session outlives any one credential exchange, so the
+            // follow-up that actually calls a tool has to carry the identity too.
+            body: JSON.stringify({ prompt: t.prompt, actor: t.userEmail, ...(t.files?.length ? { files: t.files } : {}) }),
             config,
           })
         }
