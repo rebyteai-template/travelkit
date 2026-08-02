@@ -743,9 +743,14 @@ export class TaskDO extends DurableObject<Env> {
           //     into the workspace VM (ac.id = the SAME VM we seeded). Follow-ups omit skills → one
           //     clone per session; a new session re-clones latest.
           const cfg = await this.store.getConfig()
+          // Route comes from the task row's stamp (set once at POST /tasks), NOT from
+          // cfg.routeMode: the config is "next new session" semantics and may have
+          // flipped between intake and this first alarm — the stamp cannot lie, and it
+          // is the same value the UI booking gate reads.
+          const routeMode = (await this.store.getTask(t.taskId))?.route_mode ?? ''
           let task: { id: string }
-          if (cfg.routeMode === 'mcp') {
-            // MCP-direct debug mode (config routeMode='mcp'): NO per-user sandbox at all.
+          if (routeMode === 'mcp') {
+            // MCP-direct debug mode (task route_mode='mcp'): NO per-user sandbox at all.
             // Omitting workspaceId makes the relay create a plain, VM-less workspace for this
             // task (a record-only insert; the org agent profile's connector set — including the
             // delegated flight MCP — is copied in the same transaction). No `skills` either:

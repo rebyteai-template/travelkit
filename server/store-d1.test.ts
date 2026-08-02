@@ -28,6 +28,9 @@ import type { OAuthEnv } from './oauth.ts'
 const migration = (file: string): string => readFileSync(new URL(`../migrations/${file}`, import.meta.url), 'utf8')
 const CREATE_TABLE = migration('0007_tenant_credential.sql')
 const ADD_LAST_SEEN = migration('0008_credential_observability.sql')
+const INIT_TABLES = migration('0001_init.sql')
+const MULTITENANT = migration('0002_multitenant.sql')
+const ROUTE_MODE = migration('0009_task_route_mode.sql')
 
 const TENANT = formatActor('ORG42', 'EMP10086')
 const ALICE = 'TK_alice'
@@ -173,4 +176,19 @@ test('the real upsert: the incoming token always wins; the two timestamps answer
   assert.equal(row()?.token, 'junk')
   assert.notEqual(row()?.updated_at, LONG_AGO)
   assert.equal(await store.getTenantCredential(TENANT), 'junk')
+})
+
+test('route_mode: stamped at create and read back; pre-stamp rows read as the VM route', async () => {
+  const { store, db } = fixture([INIT_TABLES, MULTITENANT, ROUTE_MODE])
+
+  await store.createTask('t-mcp', 'proj', TENANT, 'mcp')
+  assert.equal((await store.getTask('t-mcp'))?.route_mode, 'mcp')
+
+  await store.createTask('t-vm', 'proj', TENANT, '')
+  assert.equal((await store.getTask('t-vm'))?.route_mode, '')
+
+  // A row created before the stamp existed (raw INSERT without the column) must read as
+  // '' = VM route — the booking gate only fires for an explicit 'mcp' stamp.
+  db.prepare(`INSERT INTO tasks (id, project_id, user_email) VALUES (?, ?, ?)`).run('t-legacy', 'proj', TENANT)
+  assert.equal((await store.getTask('t-legacy'))?.route_mode, '')
 })

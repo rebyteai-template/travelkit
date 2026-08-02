@@ -16,10 +16,10 @@ export const CREDENTIAL_PROBE_KEY = '__write_probe__'
 
 export function createD1Store(db: D1Database): Store {
   return {
-    async createTask(id, projectId, userEmail) {
+    async createTask(id, projectId, userEmail, routeMode) {
       await db
-        .prepare(`INSERT INTO tasks (id, project_id, user_email) VALUES (?, ?, ?)`)
-        .bind(id, projectId, userEmail)
+        .prepare(`INSERT INTO tasks (id, project_id, user_email, route_mode) VALUES (?, ?, ?, ?)`)
+        .bind(id, projectId, userEmail, routeMode)
         .run()
     },
     async getTask(id) {

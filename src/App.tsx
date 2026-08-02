@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import { useQueryClient } from '@tanstack/react-query'
 import { passengersFromFare, buildOrderPrompt, isBookableFare } from './booking.ts'
@@ -20,6 +20,7 @@ import { useMe } from './hooks/useMe.ts'
 import { useCredit } from './hooks/useCredit.ts'
 import { useSessions } from './hooks/useSessions.ts'
 import { useConversation } from './hooks/useConversation.ts'
+import { useTaskContent } from './hooks/useTaskContent.ts'
 import { useSendMessage } from './hooks/useSendMessage.ts'
 import { useStopTurn } from './hooks/useStopTurn.ts'
 import { DebugConfigPanel } from './components/DebugConfigPanel.tsx'
@@ -118,7 +119,25 @@ export function App() {
   // 预订 button → one intent turn. The agent collects passengers over conversation
   // (WeChat text / spreadsheet pastes), re-verifies, and the confirm gate renders from
   // the structured result. The flow marker survives the collection turns.
+  //
+  // MCP-route gate (§10 二批前置): a session created under route_mode='mcp' has no
+  // transaction chain yet — letting the booking prompt through would fail only AFTER
+  // the operator collected every passenger (late failure, worse than early refusal).
+  // The stamp comes from the task row via /content; sessions predating the stamp
+  // read '' = VM route, which books normally.
+  const sessionRouteMode = useTaskContent(taskId).data?.task.routeMode ?? ''
+  const [routeGateNotice, setRouteGateNotice] = useState<string | null>(null)
+  useEffect(() => {
+    setRouteGateNotice(null)
+  }, [taskId])
   function startBooking(plan: RecommendationPlan) {
+    if (sessionRouteMode === 'mcp') {
+      setRouteGateNotice(
+        '本会话运行在「MCP 直连」试验路由上，预订/出票链路尚未开通，暂不能从这里下单。' +
+        '请在调试面板（连点品牌 10 次 → 机票路由）切回「沙箱 VM」后新建会话，为客户完成预订。',
+      )
+      return
+    }
     send(buildRecommendBookPrompt(plan))
     setBookingPlanId(plan.planId)
   }
@@ -189,7 +208,7 @@ export function App() {
             onContinue={mode === 'auto' ? continueToPassengers : undefined}
             onStartBooking={bookingPlanId ? undefined : startBooking}
             bookingStale={bookingStale}
-            notice={view.notice}
+            notice={routeGateNotice ?? view.notice}
             waitingForAnswer={!!view.pendingQuestion}
             onAnswerQuestion={answerAgentQuestion}
           >

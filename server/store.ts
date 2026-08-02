@@ -17,6 +17,10 @@ export interface Task {
   relay_task_id: string | null
   user_email: string | null
   created_at: string
+  /** Route that created this session: '' = sandbox VM + skill, 'mcp' = MCP-direct.
+   *  Stamped once at creation from the global config (which is "next new session"
+   *  semantics) — this row is the per-session truth task-do and the UI gate read. */
+  route_mode: string
 }
 
 /** Lightweight conversation row for the per-user session list (sidebar). */
@@ -62,7 +66,7 @@ export interface AttachmentMeta {
 }
 
 export interface Store {
-  createTask(id: string, projectId: string, userEmail: string): Promise<void>
+  createTask(id: string, projectId: string, userEmail: string, routeMode: string): Promise<void>
   getTask(id: string): Promise<Task | undefined>
   listTasksByUser(userEmail: string): Promise<TaskSummary[]>
   setTaskStatus(id: string, status: string): Promise<void>

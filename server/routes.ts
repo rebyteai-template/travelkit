@@ -109,12 +109,16 @@ app.post('/tasks', async (c) => {
 
   const taskId = crypto.randomUUID()
   const promptId = crypto.randomUUID()
-  await store.createTask(taskId, DEFAULT_PROJECT_ID, userEmail)
+  // Route is decided ONCE, here, and stamped on the task row: the global config is
+  // "next new session" semantics, so everything downstream (task-do's first-turn
+  // branch, the UI booking gate) reads the stamp, never re-reads the config.
+  const routeMode = (await store.getConfig()).routeMode === 'mcp' ? 'mcp' : ''
+  await store.createTask(taskId, DEFAULT_PROJECT_ID, userEmail, routeMode)
   await store.createPrompt(promptId, taskId, turn.text) // stored UI text — empty for image-only (bubble = thumbnail)
   await store.linkPromptFiles(promptId, turn.files.map((f) => f.id)) // bubble attachments (display)
   await runTurn(taskId, DEFAULT_PROJECT_ID, promptId, turn.wirePrompt, { files: turn.files })
 
-  return c.json({ taskId, promptId })
+  return c.json({ taskId, promptId, routeMode })
 })
 
 app.post('/tasks/:id/prompts', async (c) => {
@@ -220,7 +224,9 @@ app.get('/tasks/:id/content', async (c) => {
       return { id: p.id, prompt: p.prompt, status: p.status, created_at: p.created_at, completed_at: p.completed_at, frames, attachments }
     }),
   )
-  return c.json({ task: { id: task.id, status: task.status }, prompts })
+  // routeMode drives the UI booking gate: mcp-route sessions cannot book until the
+  // transaction tools land, and the gate must key off THIS session's stamp.
+  return c.json({ task: { id: task.id, status: task.status, routeMode: task.route_mode ?? '' }, prompts })
 })
 
 app.get('/prompts/:id/stream', async (c) => {

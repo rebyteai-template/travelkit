@@ -142,7 +142,7 @@ export async function uploadFile(file: File, renditions: { thumb: Blob; large: B
   return (await r.json()) as FileRef
 }
 
-export const createTask = (prompt: string, files?: FileRef[]): Promise<{ taskId: string; promptId: string }> =>
+export const createTask = (prompt: string, files?: FileRef[]): Promise<{ taskId: string; promptId: string; routeMode: string }> =>
   postJson('/tasks', files?.length ? { prompt, files } : { prompt })
 
 export const followup = (taskId: string, prompt: string, files?: FileRef[]): Promise<{ promptId: string }> =>
@@ -182,12 +182,12 @@ export const saveDebugConfig = (patch: { skillRef: string; systemPrompt: string;
 
 export async function loadContent(
   taskId: string,
-): Promise<{ task: { id: string; status: string }; prompts: PromptContent[] } | null> {
+): Promise<{ task: { id: string; status: string; routeMode?: string }; prompts: PromptContent[] } | null> {
   const r = await fetch(`${BASE}/tasks/${taskId}/content`, { headers: authHeaders() })
   if (r.status === 404) return null
   if (!r.ok) throw new Error(`loadContent failed: ${r.status}`)
   const data = (await r.json()) as {
-    task: { id: string; status: string }
+    task: { id: string; status: string; routeMode?: string }
     prompts: Array<Omit<PromptContent, 'attachments'> & { attachments?: AttachmentMeta[] }>
   }
   // Derive rendition URLs client-side (single source: toAttachment) so a reload matches the
