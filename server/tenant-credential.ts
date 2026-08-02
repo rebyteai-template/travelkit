@@ -1,3 +1,4 @@
+import { sha256Hex } from './digest.ts'
 /**
  * Intake for the tenant's CURRENT Simplifly credential — the value
  * POST /internal/simplifly-credential later hands to our MCP resource server (PLAN §4.3).
@@ -53,12 +54,10 @@ export function isWellFormedCredential(token: string): boolean {
  *  landing, described for the audit line. */
 export type IntakeOutcome = 'created' | 'rotated' | 'unchanged' | 'store_unavailable'
 
-/** Truncated SHA-256. Correlates a credential across log lines and hops; reveals nothing. */
+/** Truncated SHA-256 (shared digest, first 6 bytes). Correlates a credential
+ *  across log lines and hops; reveals nothing. */
 export async function credentialFingerprint(token: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
-  return Array.from(new Uint8Array(digest).slice(0, 6))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
+  return (await sha256Hex(token)).slice(0, 12)
 }
 
 /** The two Store methods this module needs — so tests (and any future driver) need no D1. */

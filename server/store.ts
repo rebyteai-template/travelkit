@@ -65,6 +65,12 @@ export interface AttachmentMeta {
   contentType: string
 }
 
+/** routeMode 的唯一归一化：除 'mcp' 外一律折叠为 ''（VM 路径）。写入（debug config）
+ *  与读取打戳（POST /tasks）共用，存储值不可能漂移出这两种。 */
+export function normalizeRouteMode(raw: string | undefined): '' | 'mcp' {
+  return raw === 'mcp' ? 'mcp' : ''
+}
+
 export interface Store {
   createTask(id: string, projectId: string, userEmail: string, routeMode: string): Promise<void>
   getTask(id: string): Promise<Task | undefined>
@@ -112,7 +118,8 @@ export interface Store {
    *  sessions — NOT per-user. Read on each first turn; written only by the admin panel. Empty
    *  string = use the built-in default (worker/skill-ref.ts SKILL_REF / agent-config.ts
    *  AGENT_INSTRUCTIONS). Stored in the `kv` table.
-   *  `routeMode`: '' | 'vm' = 沙箱 VM + skill（现状路径）；'mcp' = 首轮不建 VM，manager 直接调
+   *  `routeMode`：存储值只有 '' 与 'mcp' 两种（normalizeRouteMode 是唯一归一化点）：
+   *  '' = 沙箱 VM + skill（现状路径）；'mcp' = 首轮不建 VM，manager 直接调
    *  flight MCP 工具（task-do.ts 的 mcp 分支）。 */
   getConfig(): Promise<{ skillRef: string; systemPrompt: string; routeMode: string }>
   /** Upsert the global config — only the provided fields are written. Admin-gated at the route. */

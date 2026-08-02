@@ -18,6 +18,7 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import type { Store, Task } from './store.ts'
+import { normalizeRouteMode } from './store.ts'
 import { MAX_UPLOAD_BYTES, attachmentPromptSuffix } from './attachments.ts'
 import type { FileRef } from './rebyte/client.ts'
 import { isUserQuestionAnswer, type UserQuestionAnswer } from '../src/user-question.ts'
@@ -112,13 +113,13 @@ app.post('/tasks', async (c) => {
   // Route is decided ONCE, here, and stamped on the task row: the global config is
   // "next new session" semantics, so everything downstream (task-do's first-turn
   // branch, the UI booking gate) reads the stamp, never re-reads the config.
-  const routeMode = (await store.getConfig()).routeMode === 'mcp' ? 'mcp' : ''
+  const routeMode = normalizeRouteMode((await store.getConfig()).routeMode)
   await store.createTask(taskId, DEFAULT_PROJECT_ID, userEmail, routeMode)
   await store.createPrompt(promptId, taskId, turn.text) // stored UI text — empty for image-only (bubble = thumbnail)
   await store.linkPromptFiles(promptId, turn.files.map((f) => f.id)) // bubble attachments (display)
   await runTurn(taskId, DEFAULT_PROJECT_ID, promptId, turn.wirePrompt, { files: turn.files })
 
-  return c.json({ taskId, promptId, routeMode })
+  return c.json({ taskId, promptId })
 })
 
 app.post('/tasks/:id/prompts', async (c) => {
@@ -297,9 +298,8 @@ app.get('/debug/config', async (c) => {
 app.post('/debug/config', async (c) => {
   if (!c.var.isAdmin) return c.json({ error: 'forbidden — not an admin uid (ADMIN_UIDS)' }, 403)
   const body = await c.req.json<{ skillRef?: string; systemPrompt?: string; routeMode?: string }>()
-  // routeMode is an enum, not free text: anything but 'mcp' means the default VM path, and we
-  // normalize to '' so the stored value can't drift into variants the worker doesn't recognize.
-  const routeMode = body.routeMode === undefined ? undefined : body.routeMode === 'mcp' ? 'mcp' : ''
+  // routeMode is an enum, not free text — normalizeRouteMode is the single authority.
+  const routeMode = body.routeMode === undefined ? undefined : normalizeRouteMode(body.routeMode)
   await c.var.store.setConfig({ skillRef: body.skillRef, systemPrompt: body.systemPrompt, routeMode })
   // No read-back: the client re-fetches via invalidateQueries (useSaveDebugConfig) and ignores this body.
   return c.json({ ok: true })

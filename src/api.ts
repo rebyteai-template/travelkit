@@ -142,7 +142,7 @@ export async function uploadFile(file: File, renditions: { thumb: Blob; large: B
   return (await r.json()) as FileRef
 }
 
-export const createTask = (prompt: string, files?: FileRef[]): Promise<{ taskId: string; promptId: string; routeMode: string }> =>
+export const createTask = (prompt: string, files?: FileRef[]): Promise<{ taskId: string; promptId: string }> =>
   postJson('/tasks', files?.length ? { prompt, files } : { prompt })
 
 export const followup = (taskId: string, prompt: string, files?: FileRef[]): Promise<{ promptId: string }> =>

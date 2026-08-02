@@ -36,6 +36,7 @@ import { MCP_ROUTING_PREAMBLE } from './vm-system-prompt.ts'
 import { ensureAgentConfig } from '../server/rebyte/agent-config.ts'
 import { shouldDrainTerminal, shouldRetryWindowError, turnExpired, TERMINAL_STATUSES } from './turn-finalize.ts'
 import { framesHaveAnswerText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
+import { sha256Hex } from '../server/digest.ts'
 import {
   isUserQuestionAnswer,
   parseUserQuestionRequest,
@@ -131,12 +132,6 @@ interface TurnState extends TranslationState {
   /** A top-level manager question parks the relay turn until /answer resumes the
    *  SAME action. While present, alarm polling is intentionally suspended and
    *  the human wait does not consume the execution deadline. */
-}
-
-/** Hex sha256 — lets us detect a rotated travelkit token without storing the raw token. */
-async function sha256Hex(s: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s))
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 interface CachedAgentComputer {
