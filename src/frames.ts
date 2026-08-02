@@ -857,10 +857,14 @@ function parsePlanBookingCapabilities(raw: unknown): PlanBooking['capabilities']
   }
 }
 
-function parsePlanBookingTicketGroup(raw: unknown): PlanBookingTicketGroup | null {
+function parsePlanBookingTicketGroup(raw: unknown, fallbackOption: number): PlanBookingTicketGroup | null {
   if (!isObj(raw)) return null
   if (typeof raw.ticketGroupId !== 'string' || !raw.ticketGroupId.trim()) return null
-  if (typeof raw.option !== 'number' || !Number.isInteger(raw.option) || raw.option < 1) return null
+  // `option` is the Skill's session-mapping address（order-create --option n）。The MCP
+  // route's envelope has no session, hence no option — the two-phase confirmationId is the
+  // address there. Absent → synthesize the ordinal so the shared type stays satisfied.
+  const option = raw.option === undefined ? fallbackOption : raw.option
+  if (typeof option !== 'number' || !Number.isInteger(option) || option < 1) return null
   if (typeof raw.passengerGroupId !== 'string' || !raw.passengerGroupId.trim()) return null
   if (!Array.isArray(raw.journeyIndexes) || raw.journeyIndexes.length === 0) return null
   if (!raw.journeyIndexes.every((index) => typeof index === 'number' && Number.isInteger(index) && index >= 0)) return null
@@ -883,7 +887,7 @@ function parsePlanBookingTicketGroup(raw: unknown): PlanBookingTicketGroup | nul
   const transitNotice = isObj(raw.transitAdvisory) ? str(raw.transitAdvisory.notice).trim() : ''
   return {
     ticketGroupId: raw.ticketGroupId,
-    option: raw.option,
+    option,
     passengerGroupId: raw.passengerGroupId,
     journeyIndexes: raw.journeyIndexes as number[],
     fareSource,
@@ -959,8 +963,8 @@ function parsePlanBooking(raw: Record<string, unknown>): PlanBooking | null {
   if ((changedFields.length > 0) !== raw.changed) return null
   if (!Array.isArray(raw.ticketGroups) || raw.ticketGroups.length === 0) return null
   const groups: PlanBookingTicketGroup[] = []
-  for (const rawGroup of raw.ticketGroups) {
-    const group = parsePlanBookingTicketGroup(rawGroup)
+  for (const [groupIndex, rawGroup] of raw.ticketGroups.entries()) {
+    const group = parsePlanBookingTicketGroup(rawGroup, groupIndex + 1)
     if (!group) return null
     groups.push(group)
   }

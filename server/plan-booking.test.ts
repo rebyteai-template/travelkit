@@ -201,6 +201,26 @@ test('a changed multi-group envelope keeps per-group diffs and split-order facts
   assert.equal(booking.ticketGroups[0]!.verifiedPrice.amount, 1060)
 })
 
+test('the MCP flight_reverify envelope parses: no sessionDir, no per-group option, confirmationId extras', () => {
+  // MCP 路由的 flight-plan-booking/v1：寻址字段是 confirmationId/recommendationId（无
+  // session），票组没有 option（那是 Skill 的 session-mapping 地址）——解析必须放行，
+  // option 按序合成，多余字段忽略。
+  const envelope = bookingEnvelope({
+    recommendationId: '01KZTESTRECOMMENDATION',
+    confirmationId: '01KZTESTCONFIRMATION',
+    next: '经用户明确确认后调用 order_create 并携带本结果的 confirmationId；创建订单后绝不自动支付。',
+  }) as Record<string, unknown>
+  delete envelope.sessionDir
+  const group = bookingGroup() as Record<string, unknown>
+  delete group.option
+  envelope.ticketGroups = [group]
+
+  const view = derive([promptWithToolResult(JSON.stringify(envelope))])
+  assert.ok(view.planBooking, 'mcp-shaped envelope must parse, not fail closed')
+  assert.equal(view.planBooking.ok, true)
+  assert.equal(view.planBooking.ticketGroups[0]!.option, 1, 'absent option synthesized from ordinal')
+})
+
 test('a failed envelope still parses behind the Bash non-zero-exit prefix', () => {
   // The skill prints the failure envelope and exits 2; Claude Code prefixes the
   // result with "Exit code 2". The stale-page signal must survive that transport.
