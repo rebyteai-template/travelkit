@@ -168,6 +168,8 @@ export const newSandbox = (): Promise<{ sandboxId?: string }> => postJson('/debu
 export interface DebugConfig {
   skillRef: string
   systemPrompt: string
+  /** '' | 'vm' = 沙箱 VM + skill（现状路径）；'mcp' = 首轮不建 VM，manager 直连 flight MCP 工具。 */
+  routeMode: string
   defaults: { skillRef: string; systemPrompt: string }
   isAdmin: boolean
 }
@@ -175,7 +177,7 @@ export interface DebugConfig {
 export const getDebugConfig = (): Promise<DebugConfig> => json('/debug/config')
 /** Write the global debug config (admin only → 403 otherwise). Empty string reverts that field to the
  *  built-in default. The panel re-fetches on success (invalidateQueries), so this just acks. */
-export const saveDebugConfig = (patch: { skillRef: string; systemPrompt: string }): Promise<{ ok: boolean }> =>
+export const saveDebugConfig = (patch: { skillRef: string; systemPrompt: string; routeMode: string }): Promise<{ ok: boolean }> =>
   postJson('/debug/config', patch)
 
 export async function loadContent(

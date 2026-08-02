@@ -32,6 +32,7 @@ import { isObj, parseSSE } from '../server/rebyte/sse.ts'
 import { rebyteJSON, rebyteFetch, RebyteError, type RebyteConfig, type FileRef } from '../server/rebyte/client.ts'
 import { provisionComputer, seedSandbox, writeClaudeMd, removeStaleArtifacts, applyCredential, SEED_VERSION, type ProvisionedComputer } from './seed.ts'
 import { SKILL_REF, toSkillRef } from './skill-ref.ts'
+import { MCP_ROUTING_PREAMBLE } from './vm-system-prompt.ts'
 import { ensureAgentConfig } from '../server/rebyte/agent-config.ts'
 import { shouldDrainTerminal, shouldRetryWindowError, turnExpired, TERMINAL_STATUSES } from './turn-finalize.ts'
 import { framesHaveAnswerText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
@@ -52,9 +53,13 @@ const WINDOW_MS = 20_000 // per-alarm streaming window — short enough to never
 const DEFAULT_API_URL = 'https://api.rebyte.ai/v1'
 const TERMINAL = TERMINAL_STATUSES
 
-/** Relay event envelope (live /events + /content?include=events): {seq,eventType,payload}. */
+/** Relay event envelope (live /events + /content?include=events): {seq,eventType,payload}.
+ *  `eventKey` is the event's stable identity across relay re-synthesis; when present it —
+ *  not seq — is the dedupe key (the relay renumbers seq when a late-visible row inserts
+ *  mid-timeline, so a numeric watermark drops renumbered events). */
 interface RelayEvent {
   seq?: number
+  eventKey?: string
   eventType?: string
   payload?: Record<string, unknown>
 }
@@ -97,6 +102,10 @@ interface TurnState extends TranslationState {
    *  Guards a retried alarm from double-submitting after a window/eviction. */
   submitted: boolean
   lastRelaySeq: number
+  /** Relay eventKeys already translated this turn (persisted with the turn, so a
+   *  reconnect replay — which renumbers seq — can never re-emit or drop one).
+   *  Absent on turns started before this field existed → seq-gate fallback. */
+  seenEventKeys?: Record<string, 1>
   /** Assistant text streamed since the LAST tool_use — i.e. "the answer has arrived".
    *  Reset when a tool_use streams: an opening ack before the delegation must not
    *  count, or the terminal-drain guard is skipped and the turn's whole tail (the
@@ -734,18 +743,36 @@ export class TaskDO extends DurableObject<Env> {
           //     into the workspace VM (ac.id = the SAME VM we seeded). Follow-ups omit skills → one
           //     clone per session; a new session re-clones latest.
           const cfg = await this.store.getConfig()
-          const ac = await this.agentComputerFor(t.userEmail, t.travelkitToken, cfg.systemPrompt)
-          const task = await rebyteJSON<{ id: string }>('/tasks', {
-            method: 'POST',
-            // `files` (if any) ride here so the relay stages them into the sandbox /code/<filename>
-            // before the first turn runs; the wire prompt's attachment suffix points the manager at them.
-            // `actor` names the END USER behind this task (t.userEmail IS `<org>:<uid>`). The relay
-            // treats it as an opaque identifier and hands it back to our /oauth/token when the agent
-            // reaches for an MCP tool — that is how the tool call gets THIS employee's credential
-            // instead of an org-wide one. Relay keys are org-scoped, so nothing else carries a person.
-            body: JSON.stringify({ prompt: t.prompt, workspaceId: ac.id, actor: t.userEmail, skills: [toSkillRef(cfg.skillRef.trim() || SKILL_REF)], ...(t.files?.length ? { files: t.files } : {}) }),
-            config,
-          })
+          let task: { id: string }
+          if (cfg.routeMode === 'mcp') {
+            // MCP-direct debug mode (config routeMode='mcp'): NO per-user sandbox at all.
+            // Omitting workspaceId makes the relay create a plain, VM-less workspace for this
+            // task (a record-only insert; the org agent profile's connector set — including the
+            // delegated flight MCP — is copied in the same transaction). No `skills` either:
+            // installing one is what would touch a VM. The routing contract rides as a header on
+            // this FIRST prompt — task creation launches the first turn immediately, so agent
+            // instructions PATCHed after create would miss it, and there is no agent computer
+            // here to configure. `actor` unchanged: it is what the delegated credential
+            // resolution keys on.
+            task = await rebyteJSON<{ id: string }>('/tasks', {
+              method: 'POST',
+              body: JSON.stringify({ prompt: `${MCP_ROUTING_PREAMBLE}\n\n${t.prompt}`, actor: t.userEmail, ...(t.files?.length ? { files: t.files } : {}) }),
+              config,
+            })
+          } else {
+            const ac = await this.agentComputerFor(t.userEmail, t.travelkitToken, cfg.systemPrompt)
+            task = await rebyteJSON<{ id: string }>('/tasks', {
+              method: 'POST',
+              // `files` (if any) ride here so the relay stages them into the sandbox /code/<filename>
+              // before the first turn runs; the wire prompt's attachment suffix points the manager at them.
+              // `actor` names the END USER behind this task (t.userEmail IS `<org>:<uid>`). The relay
+              // treats it as an opaque identifier and hands it back to our /oauth/token when the agent
+              // reaches for an MCP tool — that is how the tool call gets THIS employee's credential
+              // instead of an org-wide one. Relay keys are org-scoped, so nothing else carries a person.
+              body: JSON.stringify({ prompt: t.prompt, workspaceId: ac.id, actor: t.userEmail, skills: [toSkillRef(cfg.skillRef.trim() || SKILL_REF)], ...(t.files?.length ? { files: t.files } : {}) }),
+              config,
+            })
+          }
           relayTaskId = task.id
           await this.ctx.storage.put('relayTaskId', relayTaskId)
           await this.store.setTaskRelayId(t.taskId, relayTaskId)
@@ -884,9 +911,17 @@ export class TaskDO extends DurableObject<Env> {
         if (!isObj(msg.data)) continue
         rawCount++
         const ev = msg.data as RelayEvent
-        const seq = typeof ev.seq === 'number' ? ev.seq : t.lastRelaySeq + 1
-        if (seq <= t.lastRelaySeq) continue
-        t.lastRelaySeq = seq
+        if (typeof ev.eventKey === 'string' && ev.eventKey) {
+          // Identity dedupe: survives reconnect replays AND relay-side seq
+          // renumbering (late-visible rows insert mid-timeline upstream).
+          if (t.seenEventKeys?.[ev.eventKey]) continue
+          ;(t.seenEventKeys ??= {})[ev.eventKey] = 1
+        } else {
+          // Legacy relay without eventKey: the old high-water gate.
+          const seq = typeof ev.seq === 'number' ? ev.seq : t.lastRelaySeq + 1
+          if (seq <= t.lastRelaySeq) continue
+          t.lastRelaySeq = seq
+        }
         await this.translate(t, ev)
         if (t.waitingForAnswer) return { terminal: false, awaitingUser: true }
       }

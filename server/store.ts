@@ -107,10 +107,12 @@ export interface Store {
   /** The single global config (skill-ref + manager-prompt overrides) shared by every user's
    *  sessions — NOT per-user. Read on each first turn; written only by the admin panel. Empty
    *  string = use the built-in default (worker/skill-ref.ts SKILL_REF / agent-config.ts
-   *  AGENT_INSTRUCTIONS). Stored in the `kv` table. */
-  getConfig(): Promise<{ skillRef: string; systemPrompt: string }>
+   *  AGENT_INSTRUCTIONS). Stored in the `kv` table.
+   *  `routeMode`: '' | 'vm' = 沙箱 VM + skill（现状路径）；'mcp' = 首轮不建 VM，manager 直接调
+   *  flight MCP 工具（task-do.ts 的 mcp 分支）。 */
+  getConfig(): Promise<{ skillRef: string; systemPrompt: string; routeMode: string }>
   /** Upsert the global config — only the provided fields are written. Admin-gated at the route. */
-  setConfig(patch: { skillRef?: string; systemPrompt?: string }): Promise<void>
+  setConfig(patch: { skillRef?: string; systemPrompt?: string; routeMode?: string }): Promise<void>
 
   createPrompt(id: string, taskId: string, prompt: string): Promise<void>
   getPrompt(id: string): Promise<Prompt | undefined>

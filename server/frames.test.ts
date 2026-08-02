@@ -724,6 +724,34 @@ test('recommendation sets reject duplicate plan identities', () => {
   assert.equal(view.recommendations?.status, 'fatal_error')
 })
 
+// The MCP tools deliver the SAME envelope, but nested in the polling wrapper
+// (flight_recommendation_get → { recommendationId, status, result: <envelope> })
+// where the skill CLI printed it at top level. The router must unwrap exactly
+// that one level or the manager-direct (routeMode='mcp') path renders no table.
+test('recommendation envelope nested in the MCP polling wrapper still routes', () => {
+  const direct = derive([promptWithToolResult(JSON.stringify(recommendationsResult()))])
+  const wrapped = derive([promptWithToolResult(JSON.stringify({
+    recommendationId: '01KYY0000000000000000000000',
+    status: 'partial',
+    engineVersion: 'dev',
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:01:00.000Z',
+    result: recommendationsResult(),
+  }))])
+  assert.equal(wrapped.stage, 'recommendation')
+  assert.deepEqual(wrapped.recommendations, direct.recommendations)
+})
+
+// A polling wrapper that has NOT completed carries no business envelope; it must
+// not disturb the stage machine (regression guard for the unwrap being too eager).
+test('MCP polling wrapper without a result payload routes nothing', () => {
+  const view = derive([promptWithToolResult(JSON.stringify({
+    recommendationId: '01KYY0000000000000000000000',
+    status: 'running',
+  }))])
+  assert.equal(view.recommendations, null)
+})
+
 // Page size belongs to the skill (its MAX_RECOMMENDATION_RESULTS, enforced in
 // `recommend-next --count`). A second copy of that number here would reject every result
 // the day the skill changes it.

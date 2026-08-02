@@ -1231,7 +1231,7 @@ export function derive(prompts: PromptContent[]): DerivedView {
             trustedOutputFileRead = !!filePath && trustedOutputFiles.has(filePath)
             if (!trustedOutputFileRead) continue
           }
-          const payload = parseBusinessPayload(raw, sourceTool, trustedOutputFileRead)
+          const payload = unwrapPollingTransport(parseBusinessPayload(raw, sourceTool, trustedOutputFileRead))
           const resultType = typeof payload?.resultType === 'string' ? payload.resultType : ''
           const schemaVersion = typeof payload?.schemaVersion === 'string' ? payload.schemaVersion : ''
 
@@ -1467,6 +1467,26 @@ function parseToolJson(raw: string): Record<string, unknown> | null {
  * When stdout is too large for either transport it lands in a file instead — see
  * trustedOutputFile; the Read of that exact path arrives here numbered and is unwrapped
  * with the same top-level boundary. */
+/** The MCP tools (flight_recommendation_get) answer with a POLLING wrapper —
+ *  { recommendationId, status, …, result: <the business envelope> } — where the
+ *  skill CLI printed the envelope at top level. Descend exactly one level, and
+ *  only when the wrapper itself carries no contract discriminator but its
+ *  `result` does; every other payload passes through untouched. */
+function unwrapPollingTransport(
+  payload: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!payload) return null
+  if (typeof payload.resultType === 'string' || typeof payload.schemaVersion === 'string') return payload
+  const inner = payload.result
+  if (
+    isObj(inner) &&
+    (typeof inner.resultType === 'string' || typeof inner.schemaVersion === 'string')
+  ) {
+    return inner
+  }
+  return payload
+}
+
 function parseBusinessPayload(
   raw: string,
   sourceTool?: string,

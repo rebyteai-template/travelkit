@@ -118,16 +118,21 @@ export function createD1Store(db: D1Database): Store {
     // ── global debug config (single shared row set; keys in the kv table) ──
     async getConfig() {
       const { results } = await db
-        .prepare(`SELECT k, v FROM kv WHERE k IN ('cfg_skill_ref', 'cfg_system_prompt')`)
+        .prepare(`SELECT k, v FROM kv WHERE k IN ('cfg_skill_ref', 'cfg_system_prompt', 'cfg_route_mode')`)
         .all<{ k: string; v: string }>()
       const m = new Map(results.map((r) => [r.k, r.v]))
-      return { skillRef: m.get('cfg_skill_ref') ?? '', systemPrompt: m.get('cfg_system_prompt') ?? '' }
+      return {
+        skillRef: m.get('cfg_skill_ref') ?? '',
+        systemPrompt: m.get('cfg_system_prompt') ?? '',
+        routeMode: m.get('cfg_route_mode') ?? '',
+      }
     },
     async setConfig(patch) {
       // Upsert only the provided keys (k is PK). Empty string is a valid stored value = "use default".
       const rows: Array<[string, string]> = []
       if (patch.skillRef !== undefined) rows.push(['cfg_skill_ref', patch.skillRef])
       if (patch.systemPrompt !== undefined) rows.push(['cfg_system_prompt', patch.systemPrompt])
+      if (patch.routeMode !== undefined) rows.push(['cfg_route_mode', patch.routeMode])
       if (!rows.length) return
       // One atomic batched round-trip (both keys commit together or neither) instead of N sequential.
       const stmt = db.prepare(`INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`)

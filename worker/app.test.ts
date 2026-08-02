@@ -50,7 +50,7 @@ function harness(env: Partial<Env> = {}) {
     async probeCredentialStore() {},
     async setConfig() {},
     async getConfig() {
-      return { skillRef: '', systemPrompt: '' }
+      return { skillRef: '', systemPrompt: '', routeMode: '' }
     },
   } as unknown as Store
   const app = createApp(() => store)

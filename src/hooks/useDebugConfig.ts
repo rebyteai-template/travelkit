@@ -17,7 +17,7 @@ export function useSaveDebugConfig() {
     mutationFn: saveDebugConfig,
     onSuccess: (_res, patch) => {
       qc.setQueryData(queryKeys.debugConfig(), (old?: DebugConfig) =>
-        old ? { ...old, skillRef: patch.skillRef, systemPrompt: patch.systemPrompt } : old)
+        old ? { ...old, skillRef: patch.skillRef, systemPrompt: patch.systemPrompt, routeMode: patch.routeMode } : old)
       void qc.invalidateQueries({ queryKey: queryKeys.debugConfig() })
     },
   })
