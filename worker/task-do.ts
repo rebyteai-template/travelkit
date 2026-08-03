@@ -148,40 +148,85 @@ export class TaskDO extends DurableObject<Env> {
   }
 
   /**
-   * Which relay identity this turn speaks as.
+   * Which relay identity this turn speaks as — decided ONCE per session.
    *
-   * MCP route: this employee's OWN headless account, whose flight connector names them in
-   * a registered header (PLAN §12) — that is what makes a tool call run as them rather
-   * than as the org. Every turn resolves it, not just the first: a follow-up appends to a
-   * task that account owns, and the org key would 404 on it.
+   * MCP route, first turn: this employee's OWN headless account, whose flight connector
+   * names them in a registered header (PLAN §12) — that is what makes a tool call run as
+   * them rather than as the org. The choice is returned as `relayAuth` so the caller can
+   * stamp it onto the task row NEXT TO relay_task_id.
    *
-   * Their Simplifly credential is deliberately NOT part of this: the MCP server fetches it
-   * from us per call, so nothing here goes stale when they re-login.
+   * Every later turn honors the STAMP, never the live environment: the relay scopes a
+   * task to the account that created it, so a call with the other key 404s. Re-deciding
+   * per turn breaks live sessions at exactly the moments that matter — enabling
+   * FLIGHT_MCP_* (org-created sessions would suddenly resolve the employee key),
+   * disabling it (the reverse), or a first-turn provisioning failure that later heals.
    *
-   * Everything else (and any misconfiguration) keeps the org key: leaving FLIGHT_MCP_URL /
-   * FLIGHT_MCP_TOKEN unset is how a deployment opts out, and the route then works exactly
-   * as it did before — which is what makes this reversible without a deploy.
+   * The employee's Simplifly credential is deliberately NOT part of any of this: the MCP
+   * server fetches it from us per call, so nothing here goes stale when they re-login.
+   *
+   * First-turn fallbacks keep the org key (and stamp ''): FLIGHT_MCP_URL/TOKEN unset is
+   * how a deployment opts out, and a provisioning failure must not take the turn down —
+   * the agent just reaches whatever the org registered. Both are honest because nothing
+   * has been created under the other identity yet.
    */
-  private async turnConfig(t: TurnState): Promise<RebyteConfig> {
-    const config = this.rebyteConfig()
+  private async turnConfig(t: TurnState): Promise<{ config: RebyteConfig; relayAuth: '' | 'employee' }> {
+    const base = this.rebyteConfig()
+    const task = await this.store.getTask(t.taskId)
+
+    // Follow-up turn (the session's relay task exists): the stamp is the identity.
+    if (task?.relay_task_id) {
+      if (task.relay_auth === 'employee' && task.user_email) {
+        const account = await this.store.getEmployeeAccount(task.user_email)
+        if (account) {
+          return { config: { apiUrl: base.apiUrl, apiKey: account.apiKey }, relayAuth: 'employee' }
+        }
+        // The account row is gone but the relay task belongs to it. The org key will 404
+        // on every call — say so loudly rather than pretend the fallback can work.
+        console.log(`[employee-account] MISSING account row for stamped session tenant=${task.user_email}`)
+      }
+      return { config: base, relayAuth: task.relay_auth === 'employee' ? 'employee' : '' }
+    }
+
+    // First turn: decide.
     const mcpUrl = this.env.FLIGHT_MCP_URL
     const serviceToken = this.env.FLIGHT_MCP_TOKEN
-    if (!mcpUrl || !serviceToken || !t.userEmail) return config
-    const routeMode = (await this.store.getTask(t.taskId))?.route_mode ?? ''
-    if (routeMode !== 'mcp') return config
+    if (!mcpUrl || !serviceToken || !t.userEmail) return { config: base, relayAuth: '' }
+    if ((task?.route_mode ?? '') !== 'mcp') return { config: base, relayAuth: '' }
     try {
-      const access = await ensureEmployeeMcpAccess(this.store, config, {
+      const access = await ensureEmployeeMcpAccess(this.store, base, {
         tenant: t.userEmail,
         serviceToken,
         mcpUrl,
       })
-      return { apiUrl: config.apiUrl, apiKey: access.apiKey }
+      return { config: { apiUrl: base.apiUrl, apiKey: access.apiKey }, relayAuth: 'employee' }
     } catch (e) {
-      // Falling back to the org key is the honest failure: the turn still runs, the agent
-      // just reaches the connector the org registered (or none). Failing the turn outright
-      // would take the whole product down for a provisioning hiccup.
       console.log(`[employee-account] FAILED tenant=${t.userEmail} error=${(e as Error).message}`)
-      return config
+      return { config: base, relayAuth: '' }
+    }
+  }
+
+  /**
+   * The stamped identity for out-of-turn relay calls (answer / cancel / recovery /
+   * sub-prompt replay), keyed off the prompt because every caller has one. Read-only:
+   * never provisions, never re-decides. Falls back to the org key only when the stamp
+   * says org — a missing account row on an employee-stamped session is logged, because
+   * the org key can only 404 there and the caller's catch would otherwise eat it silently.
+   */
+  private async promptAuthConfig(promptId: string): Promise<RebyteConfig> {
+    const base = this.rebyteConfig()
+    try {
+      const prompt = await this.store.getPrompt(promptId)
+      const task = prompt ? await this.store.getTask(prompt.task_id) : undefined
+      if (task?.relay_auth !== 'employee' || !task.user_email) return base
+      const account = await this.store.getEmployeeAccount(task.user_email)
+      if (!account) {
+        console.log(`[employee-account] MISSING account row for stamped session tenant=${task.user_email}`)
+        return base
+      }
+      return { apiUrl: base.apiUrl, apiKey: account.apiKey }
+    } catch (e) {
+      console.log(`[employee-account] identity lookup failed promptId=${promptId} error=${(e as Error).message}`)
+      return base
     }
   }
 
@@ -347,7 +392,9 @@ export class TaskDO extends DurableObject<Env> {
     if (!t.relayTaskId) return
     const data = await rebyteJSON<{ events?: RelayEvent[] }>(
       `/tasks/${t.relayTaskId}/prompts/${subPromptId}/events`,
-      { config: this.rebyteConfig() },
+      // The STAMPED identity, not the org key: on an employee-created session the org key
+      // 404s, this catch eats it, and the sub-session's tool frames silently never render.
+      { config: await this.promptAuthConfig(t.promptId) },
     ).catch(() => null)
     if (!data?.events) return
     const durableStart = await this.store.getSubPromptCursor(t.promptId, subPromptId)
@@ -538,7 +585,9 @@ export class TaskDO extends DurableObject<Env> {
           actionId,
           answer: answer as UserQuestionAnswer,
         }),
-        config: this.rebyteConfig(),
+        // Stamped identity: with the org key an employee-created session's answer 404s and
+        // the throw below surfaces it as an error on a question the user just answered.
+        config: await this.promptAuthConfig(t.promptId),
       })
     } catch (error) {
       // If the relay accepted the answer but its response was lost, a retry sees
@@ -658,7 +707,9 @@ export class TaskDO extends DurableObject<Env> {
       const content = await rebyteJSON<{
         prompts?: Array<{ response?: string; events?: RelayEvent[] }>
       }>(`/tasks/${relayTaskId}/content?include=events`, {
-        config: this.rebyteConfig(),
+        // Stamped identity — recovery on an employee-created session 404s with the org key
+        // and this catch turns it into "nothing to recover".
+        config: await this.promptAuthConfig(promptId),
       }).catch(() => null)
       const relayPrompts = content?.prompts
       if (Array.isArray(relayPrompts) && relayPrompts.length === ordered.length) {
@@ -729,7 +780,9 @@ export class TaskDO extends DurableObject<Env> {
     if (t.submitted && t.relayTaskId) {
       await rebyteJSON(`/tasks/${t.relayTaskId}/cancel`, {
         method: 'POST',
-        config: this.rebyteConfig(),
+        // Stamped identity: an org-key cancel on an employee-created session 404s, the
+        // relay keeps running the "canceled" turn, and its answer races the next follow-up.
+        config: await this.promptAuthConfig(t.promptId),
         signal: AbortSignal.timeout(5000),
       }).catch((e) => console.log(`[task-do] relay cancel failed (non-fatal): ${(e as Error).message}`))
     }
@@ -750,7 +803,7 @@ export class TaskDO extends DurableObject<Env> {
     // The ORG key. On the MCP route it is replaced below by this employee's own account
     // key — resolved once per turn because a follow-up appends to a task that account
     // owns, so every turn of the session has to speak as the same account.
-    const config = await this.turnConfig(t)
+    const { config, relayAuth } = await this.turnConfig(t)
 
     try {
       t.frameSeq = await this.maxFrameSeq(t.promptId)
@@ -817,7 +870,7 @@ export class TaskDO extends DurableObject<Env> {
           }
           relayTaskId = task.id
           await this.ctx.storage.put('relayTaskId', relayTaskId)
-          await this.store.setTaskRelayId(t.taskId, relayTaskId)
+          await this.store.setTaskRelayId(t.taskId, relayTaskId, relayAuth)
         } else {
           // Follow-up turn: append this prompt to the existing relay task. We send the
           // user's prompt alone. /events then streams this latest prompt.

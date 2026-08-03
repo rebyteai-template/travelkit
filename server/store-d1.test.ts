@@ -33,6 +33,7 @@ const MULTITENANT = migration('0002_multitenant.sql')
 const ROUTE_MODE = migration('0009_task_route_mode.sql')
 const OAUTH_CLIENTS = migration('0010_oauth_clients.sql')
 const EMPLOYEE_ACCOUNTS = migration('0011_employee_accounts.sql')
+const RELAY_AUTH = migration('0012_task_relay_auth.sql')
 
 const TENANT = formatActor('ORG42', 'EMP10086')
 const ALICE = 'TK_alice'
@@ -193,6 +194,22 @@ test('route_mode: stamped at create and read back; pre-stamp rows read as the VM
   // '' = VM route — the booking gate only fires for an explicit 'mcp' stamp.
   db.prepare(`INSERT INTO tasks (id, project_id, user_email) VALUES (?, ?, ?)`).run('t-legacy', 'proj', TENANT)
   assert.equal((await store.getTask('t-legacy'))?.route_mode, '')
+})
+
+test('relay_auth: stamped WITH the relay id, and every pre-stamp row reads as the org key', async () => {
+  const { store, db } = fixture([INIT_TABLES, MULTITENANT, ROUTE_MODE, RELAY_AUTH])
+
+  await store.createTask('t-emp', 'proj', TENANT, 'mcp')
+  await store.setTaskRelayId('t-emp', 'relay-1', 'employee')
+  const stamped = await store.getTask('t-emp')
+  assert.equal(stamped?.relay_task_id, 'relay-1')
+  assert.equal(stamped?.relay_auth, 'employee')
+
+  // A row created before the column existed (raw INSERT) must read as '' = the org key —
+  // every pre-feature session WAS created with the org key, so any other default would
+  // make this exact migration the thing that breaks them.
+  db.prepare(`INSERT INTO tasks (id, project_id, user_email) VALUES (?, ?, ?)`).run('t-legacy', 'proj', TENANT)
+  assert.equal((await store.getTask('t-legacy'))?.relay_auth, '')
 })
 
 test('employee_accounts: first writer wins — a second provision can never strand the recorded key', async () => {

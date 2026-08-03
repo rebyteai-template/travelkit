@@ -1,0 +1,11 @@
+-- Which relay identity this session's relay task was CREATED under:
+--   ''         = the org REBYTE_API_KEY (every pre-existing row, and the VM route)
+--   'employee' = that employee's own headless-account key (MCP route, PLAN §12)
+--
+-- Stamped once, next to relay_task_id, and honored by every later call for the
+-- session. It exists because the relay scopes a task to the account that created
+-- it: any call made with the OTHER key 404s. Re-deciding per turn therefore
+-- breaks live sessions at exactly the moments that matter — enabling the
+-- feature (org-created sessions suddenly resolve the employee key), disabling
+-- it (the reverse), or a first-turn provisioning failure that later heals.
+ALTER TABLE tasks ADD COLUMN relay_auth TEXT NOT NULL DEFAULT '';

@@ -184,8 +184,11 @@ export function createD1Store(db: D1Database): Store {
     async setTaskStatus(id, status) {
       await db.prepare(`UPDATE tasks SET status = ? WHERE id = ?`).bind(status, id).run()
     },
-    async setTaskRelayId(id, relayTaskId) {
-      await db.prepare(`UPDATE tasks SET relay_task_id = ? WHERE id = ?`).bind(relayTaskId, id).run()
+    async setTaskRelayId(id, relayTaskId, relayAuth) {
+      await db
+        .prepare(`UPDATE tasks SET relay_task_id = ?, relay_auth = ? WHERE id = ?`)
+        .bind(relayTaskId, relayAuth, id)
+        .run()
     },
 
     async createPrompt(id, taskId, prompt) {

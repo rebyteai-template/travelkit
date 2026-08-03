@@ -21,6 +21,11 @@ export interface Task {
    *  Stamped once at creation from the global config (which is "next new session"
    *  semantics) — this row is the per-session truth task-do and the UI gate read. */
   route_mode: string
+  /** Which relay identity created this session's relay task: '' = the org key,
+   *  'employee' = that employee's own headless-account key (migrations/0012).
+   *  Stamped with relay_task_id and honored by EVERY later call: the relay
+   *  scopes a task to its creating account, so a call with the other key 404s. */
+  relay_auth: string
 }
 
 /** Lightweight conversation row for the per-user session list (sidebar). */
@@ -87,7 +92,9 @@ export interface Store {
   getTask(id: string): Promise<Task | undefined>
   listTasksByUser(userEmail: string): Promise<TaskSummary[]>
   setTaskStatus(id: string, status: string): Promise<void>
-  setTaskRelayId(id: string, relayTaskId: string): Promise<void>
+  /** Record the session's relay task AND the identity that created it, together:
+   *  one is useless without the other (see Task.relay_auth). */
+  setTaskRelayId(id: string, relayTaskId: string, relayAuth: string): Promise<void>
 
   // ── the tenant's current Simplifly credential (see migrations/0007 + 0008) ────────
   /** Overwrite this tenant's current travelkit/Simplifly token. Called on EVERY request carrying
