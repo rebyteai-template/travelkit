@@ -34,6 +34,7 @@ import { provisionComputer, seedSandbox, writeClaudeMd, removeStaleArtifacts, ap
 import { SKILL_REF, toSkillRef } from './skill-ref.ts'
 import { MCP_ROUTING_PREAMBLE } from './vm-system-prompt.ts'
 import { ensureAgentConfig } from '../server/rebyte/agent-config.ts'
+import { ensureEmployeeMcpAccess } from '../server/rebyte/employee-account.ts'
 import { shouldDrainTerminal, shouldRetryWindowError, turnExpired, TERMINAL_STATUSES } from './turn-finalize.ts'
 import { framesHaveAnswerText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
 import { sha256Hex } from '../server/digest.ts'
@@ -144,6 +145,45 @@ export class TaskDO extends DurableObject<Env> {
 
   private rebyteConfig(): RebyteConfig {
     return { apiUrl: this.env.REBYTE_API_URL ?? DEFAULT_API_URL, apiKey: this.env.REBYTE_API_KEY }
+  }
+
+  /**
+   * Which relay identity this turn speaks as.
+   *
+   * MCP route: this employee's OWN headless account, whose flight connector carries their
+   * current Simplifly credential (PLAN §12) — that is what makes a tool call run as them
+   * rather than as the org. Every turn resolves it, not just the first: a follow-up
+   * appends to a task that account owns, and the org key would 404 on it.
+   *
+   * Everything else (and any misconfiguration) keeps the org key: FLIGHT_MCP_URL unset is
+   * how a deployment opts out, and no credential yet simply means we have nothing to
+   * register — in both cases the route still works exactly as it did before, which is what
+   * makes this reversible without a deploy.
+   */
+  private async turnConfig(t: TurnState): Promise<RebyteConfig> {
+    const config = this.rebyteConfig()
+    const mcpUrl = this.env.FLIGHT_MCP_URL
+    if (!mcpUrl || !t.userEmail) return config
+    const routeMode = (await this.store.getTask(t.taskId))?.route_mode ?? ''
+    if (routeMode !== 'mcp') return config
+    // The request's token when this turn carried one, else the row app.ts already wrote —
+    // the same value /internal/simplifly-credential would serve.
+    const credential = t.travelkitToken || (await this.store.getTenantCredential(t.userEmail)) || ''
+    if (!credential) return config
+    try {
+      const access = await ensureEmployeeMcpAccess(this.store, config, {
+        tenant: t.userEmail,
+        credential,
+        mcpUrl,
+      })
+      return { apiUrl: config.apiUrl, apiKey: access.apiKey }
+    } catch (e) {
+      // Falling back to the org key is the honest failure: the turn still runs, the agent
+      // just reaches the connector the org registered (or none). Failing the turn outright
+      // would take the whole product down for a provisioning hiccup.
+      console.log(`[employee-account] FAILED tenant=${t.userEmail} error=${(e as Error).message}`)
+      return config
+    }
   }
 
   // ── frame emission (durable seq from D1 so resumed ticks never collide) ──
@@ -708,7 +748,10 @@ export class TaskDO extends DurableObject<Env> {
       await this.store.setPromptStatus(t.promptId, 'waiting_for_answer')
       return
     }
-    const config = this.rebyteConfig()
+    // The ORG key. On the MCP route it is replaced below by this employee's own account
+    // key — resolved once per turn because a follow-up appends to a task that account
+    // owns, so every turn of the session has to speak as the same account.
+    const config = await this.turnConfig(t)
 
     try {
       t.frameSeq = await this.maxFrameSeq(t.promptId)

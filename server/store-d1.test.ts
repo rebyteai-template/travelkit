@@ -32,6 +32,7 @@ const INIT_TABLES = migration('0001_init.sql')
 const MULTITENANT = migration('0002_multitenant.sql')
 const ROUTE_MODE = migration('0009_task_route_mode.sql')
 const OAUTH_CLIENTS = migration('0010_oauth_clients.sql')
+const EMPLOYEE_ACCOUNTS = migration('0011_employee_accounts.sql')
 
 const TENANT = formatActor('ORG42', 'EMP10086')
 const ALICE = 'TK_alice'
@@ -192,6 +193,27 @@ test('route_mode: stamped at create and read back; pre-stamp rows read as the VM
   // '' = VM route — the booking gate only fires for an explicit 'mcp' stamp.
   db.prepare(`INSERT INTO tasks (id, project_id, user_email) VALUES (?, ?, ?)`).run('t-legacy', 'proj', TENANT)
   assert.equal((await store.getTask('t-legacy'))?.route_mode, '')
+})
+
+test('employee_accounts: first writer wins — a second provision can never strand the recorded key', async () => {
+  const { store } = fixture([EMPLOYEE_ACCOUNTS])
+
+  await store.saveEmployeeAccount(TENANT, 'acct_winner', 'rbk_winner')
+  const stored = await store.getEmployeeAccount(TENANT)
+  assert.equal(stored?.accountId, 'acct_winner')
+  assert.equal(stored?.apiKey, 'rbk_winner')
+  assert.equal(stored?.registeredCredentialFp, null)
+
+  // INSERT OR IGNORE, asserted against real SQLite: the relay hands an account key back
+  // exactly once, so this row is its only copy. Overwriting would make `acct_winner`
+  // unreachable forever — the loser's own account is the one that must be abandoned.
+  await store.saveEmployeeAccount(TENANT, 'acct_loser', 'rbk_loser')
+  assert.equal((await store.getEmployeeAccount(TENANT))?.accountId, 'acct_winner')
+
+  await store.setRegisteredCredentialFingerprint(TENANT, 'fp-abc123')
+  assert.equal((await store.getEmployeeAccount(TENANT))?.registeredCredentialFp, 'fp-abc123')
+
+  assert.equal(await store.getEmployeeAccount('51049:nobody'), undefined)
 })
 
 test('oauth_clients: the REAL SQL round-trips a hash, misses cleanly, and refuses a duplicate id', async () => {

@@ -20,6 +20,11 @@ export interface Env extends OAuthEnv {
   REBYTE_API_KEY: string
   /** rebyte relay base; defaults to https://api.rebyte.ai/v1 when unset. */
   REBYTE_API_URL?: string
+  /** The flight MCP server's URL, registered as each employee's own connector on the MCP
+   *  route (PLAN §12). Setting it turns per-employee accounts ON; unset keeps every task
+   *  on the org key exactly as before, which is the deploy-free way back out.
+   *  Must match the resource server's canonical URL byte for byte. */
+  FLIGHT_MCP_URL?: string
   /** Shared embed gate key (secret: `wrangler secret put EMBED_KEY`). When set, every
    *  /api/app/* call must present it (X-Embed-Key header or ?k= query) or gets 401 — stops
    *  strangers who only know the domain from spinning sandboxes. Unset → gate disabled. */

@@ -42,6 +42,17 @@ export interface AgentComputerRow {
    *  created before seed-version tracking. Drives the "skill changed → re-seed" check. */
   seedVersion: string | null
 }
+
+/** One employee's rebyte headless account (migrations/0011). `apiKey` is a live relay
+ *  credential whose only copy is that row — the relay returns it once, at creation. */
+export interface EmployeeAccount {
+  accountId: string
+  apiKey: string
+  /** Fingerprint of the Simplifly credential the connector registration currently carries;
+   *  null before the first registration. Never the credential itself. */
+  registeredCredentialFp: string | null
+}
+
 export interface Prompt {
   id: string
   task_id: string
@@ -100,6 +111,17 @@ export interface Store {
    *  case tells every employee to reopen the iframe, and reopening re-runs the same failing
    *  write — a permanent loop with no alarm and no 5xx. Called only on the miss path. */
   probeCredentialStore(): Promise<void>
+
+  // ── per-employee rebyte headless account (see migrations/0011) ───────────────────
+  /** This employee's account + relay key, or undefined if they have never had one. */
+  getEmployeeAccount(userEmail: string): Promise<EmployeeAccount | undefined>
+  /** Record a freshly provisioned account. First writer wins (INSERT OR IGNORE): two
+   *  concurrent first turns must not leave the second account orphaned AND unrecorded —
+   *  the loser's account is abandoned, which is recoverable, while overwriting the row
+   *  would strand a key that is stored nowhere else. */
+  saveEmployeeAccount(userEmail: string, accountId: string, apiKey: string): Promise<void>
+  /** Stamp which credential (by fingerprint) the connector registration currently carries. */
+  setRegisteredCredentialFingerprint(userEmail: string, fingerprint: string): Promise<void>
 
   // ── dynamically registered OAuth clients (RFC 7591; see migrations/0010) ─────────
   /** Persist a client minted by POST /oauth/register. Only the SHA-256 hex of the secret is
