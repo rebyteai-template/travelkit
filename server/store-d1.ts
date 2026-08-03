@@ -77,6 +77,19 @@ export function createD1Store(db: D1Database): Store {
         .first<{ token: string }>()
       return row?.token ?? undefined
     },
+    async createOAuthClient(clientId, clientSecretHash, clientName) {
+      await db
+        .prepare(`INSERT INTO oauth_clients (client_id, client_secret_hash, client_name) VALUES (?, ?, ?)`)
+        .bind(clientId, clientSecretHash, clientName)
+        .run()
+    },
+    async getOAuthClientSecretHash(clientId) {
+      const row = await db
+        .prepare(`SELECT client_secret_hash FROM oauth_clients WHERE client_id = ?`)
+        .bind(clientId)
+        .first<{ client_secret_hash: string }>()
+      return row?.client_secret_hash ?? undefined
+    },
     async getAgentComputer(userEmail) {
       const row = await db
         .prepare(`SELECT ac_id AS id, sandbox_id AS sandboxId, token_hash AS tokenHash, seed_version AS seedVersion FROM agent_computers WHERE user_email = ?`)

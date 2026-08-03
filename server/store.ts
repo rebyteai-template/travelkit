@@ -101,6 +101,14 @@ export interface Store {
    *  write — a permanent loop with no alarm and no 5xx. Called only on the miss path. */
   probeCredentialStore(): Promise<void>
 
+  // ── dynamically registered OAuth clients (RFC 7591; see migrations/0010) ─────────
+  /** Persist a client minted by POST /oauth/register. Only the SHA-256 hex of the secret is
+   *  stored — the plaintext exists once, in the registration response, and never again. */
+  createOAuthClient(clientId: string, clientSecretHash: string, clientName: string): Promise<void>
+  /** The stored secret hash for a client id, or undefined for an unknown client. The token
+   *  endpoint folds "unknown id" and "wrong secret" into the same invalid_client. */
+  getOAuthClientSecretHash(clientId: string): Promise<string | undefined>
+
   getAgentComputer(userEmail: string): Promise<AgentComputerRow | undefined>
   /** Idempotent (INSERT OR IGNORE): first writer per email wins, losers no-op. */
   saveAgentComputer(userEmail: string, acId: string, sandboxId: string | null, tokenHash: string, seedVersion: string): Promise<void>

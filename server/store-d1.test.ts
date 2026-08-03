@@ -31,6 +31,7 @@ const ADD_LAST_SEEN = migration('0008_credential_observability.sql')
 const INIT_TABLES = migration('0001_init.sql')
 const MULTITENANT = migration('0002_multitenant.sql')
 const ROUTE_MODE = migration('0009_task_route_mode.sql')
+const OAUTH_CLIENTS = migration('0010_oauth_clients.sql')
 
 const TENANT = formatActor('ORG42', 'EMP10086')
 const ALICE = 'TK_alice'
@@ -191,4 +192,22 @@ test('route_mode: stamped at create and read back; pre-stamp rows read as the VM
   // '' = VM route — the booking gate only fires for an explicit 'mcp' stamp.
   db.prepare(`INSERT INTO tasks (id, project_id, user_email) VALUES (?, ?, ?)`).run('t-legacy', 'proj', TENANT)
   assert.equal((await store.getTask('t-legacy'))?.route_mode, '')
+})
+
+test('oauth_clients: the REAL SQL round-trips a hash, misses cleanly, and refuses a duplicate id', async () => {
+  const { store, db } = fixture([OAUTH_CLIENTS])
+
+  await store.createOAuthClient('tkc_abc', 'hash-of-secret', 'rebyte relay')
+  assert.equal(await store.getOAuthClientSecretHash('tkc_abc'), 'hash-of-secret')
+  assert.equal(await store.getOAuthClientSecretHash('tkc_missing'), undefined)
+
+  // client_id is the PRIMARY KEY: a re-register mints a NEW id (oauth.ts), never overwrites —
+  // silently replacing a hash would let a second registration hijack an existing client id.
+  await assert.rejects(() => store.createOAuthClient('tkc_abc', 'other-hash', ''), /UNIQUE|PRIMARY/i)
+  assert.equal(await store.getOAuthClientSecretHash('tkc_abc'), 'hash-of-secret')
+
+  // Only the hash is at rest — the plaintext secret never reaches this table.
+  const row = db.prepare(`SELECT * FROM oauth_clients WHERE client_id = ?`).get('tkc_abc') as Record<string, unknown>
+  assert.equal(row.client_secret_hash, 'hash-of-secret')
+  assert.ok(row.created_at, 'created_at defaults in SQLite')
 })

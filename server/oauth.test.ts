@@ -17,6 +17,7 @@ const RESOURCE = 'https://simplifly-mcp.impo.ai/mcp'
 const CLIENT_ID = 'rebyte-relay'
 const CLIENT_SECRET = 'c0ffee'.repeat(8)
 const SERVICE_TOKEN = 'service-' + 'ab'.repeat(16)
+const REGISTRATION_TOKEN = 'register-' + 'cd'.repeat(16)
 const ACTOR = formatActor('ORG42', 'EMP10086')
 const TOKEN = 'TK_the_employees_simplifly_token'
 
@@ -27,9 +28,11 @@ const SIGNING_KEY = JSON.stringify({ ...(await exportJWK(privateKey)), alg: 'ES2
  *  unreachable from these routes. `broken` simulates a storage plane that is up for reads and
  *  down for writes (an unapplied migration, a quota event) — the case the endpoint has to tell
  *  apart from "we have never seen this tenant". */
-type StoreFault = 'read' | 'write' | 'probe'
+type StoreFault = 'read' | 'write' | 'probe' | 'clients'
 function credentialStore(seed: Record<string, string> = {}, broken: StoreFault[] = []): Store {
   const rows = new Map(Object.entries(seed))
+  // client_id → SHA-256 hex of the secret, mirroring migrations/0010 (never the plaintext).
+  const clients = new Map<string, string>()
   const boom = (which: StoreFault) => {
     if (broken.includes(which)) throw new Error('D1_ERROR: no such table: tenant_credentials')
   }
@@ -44,6 +47,15 @@ function credentialStore(seed: Record<string, string> = {}, broken: StoreFault[]
     },
     async probeCredentialStore() {
       boom('probe')
+    },
+    async createOAuthClient(clientId: string, clientSecretHash: string) {
+      boom('clients')
+      if (clients.has(clientId)) throw new Error('UNIQUE constraint failed: oauth_clients.client_id')
+      clients.set(clientId, clientSecretHash)
+    },
+    async getOAuthClientSecretHash(clientId: string) {
+      boom('clients')
+      return clients.get(clientId)
     },
   } as unknown as Store
 }
@@ -73,6 +85,7 @@ function server(
     RELAY_CLIENT_ID: CLIENT_ID,
     RELAY_CLIENT_SECRET: CLIENT_SECRET,
     TRIPDESK_SERVICE_TOKEN: SERVICE_TOKEN,
+    OAUTH_REGISTRATION_TOKEN: REGISTRATION_TOKEN,
     ...env,
   } as unknown as OAuthEnv
   return {
@@ -90,6 +103,15 @@ function server(
     credential: (body: unknown, auth = `Bearer ${SERVICE_TOKEN}`) =>
       app.fetch(
         new Request(`${ISSUER}/internal/simplifly-credential`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(auth ? { Authorization: auth } : {}) },
+          body: JSON.stringify(body),
+        }),
+        bindings,
+      ),
+    register: (body: unknown, auth = `Bearer ${REGISTRATION_TOKEN}`) =>
+      app.fetch(
+        new Request(`${ISSUER}/oauth/register`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(auth ? { Authorization: auth } : {}) },
           body: JSON.stringify(body),
@@ -380,6 +402,7 @@ test('the AS answers 405 on its own paths — a GET probe must not read as a hea
   for (const [path, method, allow] of [
     ['/oauth/token', 'GET', 'POST'],
     ['/oauth/token', 'PUT', 'POST'],
+    ['/oauth/register', 'GET', 'POST'],
     ['/internal/simplifly-credential', 'GET', 'POST'],
     ['/.well-known/jwks.json', 'POST', 'GET, HEAD'],
     ['/.well-known/oauth-authorization-server', 'POST', 'GET, HEAD'],
@@ -400,7 +423,9 @@ test('unconfigured server fails closed with 5xx — never 400 (which would blame
   // the request's own origin — so *.workers.dev, a preview URL and the custom domain became three
   // different issuers, every minted token failed the resource server's literal `iss` check, and
   // the only symptom anywhere was an undifferentiated 401. Refuse to mint instead of guessing.
-  for (const missing of ['RELAY_CLIENT_SECRET', 'OAUTH_SIGNING_KEY', 'OAUTH_ISSUER'] as const) {
+  // RELAY_CLIENT_SECRET left this list with dynamic registration: an AS whose only clients are
+  // registered rows is fully configured without the static pair (covered below).
+  for (const missing of ['OAUTH_SIGNING_KEY', 'OAUTH_ISSUER'] as const) {
     const as = server({ [missing]: undefined })
     const res = await as.token(as.grant())
     assert.equal(res.status, 503, missing)
@@ -463,6 +488,103 @@ test('AS metadata declares what we support and, deliberately, no refresh grant',
   assert.deepEqual(meta.grant_types_supported, ['client_credentials'])
   assert.deepEqual(meta.token_endpoint_auth_methods_supported, ['client_secret_basic'])
   assert.equal(JSON.stringify(meta).includes('refresh_token'), false, 're-fetching costs what refreshing would')
+})
+
+// ── dynamic client registration (RFC 7591 — controlled) ─────────────────────────────────
+
+test('DCR CONTRACT: register with the initial access token, then mint with the returned client', async () => {
+  const as = server()
+  const reg = await as.register({ client_name: 'rebyte relay', grant_types: ['client_credentials'] })
+  assert.equal(reg.status, 201)
+  assert.equal(reg.headers.get('cache-control'), 'no-store')
+  const client = (await reg.json()) as Record<string, unknown>
+  assert.match(String(client.client_id), /^tkc_[0-9a-f]{32}$/)
+  assert.match(String(client.client_secret), /^[0-9a-f]{64}$/, 'hex — survives form-encoding (see formDecode)')
+  assert.equal(client.client_secret_expires_at, 0)
+  assert.deepEqual(client.grant_types, ['client_credentials'])
+  assert.equal(client.token_endpoint_auth_method, 'client_secret_basic')
+
+  // The minted client authenticates at the token endpoint exactly like the static one…
+  const res = await as.token(as.grant(), `Basic ${btoa(`${client.client_id}:${client.client_secret}`)}`)
+  assert.equal(res.status, 200)
+  const body = (await res.json()) as { access_token: string }
+  // …and its token passes the resource server verifier — the same end-to-end contract.
+  const { payload } = await verifyLikeResourceServer(as, body.access_token)
+  assert.equal(payload.sub, ACTOR)
+})
+
+test('registration is CONTROLLED: bad initial token → 401 then lockout; unset → 503, never open', async () => {
+  const as = server()
+  for (const auth of ['', 'Bearer wrong-token', `Basic ${btoa('a:b')}`]) {
+    const res = await as.register({ client_name: 'x' }, auth)
+    assert.equal(res.status, 401, auth || '<none>')
+  }
+  // A guesser runs out of budget: keep failing until the limiter answers 429.
+  let sawLockout = false
+  for (let i = 0; i < 20 && !sawLockout; i += 1) {
+    sawLockout = (await as.register({}, 'Bearer wrong-token')).status === 429
+  }
+  assert.ok(sawLockout, 'registration failures must be bounded, same as every other secret here')
+
+  const unset = server({ OAUTH_REGISTRATION_TOKEN: undefined })
+  const res = await unset.register({ client_name: 'x' })
+  assert.equal(res.status, 503, 'unconfigured fails closed — not "denied", and NEVER open registration')
+})
+
+test('registration refuses shapes this AS does not issue, rather than silently correcting them', async () => {
+  const as = server()
+  for (const [name, body] of [
+    ['authorization_code', { grant_types: ['authorization_code'] }],
+    ['mixed grants', { grant_types: ['client_credentials', 'refresh_token'] }],
+    ['redirect_uris', { redirect_uris: ['https://rp.example/cb'] }],
+    ['wrong auth method', { token_endpoint_auth_method: 'private_key_jwt' }],
+  ] as const) {
+    const res = await as.register(body)
+    assert.equal(res.status, 400, name)
+    assert.equal(((await res.json()) as { error: string }).error, 'invalid_client_metadata', name)
+  }
+})
+
+test('a registered client is stored as a HASH: wrong secret and unknown id collapse into 401', async () => {
+  const as = server()
+  const reg = await as.register({})
+  const client = (await reg.json()) as { client_id: string }
+  for (const auth of [
+    `Basic ${btoa(`${client.client_id}:not-the-secret`)}`,
+    `Basic ${btoa(`tkc_${'0'.repeat(32)}:whatever`)}`,
+  ]) {
+    const res = await as.token(as.grant(), auth)
+    assert.equal(res.status, 401, auth)
+    assert.equal(((await res.json()) as { error: string }).error, 'invalid_client')
+  }
+})
+
+test('an AS with ONLY dynamic clients is fully configured — the static pair is optional now', async () => {
+  const as = server({ RELAY_CLIENT_ID: undefined, RELAY_CLIENT_SECRET: undefined })
+  const reg = await as.register({ client_name: 'only client' })
+  assert.equal(reg.status, 201)
+  const client = (await reg.json()) as { client_id: string; client_secret: string }
+  const res = await as.token(as.grant(), `Basic ${btoa(`${client.client_id}:${client.client_secret}`)}`)
+  assert.equal(res.status, 200)
+  // …while the static credentials, which nothing configured, authenticate nobody.
+  assert.equal((await as.token(as.grant())).status, 401)
+})
+
+test('a broken client store at the token endpoint is a retryable 5xx, never invalid_client', async () => {
+  // invalid_client tells the operator "your id/secret is wrong" — about credentials that may be
+  // fine — while the real fault is OUR storage plane. Same band rule as the credential store.
+  const as = server({ RELAY_CLIENT_ID: undefined, RELAY_CLIENT_SECRET: undefined }, { [ACTOR]: TOKEN }, ['clients'])
+  const res = await as.token(as.grant(), `Basic ${btoa('tkc_x:y')}`)
+  assert.equal(res.status, 503)
+})
+
+test('discovery advertises registration only while it is usable', async () => {
+  const on = server()
+  const withReg = (await (await on.get('/.well-known/oauth-authorization-server')).json()) as Record<string, unknown>
+  assert.equal(withReg.registration_endpoint, `${ISSUER}/oauth/register`)
+  const off = server({ OAUTH_REGISTRATION_TOKEN: undefined })
+  const without = (await (await off.get('/.well-known/oauth-authorization-server')).json()) as Record<string, unknown>
+  assert.equal(without.registration_endpoint, undefined, 'discovery naming a permanent 503 is a dead path')
 })
 
 test('/internal/simplifly-credential: the service token gets the tenant\'s CURRENT token', async () => {

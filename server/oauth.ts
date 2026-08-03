@@ -4,6 +4,7 @@
  * /api/app/* embed middleware — these callers are machines, not iframes.
  *
  *   POST /oauth/token                    ← the rebyte relay (Basic client credentials)
+ *   POST /oauth/register                 ← an integrator with the initial access token (RFC 7591)
  *   POST /internal/simplifly-credential  ← our MCP resource server (service token)
  *   GET  /.well-known/jwks.json          ← public (the resource server verifies signatures)
  *   GET  /.well-known/oauth-authorization-server  ← public (RFC 8414 discovery)
@@ -46,6 +47,7 @@ import { SignJWT, importJWK, calculateJwkThumbprint, type JWK } from 'jose'
 import type { Store } from './store.ts'
 import { credentialFingerprint } from './tenant-credential.ts'
 import { callerKey, createFailureLimiter } from './rate-limit.ts'
+import { sha256Hex } from './digest.ts'
 
 /** The bindings this module reads. worker/env.ts's `Env` extends it. */
 export interface OAuthEnv {
@@ -60,10 +62,16 @@ export interface OAuthEnv {
   /** Comma-separated resource URIs we are willing to mint tokens for (RFC 8707). The first is
    *  the default when the client omits `resource`. Unset → DEFAULT_RESOURCE. */
   OAUTH_RESOURCES?: string
-  /** The one integrator's client credentials (`wrangler secret put RELAY_CLIENT_ID` /
-   *  `RELAY_CLIENT_SECRET`). One client → two secrets, not a clients table. */
+  /** The static integrator client (`wrangler secret put RELAY_CLIENT_ID` /
+   *  `RELAY_CLIENT_SECRET`). Predates dynamic registration and stays first-class: existing
+   *  registrations point at it. Dynamically registered clients live in `oauth_clients`
+   *  (migrations/0010) and authenticate at the same token endpoint. */
   RELAY_CLIENT_ID?: string
   RELAY_CLIENT_SECRET?: string
+  /** RFC 7591 §1.2 initial access token gating POST /oauth/register. Unset → that endpoint is
+   *  503 and discovery does not advertise it. NEVER optional in spirit: open registration would
+   *  hand out impersonation-grade credentials (see the endpoint's header comment). */
+  OAUTH_REGISTRATION_TOKEN?: string
   /** Service-to-service auth for /internal/simplifly-credential — NOT a user token. Must equal
    *  the resource server's `TRIPDESK_SERVICE_TOKEN`. */
   TRIPDESK_SERVICE_TOKEN?: string
@@ -185,6 +193,18 @@ function parseBearer(header: string | undefined): string | null {
   const match = /^Bearer\s+(.+)$/i.exec(header ?? '')
   return match?.[1]?.trim() || null
 }
+
+/** Hex random string. Hex on purpose: it is unchanged by form-encoding (see formDecode), so a
+ *  minted pair can never hit the `+`-in-secret trap documented there. */
+function randomHex(bytes: number): string {
+  const buf = crypto.getRandomValues(new Uint8Array(bytes))
+  return [...buf].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** SHA-256("") — the stand-in hash compared against when a client id is unknown, so that path
+ *  still performs one comparison and "unknown id" stays timing-indistinguishable from "wrong
+ *  secret". No real secret hashes to this: createOAuthClient never stores an empty secret. */
+const UNKNOWN_CLIENT_HASH = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
 
 // ── keys ────────────────────────────────────────────────────────────────────────────────
 type SigningKey = Awaited<ReturnType<typeof importJWK>>
@@ -370,6 +390,7 @@ export function authorizationServer<E extends OAuthEnv = OAuthEnv>(storeFor: (en
   // affect the relay, and vice versa). Per isolate — see server/rate-limit.ts on what that buys.
   const clientAuthLimiter = createFailureLimiter()
   const serviceAuthLimiter = createFailureLimiter()
+  const registrationAuthLimiter = createFailureLimiter()
 
   /** 429 for a caller that has spent its failure budget. Retryable everywhere downstream. */
   const tooManyFailures = (endpoint: string, caller: string, retryAfterS: number, error: string): Response => {
@@ -382,13 +403,16 @@ export function authorizationServer<E extends OAuthEnv = OAuthEnv>(storeFor: (en
     const env = c.env
     // OAUTH_ISSUER is as load-bearing as the signing key: minting under a GUESSED issuer produces
     // tokens the resource server rejects as forgeries, so refuse to mint rather than guess.
-    if (!env.RELAY_CLIENT_ID || !env.RELAY_CLIENT_SECRET || !env.OAUTH_SIGNING_KEY || !env.OAUTH_ISSUER) {
-      const missing = (['RELAY_CLIENT_ID', 'RELAY_CLIENT_SECRET', 'OAUTH_SIGNING_KEY', 'OAUTH_ISSUER'] as const)
+    // The static client pair is deliberately NOT in this required set any more: an AS whose only
+    // clients are dynamically registered (oauth_clients) is fully configured without it.
+    if (!env.OAUTH_SIGNING_KEY || !env.OAUTH_ISSUER) {
+      const missing = (['OAUTH_SIGNING_KEY', 'OAUTH_ISSUER'] as const)
         .filter((name) => !env[name])
         .join(', ')
       console.log(`[oauth] token endpoint is not configured: ${missing} unset`)
       return oauthError('server_error', 'authorization server is not configured', 503)
     }
+    const store = storeFor(env)
 
     // Client authentication first: an unauthenticated caller learns nothing about any actor.
     const caller = callerKey(c.req.raw.headers)
@@ -404,11 +428,36 @@ export function authorizationServer<E extends OAuthEnv = OAuthEnv>(storeFor: (en
       return oauthError('invalid_client', 'client authentication failed', 401, { 'WWW-Authenticate': 'Basic realm="tripdesk"' })
     }
     if (!basic) return invalidClient('no basic credentials')
-    // Both comparisons run before the verdict — `&&` on already-awaited booleans, so a wrong id
-    // and a wrong secret cost the same.
-    const idOk = await basicHalfMatches(basic.id, basic.decodedId, env.RELAY_CLIENT_ID)
-    const secretOk = await basicHalfMatches(basic.secret, basic.decodedSecret, env.RELAY_CLIENT_SECRET)
-    if (!(idOk && secretOk)) return invalidClient('credentials do not match')
+    // Two client classes, one verdict. Static integrator client first (both comparisons run
+    // before the `&&` — a wrong id and a wrong secret cost the same); on a miss, the dynamically
+    // registered clients (RFC 7591). A dynamic client's STORED value is the SHA-256 of its
+    // secret, so the presented secret is hashed and compared through the same constant-time
+    // helper — against UNKNOWN_CLIENT_HASH when the id is unknown, so "unknown id" and "wrong
+    // secret" cost the same too, and collapse into the same invalid_client.
+    let authenticated = false
+    if (env.RELAY_CLIENT_ID && env.RELAY_CLIENT_SECRET) {
+      const idOk = await basicHalfMatches(basic.id, basic.decodedId, env.RELAY_CLIENT_ID)
+      const secretOk = await basicHalfMatches(basic.secret, basic.decodedSecret, env.RELAY_CLIENT_SECRET)
+      authenticated = idOk && secretOk
+    }
+    if (!authenticated) {
+      let storedHash: string | undefined
+      try {
+        storedHash = await store.getOAuthClientSecretHash(basic.id)
+        if (storedHash === undefined && basic.decodedId !== basic.id) {
+          storedHash = await store.getOAuthClientSecretHash(basic.decodedId)
+        }
+      } catch (e) {
+        // Same rule as the credential lookups below: a storage failure is OURS — a retryable
+        // 5xx, never an invalid_client the relay would surface as "wrong id/secret".
+        console.log(`[oauth] client lookup FAILED endpoint=/oauth/token error=${(e as Error).message}`)
+        return oauthError('server_error', 'client store unavailable', 503)
+      }
+      const [rawHash, decodedHash] = await Promise.all([sha256Hex(basic.secret), sha256Hex(basic.decodedSecret)])
+      const secretHashOk = await basicHalfMatches(rawHash, decodedHash, storedHash ?? UNKNOWN_CLIENT_HASH)
+      authenticated = secretHashOk && storedHash !== undefined
+    }
+    if (!authenticated) return invalidClient('credentials do not match')
     clientAuthLimiter.clear(caller)
 
     const params = new URLSearchParams(await c.req.text())
@@ -447,7 +496,6 @@ export function authorizationServer<E extends OAuthEnv = OAuthEnv>(storeFor: (en
 
     // Gate on the credential existing HERE, not four hops later inside a tool call: the relay
     // needs the non-retryable answer while it can still turn it into "reopen the iframe".
-    const store = storeFor(env)
     let credential: string | undefined
     try {
       credential = await store.getTenantCredential(actor)
@@ -506,6 +554,96 @@ export function authorizationServer<E extends OAuthEnv = OAuthEnv>(storeFor: (en
   // the SPA catch-all in the composition root and answers `200 text/html` — a synthetic monitor
   // would call that healthy.
   as.all('/oauth/token', () => methodNotAllowed('POST'))
+
+  // ── ①′ dynamic client registration (RFC 7591 — controlled, never open) ────────────────
+  // What this buys: an integrator can onboard from the server URL ALONE — RFC 9728 names this
+  // issuer, RFC 8414 names this endpoint, this endpoint mints the client — instead of an
+  // operator hand-copying tokenEndpoint/clientId/clientSecret between two consoles.
+  // Why it is gated: in consent-based flows a registered client is untrusted until a human
+  // authorizes it, so open registration is harmless. HERE the grant is client_credentials over
+  // an arbitrary `actor` — the client credential IS the impersonation boundary — so registration
+  // requires the initial access token (RFC 7591 §1.2), same custody class as the client secrets
+  // it mints.
+  as.post('/oauth/register', async (c) => {
+    const env = c.env
+    if (!env.OAUTH_REGISTRATION_TOKEN) {
+      // Fail closed and 503, same rule as /internal: an unconfigured endpoint must not read as
+      // "registration denied" (a policy answer), and must never read as open registration.
+      console.log('[oauth] /oauth/register is not configured (OAUTH_REGISTRATION_TOKEN missing)')
+      return oauthError('server_error', 'dynamic registration is not configured', 503)
+    }
+
+    const caller = callerKey(c.req.raw.headers)
+    const locked = registrationAuthLimiter.check(caller)
+    if (locked.blocked) return tooManyFailures('/oauth/register', caller, locked.retryAfterS, 'invalid_client')
+
+    const presented = parseBearer(c.req.header('Authorization'))
+    if (!presented || !(await secretMatches(presented, env.OAUTH_REGISTRATION_TOKEN))) {
+      const after = registrationAuthLimiter.record(caller)
+      console.log(
+        `[oauth] registration authentication FAILED caller=${caller} reason=${presented ? 'token does not match' : 'no bearer token'} attempts=${after.hits}`,
+      )
+      return oauthError('invalid_client', 'invalid initial access token', 401, {
+        'WWW-Authenticate': 'Bearer realm="tripdesk-registration"',
+      })
+    }
+    registrationAuthLimiter.clear(caller)
+
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return oauthError('invalid_client_metadata', 'request body must be JSON', 400)
+    }
+    const meta = (body ?? {}) as Record<string, unknown>
+    // This AS mints identity assertions over client_credentials and nothing else, so the only
+    // negotiable metadata is the display name. A request for any other shape is REFUSED rather
+    // than silently corrected — a caller that asked for authorization_code and got back 201
+    // would believe it registered what it asked for, and fail four hops later.
+    const grantTypes = Array.isArray(meta.grant_types) ? meta.grant_types : ['client_credentials']
+    if (grantTypes.length !== 1 || grantTypes[0] !== 'client_credentials') {
+      return oauthError('invalid_client_metadata', 'only grant_types ["client_credentials"] is supported', 400)
+    }
+    if (meta.token_endpoint_auth_method !== undefined && meta.token_endpoint_auth_method !== 'client_secret_basic') {
+      return oauthError('invalid_client_metadata', 'only token_endpoint_auth_method "client_secret_basic" is supported', 400)
+    }
+    if (Array.isArray(meta.redirect_uris) && meta.redirect_uris.length > 0) {
+      return oauthError(
+        'invalid_client_metadata',
+        'redirect_uris belong to redirect-based grants; this server issues client_credentials only',
+        400,
+      )
+    }
+    const clientName = typeof meta.client_name === 'string' ? meta.client_name.slice(0, 128) : ''
+
+    const clientId = `tkc_${randomHex(16)}`
+    const clientSecret = randomHex(32)
+    try {
+      await storeFor(env).createOAuthClient(clientId, await sha256Hex(clientSecret), clientName)
+    } catch (e) {
+      console.log(`[oauth] client registration FAILED error=${(e as Error).message}`)
+      return oauthError('server_error', 'client store unavailable', 503)
+    }
+    // The id is loggable; the secret exists in plaintext exactly once — the response below.
+    console.log(`[oauth] client registered client_id=${clientId} name=${JSON.stringify(clientName)}`)
+    return json(
+      {
+        client_id: clientId,
+        client_secret: clientSecret,
+        client_id_issued_at: Math.floor(Date.now() / 1000),
+        // 0 = does not expire (RFC 7591). Rotation is: register a new client, move the
+        // integrator over, delete the row.
+        client_secret_expires_at: 0,
+        grant_types: ['client_credentials'],
+        token_endpoint_auth_method: 'client_secret_basic',
+        ...(clientName ? { client_name: clientName } : {}),
+      },
+      201,
+      NO_STORE,
+    )
+  })
+
+  as.all('/oauth/register', () => methodNotAllowed('POST'))
 
   // ── ② the actual credential ───────────────────────────────────────────────────────────
   // Service-authed, never user-authed: the caller is our MCP resource server, which has already
@@ -623,6 +761,11 @@ export function authorizationServer<E extends OAuthEnv = OAuthEnv>(storeFor: (en
         grant_types_supported: ['client_credentials'],
         response_types_supported: [],
         token_endpoint_auth_methods_supported: ['client_secret_basic'],
+        // Advertised only while the endpoint is usable (the initial access token is configured):
+        // discovery naming a permanent 503 would send every integrator down a dead path.
+        ...(c.env.OAUTH_REGISTRATION_TOKEN
+          ? { registration_endpoint: `${issuer}/oauth/register` }
+          : {}),
       },
       200,
       { 'Cache-Control': 'public, max-age=300' },
