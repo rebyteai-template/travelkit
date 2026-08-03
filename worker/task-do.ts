@@ -150,30 +150,29 @@ export class TaskDO extends DurableObject<Env> {
   /**
    * Which relay identity this turn speaks as.
    *
-   * MCP route: this employee's OWN headless account, whose flight connector carries their
-   * current Simplifly credential (PLAN §12) — that is what makes a tool call run as them
-   * rather than as the org. Every turn resolves it, not just the first: a follow-up
-   * appends to a task that account owns, and the org key would 404 on it.
+   * MCP route: this employee's OWN headless account, whose flight connector names them in
+   * a registered header (PLAN §12) — that is what makes a tool call run as them rather
+   * than as the org. Every turn resolves it, not just the first: a follow-up appends to a
+   * task that account owns, and the org key would 404 on it.
    *
-   * Everything else (and any misconfiguration) keeps the org key: FLIGHT_MCP_URL unset is
-   * how a deployment opts out, and no credential yet simply means we have nothing to
-   * register — in both cases the route still works exactly as it did before, which is what
-   * makes this reversible without a deploy.
+   * Their Simplifly credential is deliberately NOT part of this: the MCP server fetches it
+   * from us per call, so nothing here goes stale when they re-login.
+   *
+   * Everything else (and any misconfiguration) keeps the org key: leaving FLIGHT_MCP_URL /
+   * FLIGHT_MCP_TOKEN unset is how a deployment opts out, and the route then works exactly
+   * as it did before — which is what makes this reversible without a deploy.
    */
   private async turnConfig(t: TurnState): Promise<RebyteConfig> {
     const config = this.rebyteConfig()
     const mcpUrl = this.env.FLIGHT_MCP_URL
-    if (!mcpUrl || !t.userEmail) return config
+    const serviceToken = this.env.FLIGHT_MCP_TOKEN
+    if (!mcpUrl || !serviceToken || !t.userEmail) return config
     const routeMode = (await this.store.getTask(t.taskId))?.route_mode ?? ''
     if (routeMode !== 'mcp') return config
-    // The request's token when this turn carried one, else the row app.ts already wrote —
-    // the same value /internal/simplifly-credential would serve.
-    const credential = t.travelkitToken || (await this.store.getTenantCredential(t.userEmail)) || ''
-    if (!credential) return config
     try {
       const access = await ensureEmployeeMcpAccess(this.store, config, {
         tenant: t.userEmail,
-        credential,
+        serviceToken,
         mcpUrl,
       })
       return { apiUrl: config.apiUrl, apiKey: access.apiKey }

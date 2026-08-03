@@ -2,8 +2,8 @@
  * Per-employee account provisioning + connector registration (employee-account.ts).
  *
  * The relay is stubbed at `fetch`, because what matters here is exactly what we send it and
- * how many times: a second POST /accounts strands a live key, and a missing re-registration
- * leaves the connector holding a dead credential.
+ * how many times: a second POST /accounts strands a live key, and what the registration
+ * carries decides whether an employee's credential ends up copied into the relay at all.
  *
  * Run: node --import tsx --test server/rebyte/employee-account.test.ts
  */
@@ -17,7 +17,7 @@ import type { EmployeeAccount, Store } from '../store.ts'
 const TENANT = '51049:2041'
 const MCP_URL = 'https://simplifly-mcp.impo.ai/mcp'
 const CONFIG = { apiUrl: 'https://relay.test/v1', apiKey: 'rbk_partner' }
-const TOKEN = 'TK_the_employees_simplifly_token'
+const SERVICE_TOKEN = 'svc-shared-mcp-token'
 
 /** The three employee-account methods; the rest of Store is unreachable from this module. */
 function accountStore(seed?: EmployeeAccount): Store {
@@ -77,7 +77,7 @@ test('THE CONTRACT: first turn provisions the account and registers the connecto
   try {
     const access = await ensureEmployeeMcpAccess(store, CONFIG, {
       tenant: TENANT,
-      credential: TOKEN,
+      serviceToken: SERVICE_TOKEN,
       mcpUrl: MCP_URL,
     })
 
@@ -94,11 +94,13 @@ test('THE CONTRACT: first turn provisions the account and registers the connecto
     assert.equal(register.apiKey, access.apiKey)
     assert.notEqual(register.apiKey, 'rbk_partner')
 
-    // The employee's own credential rides as the connector secret, and the tenant goes in
-    // as a REGISTERED header — the resource server reads identity from there, and a value
-    // stored server-side is one no prompt can influence.
+    // A SHARED service token is the connector secret — the employee's own credential is
+    // deliberately absent, so nothing here goes stale when they re-login. Identity rides
+    // as a REGISTERED header: the resource server reads it from there (both for tenant
+    // isolation and to look their credential up), and a value stored server-side is one
+    // no prompt can influence.
     assert.equal(register.body.url, MCP_URL)
-    assert.equal(register.body.sharedSecret, TOKEN)
+    assert.equal(register.body.sharedSecret, SERVICE_TOKEN)
     assert.deepEqual(register.body.customHeaders, [
       { key: 'X-Tripdesk-Tenant', value: TENANT },
     ])
@@ -107,14 +109,14 @@ test('THE CONTRACT: first turn provisions the account and registers the connecto
   }
 })
 
-test('an unchanged credential re-registers NOTHING — each registration probes the server', async () => {
-  const fp = await credentialFingerprint(TOKEN)
+test('an unchanged service token re-registers NOTHING — each registration probes the server', async () => {
+  const fp = await credentialFingerprint(SERVICE_TOKEN)
   const store = accountStore({ accountId: 'acct_1', apiKey: 'rbk_acct_1', registeredCredentialFp: fp })
   const relay = stubRelay()
   try {
     const access = await ensureEmployeeMcpAccess(store, CONFIG, {
       tenant: TENANT,
-      credential: TOKEN,
+      serviceToken: SERVICE_TOKEN,
       mcpUrl: MCP_URL,
     })
     assert.equal(access.apiKey, 'rbk_acct_1')
@@ -124,24 +126,24 @@ test('an unchanged credential re-registers NOTHING — each registration probes 
   }
 })
 
-test('a ROTATED credential re-registers exactly once, and stamps the new fingerprint', async () => {
-  // The registration is a push: a rotation we fail to push leaves the connector holding a
-  // dead token, and the employee sits at 401020 with no way to recover.
+test('a ROTATED service token re-registers exactly once, and stamps the new fingerprint', async () => {
+  // Rotating the shared token has to reach every already-registered connector, or their
+  // calls start failing the resource server's check.
   const store = accountStore({
     accountId: 'acct_1',
     apiKey: 'rbk_acct_1',
-    registeredCredentialFp: await credentialFingerprint('TK_old'),
+    registeredCredentialFp: await credentialFingerprint('svc-old-token'),
   })
   const relay = stubRelay()
   try {
-    await ensureEmployeeMcpAccess(store, CONFIG, { tenant: TENANT, credential: TOKEN, mcpUrl: MCP_URL })
+    await ensureEmployeeMcpAccess(store, CONFIG, { tenant: TENANT, serviceToken: SERVICE_TOKEN, mcpUrl: MCP_URL })
     const registrations = relay.calls.filter((c) => c.url.endsWith('/mcp/servers'))
     assert.equal(registrations.length, 1)
-    assert.equal(registrations[0]?.body.sharedSecret, TOKEN)
+    assert.equal(registrations[0]?.body.sharedSecret, SERVICE_TOKEN)
     assert.equal(relay.calls.some((c) => c.url.endsWith('/accounts')), false, 'the account already exists')
 
     // …and the second turn is quiet again.
-    await ensureEmployeeMcpAccess(store, CONFIG, { tenant: TENANT, credential: TOKEN, mcpUrl: MCP_URL })
+    await ensureEmployeeMcpAccess(store, CONFIG, { tenant: TENANT, serviceToken: SERVICE_TOKEN, mcpUrl: MCP_URL })
     assert.equal(relay.calls.filter((c) => c.url.endsWith('/mcp/servers')).length, 1)
   } finally {
     relay.restore()
@@ -167,7 +169,7 @@ test('a concurrent provision uses the RECORDED account, not the orphan it just m
   try {
     const access = await ensureEmployeeMcpAccess(store, CONFIG, {
       tenant: TENANT,
-      credential: TOKEN,
+      serviceToken: SERVICE_TOKEN,
       mcpUrl: MCP_URL,
     })
     assert.equal(access.accountId, 'acct_winner')
@@ -187,7 +189,7 @@ test('a store that cannot record the account fails loudly instead of using a str
   const relay = stubRelay()
   try {
     await assert.rejects(
-      () => ensureEmployeeMcpAccess(store, CONFIG, { tenant: TENANT, credential: TOKEN, mcpUrl: MCP_URL }),
+      () => ensureEmployeeMcpAccess(store, CONFIG, { tenant: TENANT, serviceToken: SERVICE_TOKEN, mcpUrl: MCP_URL }),
       /could not be recorded/,
     )
     assert.equal(relay.calls.some((c) => c.url.endsWith('/mcp/servers')), false, 'nothing registered')
@@ -215,7 +217,7 @@ test('the account is recorded BEFORE the connector is registered', async () => {
     })
   }) as typeof fetch
   try {
-    await ensureEmployeeMcpAccess(store, CONFIG, { tenant: TENANT, credential: TOKEN, mcpUrl: MCP_URL })
+    await ensureEmployeeMcpAccess(store, CONFIG, { tenant: TENANT, serviceToken: SERVICE_TOKEN, mcpUrl: MCP_URL })
     assert.equal(recordedBeforeRegister, true)
   } finally {
     relay.restore()
@@ -232,7 +234,7 @@ test('a failed registration leaves the fingerprint unstamped, so the next turn r
     })) as typeof fetch
   try {
     await assert.rejects(() =>
-      ensureEmployeeMcpAccess(store, CONFIG, { tenant: TENANT, credential: TOKEN, mcpUrl: MCP_URL }),
+      ensureEmployeeMcpAccess(store, CONFIG, { tenant: TENANT, serviceToken: SERVICE_TOKEN, mcpUrl: MCP_URL }),
     )
     const row = await store.getEmployeeAccount(TENANT)
     assert.equal(row?.registeredCredentialFp, null, 'a stamp here would skip the retry forever')
@@ -248,12 +250,12 @@ test('the credential itself never appears in a log line — only its fingerprint
   const originalLog = console.log
   console.log = (...args: unknown[]) => void lines.push(args.map(String).join(' '))
   try {
-    await ensureEmployeeMcpAccess(store, CONFIG, { tenant: TENANT, credential: TOKEN, mcpUrl: MCP_URL })
+    await ensureEmployeeMcpAccess(store, CONFIG, { tenant: TENANT, serviceToken: SERVICE_TOKEN, mcpUrl: MCP_URL })
   } finally {
     console.log = originalLog
     relay.restore()
   }
-  const fingerprint = await credentialFingerprint(TOKEN)
-  assert.equal(lines.join(' ').includes(TOKEN), false)
+  const fingerprint = await credentialFingerprint(SERVICE_TOKEN)
+  assert.equal(lines.join(' ').includes(SERVICE_TOKEN), false)
   assert.ok(lines.some((l) => l.includes(fingerprint)))
 })
