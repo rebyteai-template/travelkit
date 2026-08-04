@@ -17,24 +17,25 @@ import {
 } from './booking.ts'
 
 /** 预订 button: names the plan in human terms (the chip renders from this), carries the
- *  planId for the skill, and sets the order of operations — collect passengers over
+ *  planId for the agent, and sets the order of operations — collect passengers over
  *  conversation FIRST (paste-friendly, minimum ask), only then re-verify, and never
  *  order unconfirmed. Passengers-before-verify keeps the 5-minute window covering just
- *  the confirmation. */
+ *  the confirmation. Wording is route-neutral business language: each route's own
+ *  contract (VM CLAUDE.md / MCP routing preamble) binds it to that route's toolchain. */
 export function buildRecommendBookPrompt(plan: RecommendationPlan): string {
   const dynamicFields = [...new Set(plan.ticketGroups.flatMap((group) => group.requiredPassengerInfos ?? []))]
   return [
     `我要预订${plan.label || '推荐方案'}（${planDisplayFacts(plan)}）。planId: ${plan.planId}。`,
     '请用一两行提示我提供最少信息（国内航线：每位乘机人 姓名+身份证号，联系人 手机号+邮箱；国际航线按护照另提示），不要表格、不要长清单；我会以任意格式发来（微信文案/表格粘贴/截图均可）。',
     dynamicFields.length ? `该票价另要求提供：${dynamicFields.join('、')}。` : '',
-    '收到信息后用 order-prepare 判定是否齐全：缺什么按 missing 一次性追问；齐了不要停下等我确认，直接执行下单前重新验价（recommend-book）并返回结构化结果，同一轮把推导出的字段（生日/性别等）与验价结果一起给我核对。唯一需要等我确认的是最后的下单确认；未经我明确确认不要创建订单。',
+    '收到信息后先判定下单材料是否齐全：缺什么按 missing 一次性追问；齐了不要停下等我确认，直接执行下单前重新验价并返回结构化结果，同一轮把推导出的字段（生日/性别等）与验价结果一起给我核对。唯一需要等我确认的是最后的下单确认；未经我明确确认不要创建订单。',
   ].filter(Boolean).join('')
 }
 
 /** Retry after a failed / expired pre-order re-verification: passengers are already in
  *  the conversation, only the verification re-runs. */
 export function buildRecommendBookRetryPrompt(planId: string): string {
-  return `请重新执行下单前重新验价（recommend-book，planId: ${planId}），返回结构化结果；未经我明确确认不要创建订单。`
+  return `请重新执行下单前重新验价（planId: ${planId}），返回结构化结果；未经我明确确认不要创建订单。`
 }
 
 /** The confirm-gate prompt: explicit confirmation of the verified facts (including the
@@ -46,7 +47,7 @@ export function buildPlanOrderConfirmPrompt(booking: PlanBooking): string {
     `我已确认创建订单：planId: ${booking.planId}，总额 ${flightMoney(total.amount, total.currency)}，共 ${booking.orderCount} 张订单。`,
     booking.splitOrder ? '分票组拆单出票我已知悉。' : '',
     booking.changed ? `验价后${planBookingChangeLabels(booking.changedFields)}的变化我已确认。` : '',
-    '请用对话中已收集的乘机人信息，按 recommend-book 结果逐票组执行 order-create（需 --confirm）；',
+    '请用对话中已收集的乘机人信息，按本次下单前验价的结果逐票组创建订单（带确认参数执行）；',
     '创建后不要自动支付；任何一单失败都要逐单如实报告。',
   ].filter(Boolean).join('')
 }
@@ -72,7 +73,8 @@ const OPERATOR_ACTION_RECOGNIZERS: Array<{ pattern: RegExp; label: (match: RegEx
     label: (match) => `预订${match[1]} · ${match[2]} · 先收集乘机人再验价`,
   },
   {
-    pattern: /^请重新执行下单前重新验价（recommend-book，planId: \S+）/,
+    // Current wording has no tool name; `recommend-book，` accepted for saved history.
+    pattern: /^请重新执行下单前重新验价（(?:recommend-book，)?planId: \S+）/,
     label: () => '重试下单前验价',
   },
   {

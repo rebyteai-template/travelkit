@@ -225,8 +225,8 @@ app.get('/tasks/:id/content', async (c) => {
       return { id: p.id, prompt: p.prompt, status: p.status, created_at: p.created_at, completed_at: p.completed_at, frames, attachments }
     }),
   )
-  // routeMode drives the UI booking gate: mcp-route sessions cannot book until the
-  // transaction tools land, and the gate must key off THIS session's stamp.
+  // routeMode is informational for the client (this session's stamp, not the live
+  // config). Booking runs on both routes; the former mcp-route UI booking gate is gone.
   return c.json({ task: { id: task.id, status: task.status, routeMode: task.route_mode ?? '' }, prompts })
 })
 

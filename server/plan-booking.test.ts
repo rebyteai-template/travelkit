@@ -339,18 +339,21 @@ test('a plan-booking turn does not erase the recommendation table', () => {
 
 // ── booking helpers ──────────────────────────────────────────────────────
 
-test('the booking prompt asks for the minimum, hands judging to order-prepare, and bans tables', () => {
+test('the booking prompt asks for the minimum, hands judging to the prepare step, and bans tables', () => {
   const prompt = buildRecommendBookPrompt(bookablePlan())
   assert.match(prompt, /^我要预订推荐方案 1（SHA→SIN、SIN→SHA MU567\/MU568，总价 ¥2,200）。planId: plan:abc。/)
   assert.match(prompt, /姓名\+身份证号/)
   assert.match(prompt, /手机号\+邮箱/)
   assert.match(prompt, /不要表格、不要长清单/)
   assert.match(prompt, /任意格式/)
-  assert.match(prompt, /order-prepare 判定是否齐全/)
+  assert.match(prompt, /判定下单材料是否齐全：缺什么按 missing 一次性追问/)
   assert.match(prompt, /与验价结果一起给我核对/)
   assert.match(prompt, /不要停下等我确认/)
-  assert.match(prompt, /重新验价（recommend-book）/)
+  assert.match(prompt, /执行下单前重新验价并返回结构化结果/)
   assert.match(prompt, /未经我明确确认不要创建订单/)
+  // Route-neutral wording: no executor command names — each route's own contract
+  // (VM CLAUDE.md / MCP preamble) binds the steps to its toolchain.
+  assert.doesNotMatch(prompt, /order-prepare|recommend-book|flight_/)
   assert.doesNotMatch(prompt, /该票价另要求/)
 
   // Per-fare API requirements fold into the same one-pass checklist.
@@ -362,7 +365,7 @@ test('the booking prompt asks for the minimum, hands judging to order-prepare, a
     /该票价另要求提供：travelDocumentExpireDate、travelDocumentIssuedPlace。/,
   )
 
-  assert.match(buildRecommendBookRetryPrompt('plan:abc'), /recommend-book，planId: plan:abc/)
+  assert.match(buildRecommendBookRetryPrompt('plan:abc'), /重新验价（planId: plan:abc）/)
 })
 
 test('per-fare required passenger fields pass through both envelopes and fail closed when malformed', () => {
@@ -401,7 +404,7 @@ test('the order-confirm prompt acknowledges split and change but carries no pass
   assert.match(prompt, /分票组拆单出票我已知悉/)
   assert.match(prompt, /价格的变化我已确认/)
   assert.match(prompt, /对话中已收集的乘机人信息/)
-  assert.match(prompt, /--confirm/)
+  assert.match(prompt, /带确认参数执行/)
   assert.match(prompt, /不要自动支付/)
   assert.doesNotMatch(prompt, /orderKey/i)
   assert.doesNotMatch(prompt, /证件号码|出生日期/)
@@ -413,6 +416,11 @@ test('button-built protocol prompts render as action chips, typed text does not'
     '预订推荐方案 1 · ¥2,200 · 先收集乘机人再验价',
   )
   assert.equal(recognizeOperatorAction(buildRecommendBookRetryPrompt('plan:abc')), '重试下单前验价')
+  // Saved history from the pre-neutral wording (explicit recommend-book) must keep its chip.
+  assert.equal(
+    recognizeOperatorAction('请重新执行下单前重新验价（recommend-book，planId: plan:abc），返回结构化结果；未经我明确确认不要创建订单。'),
+    '重试下单前验价',
+  )
   const booking = derive([promptWithToolResult(JSON.stringify(changedTwoGroupEnvelope()))]).planBooking as PlanBooking
   assert.equal(
     recognizeOperatorAction(buildPlanOrderConfirmPrompt(booking)),

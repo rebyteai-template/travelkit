@@ -836,7 +836,7 @@ export class TaskDO extends DurableObject<Env> {
           // Route comes from the task row's stamp (set once at POST /tasks), NOT from
           // cfg.routeMode: the config is "next new session" semantics and may have
           // flipped between intake and this first alarm — the stamp cannot lie, and it
-          // is the same value the UI booking gate reads.
+          // is the same value /content reports to the client.
           const routeMode = (await this.store.getTask(t.taskId))?.route_mode ?? ''
           let task: { id: string }
           if (routeMode === 'mcp') {
