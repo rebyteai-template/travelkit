@@ -398,8 +398,11 @@ export interface ChatBubble {
   promptId?: string
   /** One compact, collapsible run summary. Structured business results stay separate. */
   activity?: AgentActivityRun
-  /** Link back to this turn's raw rebyte run — an operator affordance, not chat content. */
-  runUrl?: string
+  /** This turn's raw rebyte run id, rendered as a copy affordance on the activity line so a
+   *  user/PM can hand it back to report a problem. NOT a link: on the MCP route the run is
+   *  owned by the employee's headless account, which the rebyte dashboard refuses to show —
+   *  the id is a debugging handle, not something to click through to. */
+  runId?: string
 }
 
 export type Stage = 'idle' | 'search' | 'verify' | 'recommendation' | 'order' | 'payment'
@@ -428,7 +431,7 @@ function isObj(v: unknown): v is Record<string, unknown> {
 function carriesPayload(b: ChatBubble): boolean {
   return Boolean(
     b.cards || b.fare || b.recommendations || b.planBooking
-    || b.attachments || b.question || b.activity || b.runUrl,
+    || b.attachments || b.question || b.activity,
   )
 }
 
@@ -1124,6 +1127,11 @@ export function derive(prompts: PromptContent[]): DerivedView {
     // which the SSE channel does not carry today — tightening that is its own change.
     const trustedOutputFiles = new Set<string>()
     let activityInserted = false
+    // This turn's rebyte run id and the activity bubble it will be stamped onto. Kept as a
+    // reference (not stamped at push time) because the __rebyte_run frame and the activity
+    // frames can arrive in either seq order — the id is attached once, after the loop.
+    let rebyteRunId: string | undefined
+    let activityBubble: ChatBubble | undefined
 
     for (const f of [...p.frames].sort((a, b) => a.seq - b.seq)) {
       const data = f.data
@@ -1134,13 +1142,14 @@ export function derive(prompts: PromptContent[]): DerivedView {
         && activityRun
         && activityRun.firstSeq <= f.seq
       ) {
-        chat.push({
+        activityBubble = {
           key: activityRun.id,
           role: 'assistant',
           text: '',
           activity: activityRun,
           ts: replyTs,
-        })
+        }
+        chat.push(activityBubble)
         activityInserted = true
       }
 
@@ -1174,11 +1183,11 @@ export function derive(prompts: PromptContent[]): DerivedView {
         continue
       }
 
-      // rebyte run link for this turn (emitted by the DO when the relay task starts).
-      // Operator affordance: the customer-visible progress is the activity summary, this
-      // is the way back to the raw run when a turn needs debugging.
+      // This turn's rebyte run id (emitted by the DO when the relay task starts). Captured,
+      // not rendered as its own bubble: it is stamped onto the activity summary below as a
+      // copy affordance — the way back to the raw run when a turn needs debugging.
       if (typeof data.__rebyte_run === 'string') {
-        chat.push({ key: `r-${p.id}-${f.seq}`, role: 'assistant', text: '', runUrl: `https://app.rebyte.ai/run/${data.__rebyte_run}` })
+        rebyteRunId = data.__rebyte_run
         continue
       }
 
@@ -1373,14 +1382,18 @@ export function derive(prompts: PromptContent[]): DerivedView {
     }
 
     if (activityRun && !activityInserted) {
-      chat.push({
+      activityBubble = {
         key: activityRun.id,
         role: 'assistant',
         text: '',
         activity: activityRun,
         ts: replyTs,
-      })
+      }
+      chat.push(activityBubble)
     }
+
+    // Stamp the run id onto the activity summary once both are known (either seq order).
+    if (activityBubble && rebyteRunId) activityBubble.runId = rebyteRunId
 
     // Domain cards render at the turn tail so a retry/ack text frame cannot consume them before the
     // real final answer arrives. Keep each compact search as its own table; merging multi-leg or

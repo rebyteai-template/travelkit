@@ -176,6 +176,20 @@ body {
   width: 14px; height: 16px; flex: 0 0 14px; font-size: 11px;
 }
 .agent-status.is-error .agent-status-mark { font-weight: 700; }
+/* Copy-run-id: quiet until the status row is hovered, so it stays a debugging affordance
+   rather than chat chrome. Keyboard focus reveals it too. */
+.run-id-copy {
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-left: 4px; padding: 2px; height: 18px; border: 0; border-radius: 4px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  opacity: 0; transition: opacity .12s ease, color .12s ease, background .12s ease;
+}
+.agent-status:hover .run-id-copy,
+.run-id-copy:focus-visible { opacity: .7; }
+.run-id-copy:hover { opacity: 1; color: var(--text); background: var(--surface-2, rgba(0,0,0,.05)); }
+.run-id-copied { font-size: 11px; color: var(--accent); white-space: nowrap; }
+/* When the copy has just happened, keep the confirmation visible regardless of hover. */
+.run-id-copy:has(.run-id-copied) { opacity: 1; }
 .agent-status-spinner {
   width: 12px; height: 12px; flex: 0 0 12px;
   border: 1.5px solid currentColor; border-top-color: transparent; border-radius: 50%;
