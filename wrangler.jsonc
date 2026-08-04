@@ -19,7 +19,16 @@
   // the AUD is public in the Access login redirect, the team domain is public.
   "vars": {
     "CF_ACCESS_TEAM_DOMAIN": "rebyte-admin.cloudflareaccess.com",
-    "CF_ACCESS_AUD": "4dfa774d1b2c8aeef189513c9129b12fbe9b099e1266177542eaf74d6003b98b"
+    "CF_ACCESS_AUD": "4dfa774d1b2c8aeef189513c9129b12fbe9b099e1266177542eaf74d6003b98b",
+
+    // Issuer of the delegated-credential assertions (server/oauth.ts). Not secret — it is
+    // published in /.well-known/oauth-authorization-server and lands in every token's `iss`.
+    // It MUST equal the MCP resource server's OAUTH_ISSUER character for character, and its
+    // /.well-known/jwks.json must be that server's OAUTH_JWKS_URL: a mismatch 401s every token
+    // with no diagnostic on either side. Declared HERE rather than left to the request origin —
+    // the origin silently makes *.workers.dev, a preview URL and the custom domain three
+    // different issuers. `wrangler dev` / the smoke script override it with --var.
+    "OAUTH_ISSUER": "https://tripdesk.impo.ai"
   },
 
   // Static SPA (vite build). SPA fallback serves index.html for client-side routes;

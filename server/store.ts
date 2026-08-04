@@ -17,6 +17,15 @@ export interface Task {
   relay_task_id: string | null
   user_email: string | null
   created_at: string
+  /** Route that created this session: '' = sandbox VM + skill, 'mcp' = MCP-direct.
+   *  Stamped once at creation from the global config (which is "next new session"
+   *  semantics) — this row is the per-session truth task-do and the UI gate read. */
+  route_mode: string
+  /** Which relay identity created this session's relay task: '' = the org key,
+   *  'employee' = that employee's own headless-account key (migrations/0012).
+   *  Stamped with relay_task_id and honored by EVERY later call: the relay
+   *  scopes a task to its creating account, so a call with the other key 404s. */
+  relay_auth: string
 }
 
 /** Lightweight conversation row for the per-user session list (sidebar). */
@@ -38,6 +47,17 @@ export interface AgentComputerRow {
    *  created before seed-version tracking. Drives the "skill changed → re-seed" check. */
   seedVersion: string | null
 }
+
+/** One employee's rebyte headless account (migrations/0011). `apiKey` is a live relay
+ *  credential whose only copy is that row — the relay returns it once, at creation. */
+export interface EmployeeAccount {
+  accountId: string
+  apiKey: string
+  /** Fingerprint of the Simplifly credential the connector registration currently carries;
+   *  null before the first registration. Never the credential itself. */
+  registeredCredentialFp: string | null
+}
+
 export interface Prompt {
   id: string
   task_id: string
@@ -61,12 +81,62 @@ export interface AttachmentMeta {
   contentType: string
 }
 
+/** routeMode 的唯一归一化：除 'mcp' 外一律折叠为 ''（VM 路径）。写入（debug config）
+ *  与读取打戳（POST /tasks）共用，存储值不可能漂移出这两种。 */
+export function normalizeRouteMode(raw: string | undefined): '' | 'mcp' {
+  return raw === 'mcp' ? 'mcp' : ''
+}
+
 export interface Store {
-  createTask(id: string, projectId: string, userEmail: string): Promise<void>
+  createTask(id: string, projectId: string, userEmail: string, routeMode: string): Promise<void>
   getTask(id: string): Promise<Task | undefined>
   listTasksByUser(userEmail: string): Promise<TaskSummary[]>
   setTaskStatus(id: string, status: string): Promise<void>
-  setTaskRelayId(id: string, relayTaskId: string): Promise<void>
+  /** Record the session's relay task AND the identity that created it, together:
+   *  one is useless without the other (see Task.relay_auth). */
+  setTaskRelayId(id: string, relayTaskId: string, relayAuth: string): Promise<void>
+
+  // ── the tenant's current Simplifly credential (see migrations/0007 + 0008) ────────
+  /** Overwrite this tenant's current travelkit/Simplifly token. Called on EVERY request carrying
+   *  one — the token rides on each one, it IS the caller's credential — so a re-login refreshes it
+   *  without anything scheduled. Writing the same value again is not a no-op: it bumps
+   *  `last_seen_at` (liveness) while leaving `updated_at` (last rotation) alone.
+   *  Go through persistTenantCredential (server/tenant-credential.ts) rather than calling this
+   *  directly: it carries the audit line. Nothing may gate this write on the value being written —
+   *  that module explains why a single refused write strands the employee permanently. */
+  saveTenantCredential(userEmail: string, token: string): Promise<void>
+  /** The last token received for this tenant, or undefined if we have never seen one. There is
+   *  no validity check to make: the token carries no `exp`. Read by the delegated-credential
+   *  endpoints (server/oauth.ts) and by nothing else. */
+  getTenantCredential(userEmail: string): Promise<string | undefined>
+  /** Prove the credential store can still be WRITTEN, by writing. Rejects if it cannot.
+   *
+   *  This exists because `getTenantCredential` returning nothing is ambiguous, and the two
+   *  meanings need opposite answers: "we have never seen this tenant" is a legitimate,
+   *  non-retryable `400 invalid_grant` ("reopen FlyAI"), while "the write plane is down" (an
+   *  unapplied migration, a quota event) must be a RETRYABLE 5xx. Answering 400 in the second
+   *  case tells every employee to reopen the iframe, and reopening re-runs the same failing
+   *  write — a permanent loop with no alarm and no 5xx. Called only on the miss path. */
+  probeCredentialStore(): Promise<void>
+
+  // ── per-employee rebyte headless account (see migrations/0011) ───────────────────
+  /** This employee's account + relay key, or undefined if they have never had one. */
+  getEmployeeAccount(userEmail: string): Promise<EmployeeAccount | undefined>
+  /** Record a freshly provisioned account. First writer wins (INSERT OR IGNORE): two
+   *  concurrent first turns must not leave the second account orphaned AND unrecorded —
+   *  the loser's account is abandoned, which is recoverable, while overwriting the row
+   *  would strand a key that is stored nowhere else. */
+  saveEmployeeAccount(userEmail: string, accountId: string, apiKey: string): Promise<void>
+  /** Stamp which credential (by fingerprint) the connector registration currently carries. */
+  setRegisteredCredentialFingerprint(userEmail: string, fingerprint: string): Promise<void>
+
+  // ── dynamically registered OAuth clients (RFC 7591; see migrations/0010) ─────────
+  /** Persist a client minted by POST /oauth/register. Only the SHA-256 hex of the secret is
+   *  stored — the plaintext exists once, in the registration response, and never again. */
+  createOAuthClient(clientId: string, clientSecretHash: string, clientName: string): Promise<void>
+  /** The stored secret hash for a client id, or undefined for an unknown client. The token
+   *  endpoint folds "unknown id" and "wrong secret" into the same invalid_client. */
+  getOAuthClientSecretHash(clientId: string): Promise<string | undefined>
 
   getAgentComputer(userEmail: string): Promise<AgentComputerRow | undefined>
   /** Idempotent (INSERT OR IGNORE): first writer per email wins, losers no-op. */
@@ -84,10 +154,13 @@ export interface Store {
   /** The single global config (skill-ref + manager-prompt overrides) shared by every user's
    *  sessions — NOT per-user. Read on each first turn; written only by the admin panel. Empty
    *  string = use the built-in default (worker/skill-ref.ts SKILL_REF / agent-config.ts
-   *  AGENT_INSTRUCTIONS). Stored in the `kv` table. */
-  getConfig(): Promise<{ skillRef: string; systemPrompt: string }>
+   *  AGENT_INSTRUCTIONS). Stored in the `kv` table.
+   *  `routeMode`：存储值只有 '' 与 'mcp' 两种（normalizeRouteMode 是唯一归一化点）：
+   *  '' = 沙箱 VM + skill（现状路径）；'mcp' = 首轮不建 VM，manager 直接调
+   *  flight MCP 工具（task-do.ts 的 mcp 分支）。 */
+  getConfig(): Promise<{ skillRef: string; systemPrompt: string; routeMode: string }>
   /** Upsert the global config — only the provided fields are written. Admin-gated at the route. */
-  setConfig(patch: { skillRef?: string; systemPrompt?: string }): Promise<void>
+  setConfig(patch: { skillRef?: string; systemPrompt?: string; routeMode?: string }): Promise<void>
 
   createPrompt(id: string, taskId: string, prompt: string): Promise<void>
   getPrompt(id: string): Promise<Prompt | undefined>

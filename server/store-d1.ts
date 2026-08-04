@@ -10,12 +10,16 @@
  */
 import type { Store, Task, Prompt, TaskSummary, AgentComputerRow, AttachmentMeta } from './store.ts'
 
+/** Reserved `tenant_credentials` key for the write-plane probe. Deliberately colon-free: a tenant
+ *  key is always `<org>:<uid>`, so this row is unreachable through any tenant lookup. */
+export const CREDENTIAL_PROBE_KEY = '__write_probe__'
+
 export function createD1Store(db: D1Database): Store {
   return {
-    async createTask(id, projectId, userEmail) {
+    async createTask(id, projectId, userEmail, routeMode) {
       await db
-        .prepare(`INSERT INTO tasks (id, project_id, user_email) VALUES (?, ?, ?)`)
-        .bind(id, projectId, userEmail)
+        .prepare(`INSERT INTO tasks (id, project_id, user_email, route_mode) VALUES (?, ?, ?, ?)`)
+        .bind(id, projectId, userEmail, routeMode)
         .run()
     },
     async getTask(id) {
@@ -32,6 +36,89 @@ export function createD1Store(db: D1Database): Store {
         .bind(userEmail)
         .all<TaskSummary>()
       return results
+    },
+    async saveTenantCredential(userEmail, token) {
+      // Two timestamps, two questions (migrations/0008):
+      //   updated_at   moves only when the VALUE changes → "when did this employee last re-login"
+      //   last_seen_at moves on every accepted intake    → "is this tenant still alive"
+      // The old guarded upsert wrote zero rows in the common case, which made an abandoned row
+      // indistinguishable from a live one — the observability gate in PLAN §6 needs both.
+      await db
+        .prepare(
+          `INSERT INTO tenant_credentials (user_email, token, updated_at, last_seen_at)
+             VALUES (?, ?, datetime('now'), datetime('now'))
+           ON CONFLICT(user_email) DO UPDATE SET
+             token = excluded.token,
+             updated_at = CASE WHEN tenant_credentials.token <> excluded.token
+                               THEN excluded.updated_at ELSE tenant_credentials.updated_at END,
+             last_seen_at = excluded.last_seen_at`,
+        )
+        .bind(userEmail, token)
+        .run()
+    },
+    async probeCredentialStore() {
+      // A real WRITE, because that is the plane whose failure we have to detect — a SELECT would
+      // still succeed against a read replica while writes are refused, and it would not notice a
+      // missing column. Touches one reserved row: PROBE_KEY has no `:`, and every tenant key is
+      // `<org>:<uid>` (formatActor), so it can never collide with, or be read back as, a tenant.
+      await db
+        .prepare(
+          `INSERT INTO tenant_credentials (user_email, token, updated_at, last_seen_at)
+             VALUES (?, '', datetime('now'), datetime('now'))
+           ON CONFLICT(user_email) DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+        )
+        .bind(CREDENTIAL_PROBE_KEY)
+        .run()
+    },
+    async getTenantCredential(userEmail) {
+      const row = await db
+        .prepare(`SELECT token FROM tenant_credentials WHERE user_email = ?`)
+        .bind(userEmail)
+        .first<{ token: string }>()
+      return row?.token ?? undefined
+    },
+    async getEmployeeAccount(userEmail) {
+      const row = await db
+        .prepare(
+          `SELECT account_id AS accountId, api_key AS apiKey,
+                  registered_credential_fp AS registeredCredentialFp
+             FROM employee_accounts WHERE user_email = ?`,
+        )
+        .bind(userEmail)
+        .first<{ accountId: string; apiKey: string; registeredCredentialFp: string | null }>()
+      return row ?? undefined
+    },
+    async saveEmployeeAccount(userEmail, accountId, apiKey) {
+      // INSERT OR IGNORE, not an upsert: this row is the only copy of `apiKey`, so a
+      // second concurrent provision must abandon its own account rather than overwrite
+      // (and permanently strand) the one already recorded.
+      await db
+        .prepare(`INSERT OR IGNORE INTO employee_accounts (user_email, account_id, api_key) VALUES (?, ?, ?)`)
+        .bind(userEmail, accountId, apiKey)
+        .run()
+    },
+    async setRegisteredCredentialFingerprint(userEmail, fingerprint) {
+      await db
+        .prepare(
+          `UPDATE employee_accounts
+              SET registered_credential_fp = ?, updated_at = datetime('now')
+            WHERE user_email = ?`,
+        )
+        .bind(fingerprint, userEmail)
+        .run()
+    },
+    async createOAuthClient(clientId, clientSecretHash, clientName) {
+      await db
+        .prepare(`INSERT INTO oauth_clients (client_id, client_secret_hash, client_name) VALUES (?, ?, ?)`)
+        .bind(clientId, clientSecretHash, clientName)
+        .run()
+    },
+    async getOAuthClientSecretHash(clientId) {
+      const row = await db
+        .prepare(`SELECT client_secret_hash FROM oauth_clients WHERE client_id = ?`)
+        .bind(clientId)
+        .first<{ client_secret_hash: string }>()
+      return row?.client_secret_hash ?? undefined
     },
     async getAgentComputer(userEmail) {
       const row = await db
@@ -74,16 +161,21 @@ export function createD1Store(db: D1Database): Store {
     // ── global debug config (single shared row set; keys in the kv table) ──
     async getConfig() {
       const { results } = await db
-        .prepare(`SELECT k, v FROM kv WHERE k IN ('cfg_skill_ref', 'cfg_system_prompt')`)
+        .prepare(`SELECT k, v FROM kv WHERE k IN ('cfg_skill_ref', 'cfg_system_prompt', 'cfg_route_mode')`)
         .all<{ k: string; v: string }>()
       const m = new Map(results.map((r) => [r.k, r.v]))
-      return { skillRef: m.get('cfg_skill_ref') ?? '', systemPrompt: m.get('cfg_system_prompt') ?? '' }
+      return {
+        skillRef: m.get('cfg_skill_ref') ?? '',
+        systemPrompt: m.get('cfg_system_prompt') ?? '',
+        routeMode: m.get('cfg_route_mode') ?? '',
+      }
     },
     async setConfig(patch) {
       // Upsert only the provided keys (k is PK). Empty string is a valid stored value = "use default".
       const rows: Array<[string, string]> = []
       if (patch.skillRef !== undefined) rows.push(['cfg_skill_ref', patch.skillRef])
       if (patch.systemPrompt !== undefined) rows.push(['cfg_system_prompt', patch.systemPrompt])
+      if (patch.routeMode !== undefined) rows.push(['cfg_route_mode', patch.routeMode])
       if (!rows.length) return
       // One atomic batched round-trip (both keys commit together or neither) instead of N sequential.
       const stmt = db.prepare(`INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`)
@@ -92,8 +184,11 @@ export function createD1Store(db: D1Database): Store {
     async setTaskStatus(id, status) {
       await db.prepare(`UPDATE tasks SET status = ? WHERE id = ?`).bind(status, id).run()
     },
-    async setTaskRelayId(id, relayTaskId) {
-      await db.prepare(`UPDATE tasks SET relay_task_id = ? WHERE id = ?`).bind(relayTaskId, id).run()
+    async setTaskRelayId(id, relayTaskId, relayAuth) {
+      await db
+        .prepare(`UPDATE tasks SET relay_task_id = ?, relay_auth = ? WHERE id = ?`)
+        .bind(relayTaskId, relayAuth, id)
+        .run()
     },
 
     async createPrompt(id, taskId, prompt) {

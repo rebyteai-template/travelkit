@@ -42,12 +42,39 @@ function OverrideField(props: {
  *  clobbering in-progress edits, and after a save the echoed values match, so no re-seed is needed. */
 function ConfigForm({ data }: { data: DebugConfig }) {
   const save = useSaveDebugConfig()
-  const [form, setForm] = useState(() => ({ skillRef: data.skillRef, systemPrompt: data.systemPrompt }))
+  const [form, setForm] = useState(() => ({ skillRef: data.skillRef, systemPrompt: data.systemPrompt, routeMode: data.routeMode }))
   const admin = data.isAdmin
-  const dirty = form.skillRef !== data.skillRef || form.systemPrompt !== data.systemPrompt
+  const dirty = form.skillRef !== data.skillRef || form.systemPrompt !== data.systemPrompt || form.routeMode !== data.routeMode
+  const mcpDirect = form.routeMode === 'mcp'
 
   return (
     <>
+      <div className="debug-label">机票路由</div>
+      <div className="debug-actions">
+        <button
+          className={mcpDirect ? 'debug-ghost' : 'debug-btn'}
+          onClick={() => setForm({ ...form, routeMode: '' })}
+          disabled={!admin}
+        >
+          沙箱 VM + Skill
+        </button>
+        <button
+          className={mcpDirect ? 'debug-btn' : 'debug-ghost'}
+          onClick={() => setForm({ ...form, routeMode: 'mcp' })}
+          disabled={!admin}
+        >
+          直连 MCP 工具
+        </button>
+      </div>
+      <p className="debug-hint">
+        {mcpDirect
+          ? '直连：首轮不开 VM，manager 直接调 flight_recommend / flight_recommendation_get（路由约定随首轮 prompt 下发）。'
+          : '现状路径：首轮开每租户沙箱 VM 并安装 skill，机票委派沙箱执行。'}
+        {' '}所有 OP 共用，<b>下个新会话</b>生效。
+      </p>
+
+      <div className="debug-sep" />
+
       <OverrideField
         id="skill-ref"
         label="Skill GitHub 地址"

@@ -3,8 +3,13 @@
  * Durable Object. The per-user Simplifly/travelkit token is NOT a binding here — it arrives
  * at runtime from the iframe handoff and is written into each sandbox VM's seeded
  * .claude/settings.json `env` (by the bootstrap); the bindings only need the rebyte relay key.
+ *
+ * The delegated-credential secrets (signing key, relay client credentials, service token) are
+ * declared on `OAuthEnv` in server/oauth.ts, next to the endpoints that read them.
  */
-export interface Env {
+import type { OAuthEnv } from '../server/oauth.ts'
+
+export interface Env extends OAuthEnv {
   /** D1 database (tasks/prompts/frames + kv). */
   DB: D1Database
   /** Durable Object namespace for the per-task runner. */
@@ -15,6 +20,17 @@ export interface Env {
   REBYTE_API_KEY: string
   /** rebyte relay base; defaults to https://api.rebyte.ai/v1 when unset. */
   REBYTE_API_URL?: string
+  /** The flight MCP server's URL, registered as each employee's own connector on the MCP
+   *  route (PLAN §12). Setting it (with FLIGHT_MCP_TOKEN) turns per-employee accounts ON;
+   *  unset keeps every task on the org key exactly as before, which is the deploy-free way
+   *  back out. Must match the resource server's canonical URL byte for byte. */
+  FLIGHT_MCP_URL?: string
+  /** The SHARED service token the flight MCP server accepts (one of its MCP_TOKENS). It
+   *  goes into the connector registration and proves "our relay is calling" — it is not
+   *  anyone's credential. The employee's Simplifly token stays here and is served to the
+   *  MCP server per call (/internal/simplifly-credential), so nothing stored in the relay
+   *  can go stale. */
+  FLIGHT_MCP_TOKEN?: string
   /** Shared embed gate key (secret: `wrangler secret put EMBED_KEY`). When set, every
    *  /api/app/* call must present it (X-Embed-Key header or ?k= query) or gets 401 — stops
    *  strangers who only know the domain from spinning sandboxes. Unset → gate disabled. */

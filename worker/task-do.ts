@@ -32,9 +32,12 @@ import { isObj, parseSSE } from '../server/rebyte/sse.ts'
 import { rebyteJSON, rebyteFetch, RebyteError, type RebyteConfig, type FileRef } from '../server/rebyte/client.ts'
 import { provisionComputer, seedSandbox, writeClaudeMd, removeStaleArtifacts, applyCredential, SEED_VERSION, type ProvisionedComputer } from './seed.ts'
 import { SKILL_REF, toSkillRef } from './skill-ref.ts'
+import { MCP_ROUTING_PREAMBLE } from './vm-system-prompt.ts'
 import { ensureAgentConfig } from '../server/rebyte/agent-config.ts'
+import { ensureEmployeeMcpAccess } from '../server/rebyte/employee-account.ts'
 import { shouldDrainTerminal, shouldRetryWindowError, turnExpired, TERMINAL_STATUSES } from './turn-finalize.ts'
 import { framesHaveAnswerText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
+import { sha256Hex } from '../server/digest.ts'
 import {
   isUserQuestionAnswer,
   parseUserQuestionRequest,
@@ -52,9 +55,13 @@ const WINDOW_MS = 20_000 // per-alarm streaming window — short enough to never
 const DEFAULT_API_URL = 'https://api.rebyte.ai/v1'
 const TERMINAL = TERMINAL_STATUSES
 
-/** Relay event envelope (live /events + /content?include=events): {seq,eventType,payload}. */
+/** Relay event envelope (live /events + /content?include=events): {seq,eventType,payload}.
+ *  `eventKey` is the event's stable identity across relay re-synthesis; when present it —
+ *  not seq — is the dedupe key (the relay renumbers seq when a late-visible row inserts
+ *  mid-timeline, so a numeric watermark drops renumbered events). */
 interface RelayEvent {
   seq?: number
+  eventKey?: string
   eventType?: string
   payload?: Record<string, unknown>
 }
@@ -97,6 +104,10 @@ interface TurnState extends TranslationState {
    *  Guards a retried alarm from double-submitting after a window/eviction. */
   submitted: boolean
   lastRelaySeq: number
+  /** Relay eventKeys already translated this turn (persisted with the turn, so a
+   *  reconnect replay — which renumbers seq — can never re-emit or drop one).
+   *  Absent on turns started before this field existed → seq-gate fallback. */
+  seenEventKeys?: Record<string, 1>
   /** Assistant text streamed since the LAST tool_use — i.e. "the answer has arrived".
    *  Reset when a tool_use streams: an opening ack before the delegation must not
    *  count, or the terminal-drain guard is skipped and the turn's whole tail (the
@@ -124,12 +135,6 @@ interface TurnState extends TranslationState {
    *  the human wait does not consume the execution deadline. */
 }
 
-/** Hex sha256 — lets us detect a rotated travelkit token without storing the raw token. */
-async function sha256Hex(s: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s))
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
-}
-
 interface CachedAgentComputer {
   id: string
   sandboxId?: string
@@ -140,6 +145,89 @@ export class TaskDO extends DurableObject<Env> {
 
   private rebyteConfig(): RebyteConfig {
     return { apiUrl: this.env.REBYTE_API_URL ?? DEFAULT_API_URL, apiKey: this.env.REBYTE_API_KEY }
+  }
+
+  /**
+   * Which relay identity this turn speaks as — decided ONCE per session.
+   *
+   * MCP route, first turn: this employee's OWN headless account, whose flight connector
+   * names them in a registered header (PLAN §12) — that is what makes a tool call run as
+   * them rather than as the org. The choice is returned as `relayAuth` so the caller can
+   * stamp it onto the task row NEXT TO relay_task_id.
+   *
+   * Every later turn honors the STAMP, never the live environment: the relay scopes a
+   * task to the account that created it, so a call with the other key 404s. Re-deciding
+   * per turn breaks live sessions at exactly the moments that matter — enabling
+   * FLIGHT_MCP_* (org-created sessions would suddenly resolve the employee key),
+   * disabling it (the reverse), or a first-turn provisioning failure that later heals.
+   *
+   * The employee's Simplifly credential is deliberately NOT part of any of this: the MCP
+   * server fetches it from us per call, so nothing here goes stale when they re-login.
+   *
+   * First-turn fallbacks keep the org key (and stamp ''): FLIGHT_MCP_URL/TOKEN unset is
+   * how a deployment opts out, and a provisioning failure must not take the turn down —
+   * the agent just reaches whatever the org registered. Both are honest because nothing
+   * has been created under the other identity yet.
+   */
+  private async turnConfig(t: TurnState): Promise<{ config: RebyteConfig; relayAuth: '' | 'employee' }> {
+    const base = this.rebyteConfig()
+    const task = await this.store.getTask(t.taskId)
+
+    // Follow-up turn (the session's relay task exists): the stamp is the identity.
+    if (task?.relay_task_id) {
+      if (task.relay_auth === 'employee' && task.user_email) {
+        const account = await this.store.getEmployeeAccount(task.user_email)
+        if (account) {
+          return { config: { apiUrl: base.apiUrl, apiKey: account.apiKey }, relayAuth: 'employee' }
+        }
+        // The account row is gone but the relay task belongs to it. The org key will 404
+        // on every call — say so loudly rather than pretend the fallback can work.
+        console.log(`[employee-account] MISSING account row for stamped session tenant=${task.user_email}`)
+      }
+      return { config: base, relayAuth: task.relay_auth === 'employee' ? 'employee' : '' }
+    }
+
+    // First turn: decide.
+    const mcpUrl = this.env.FLIGHT_MCP_URL
+    const serviceToken = this.env.FLIGHT_MCP_TOKEN
+    if (!mcpUrl || !serviceToken || !t.userEmail) return { config: base, relayAuth: '' }
+    if ((task?.route_mode ?? '') !== 'mcp') return { config: base, relayAuth: '' }
+    try {
+      const access = await ensureEmployeeMcpAccess(this.store, base, {
+        tenant: t.userEmail,
+        serviceToken,
+        mcpUrl,
+      })
+      return { config: { apiUrl: base.apiUrl, apiKey: access.apiKey }, relayAuth: 'employee' }
+    } catch (e) {
+      console.log(`[employee-account] FAILED tenant=${t.userEmail} error=${(e as Error).message}`)
+      return { config: base, relayAuth: '' }
+    }
+  }
+
+  /**
+   * The stamped identity for out-of-turn relay calls (answer / cancel / recovery /
+   * sub-prompt replay), keyed off the prompt because every caller has one. Read-only:
+   * never provisions, never re-decides. Falls back to the org key only when the stamp
+   * says org — a missing account row on an employee-stamped session is logged, because
+   * the org key can only 404 there and the caller's catch would otherwise eat it silently.
+   */
+  private async promptAuthConfig(promptId: string): Promise<RebyteConfig> {
+    const base = this.rebyteConfig()
+    try {
+      const prompt = await this.store.getPrompt(promptId)
+      const task = prompt ? await this.store.getTask(prompt.task_id) : undefined
+      if (task?.relay_auth !== 'employee' || !task.user_email) return base
+      const account = await this.store.getEmployeeAccount(task.user_email)
+      if (!account) {
+        console.log(`[employee-account] MISSING account row for stamped session tenant=${task.user_email}`)
+        return base
+      }
+      return { apiUrl: base.apiUrl, apiKey: account.apiKey }
+    } catch (e) {
+      console.log(`[employee-account] identity lookup failed promptId=${promptId} error=${(e as Error).message}`)
+      return base
+    }
   }
 
   // ── frame emission (durable seq from D1 so resumed ticks never collide) ──
@@ -304,7 +392,9 @@ export class TaskDO extends DurableObject<Env> {
     if (!t.relayTaskId) return
     const data = await rebyteJSON<{ events?: RelayEvent[] }>(
       `/tasks/${t.relayTaskId}/prompts/${subPromptId}/events`,
-      { config: this.rebyteConfig() },
+      // The STAMPED identity, not the org key: on an employee-created session the org key
+      // 404s, this catch eats it, and the sub-session's tool frames silently never render.
+      { config: await this.promptAuthConfig(t.promptId) },
     ).catch(() => null)
     if (!data?.events) return
     const durableStart = await this.store.getSubPromptCursor(t.promptId, subPromptId)
@@ -495,7 +585,9 @@ export class TaskDO extends DurableObject<Env> {
           actionId,
           answer: answer as UserQuestionAnswer,
         }),
-        config: this.rebyteConfig(),
+        // Stamped identity: with the org key an employee-created session's answer 404s and
+        // the throw below surfaces it as an error on a question the user just answered.
+        config: await this.promptAuthConfig(t.promptId),
       })
     } catch (error) {
       // If the relay accepted the answer but its response was lost, a retry sees
@@ -615,7 +707,9 @@ export class TaskDO extends DurableObject<Env> {
       const content = await rebyteJSON<{
         prompts?: Array<{ response?: string; events?: RelayEvent[] }>
       }>(`/tasks/${relayTaskId}/content?include=events`, {
-        config: this.rebyteConfig(),
+        // Stamped identity — recovery on an employee-created session 404s with the org key
+        // and this catch turns it into "nothing to recover".
+        config: await this.promptAuthConfig(promptId),
       }).catch(() => null)
       const relayPrompts = content?.prompts
       if (Array.isArray(relayPrompts) && relayPrompts.length === ordered.length) {
@@ -686,7 +780,9 @@ export class TaskDO extends DurableObject<Env> {
     if (t.submitted && t.relayTaskId) {
       await rebyteJSON(`/tasks/${t.relayTaskId}/cancel`, {
         method: 'POST',
-        config: this.rebyteConfig(),
+        // Stamped identity: an org-key cancel on an employee-created session 404s, the
+        // relay keeps running the "canceled" turn, and its answer races the next follow-up.
+        config: await this.promptAuthConfig(t.promptId),
         signal: AbortSignal.timeout(5000),
       }).catch((e) => console.log(`[task-do] relay cancel failed (non-fatal): ${(e as Error).message}`))
     }
@@ -704,7 +800,10 @@ export class TaskDO extends DurableObject<Env> {
       await this.store.setPromptStatus(t.promptId, 'waiting_for_answer')
       return
     }
-    const config = this.rebyteConfig()
+    // The ORG key. On the MCP route it is replaced below by this employee's own account
+    // key — resolved once per turn because a follow-up appends to a task that account
+    // owns, so every turn of the session has to speak as the same account.
+    const { config, relayAuth } = await this.turnConfig(t)
 
     try {
       t.frameSeq = await this.maxFrameSeq(t.promptId)
@@ -734,24 +833,53 @@ export class TaskDO extends DurableObject<Env> {
           //     into the workspace VM (ac.id = the SAME VM we seeded). Follow-ups omit skills → one
           //     clone per session; a new session re-clones latest.
           const cfg = await this.store.getConfig()
-          const ac = await this.agentComputerFor(t.userEmail, t.travelkitToken, cfg.systemPrompt)
-          const task = await rebyteJSON<{ id: string }>('/tasks', {
-            method: 'POST',
-            // `files` (if any) ride here so the relay stages them into the sandbox /code/<filename>
-            // before the first turn runs; the wire prompt's attachment suffix points the manager at them.
-            body: JSON.stringify({ prompt: t.prompt, workspaceId: ac.id, skills: [toSkillRef(cfg.skillRef.trim() || SKILL_REF)], ...(t.files?.length ? { files: t.files } : {}) }),
-            config,
-          })
+          // Route comes from the task row's stamp (set once at POST /tasks), NOT from
+          // cfg.routeMode: the config is "next new session" semantics and may have
+          // flipped between intake and this first alarm — the stamp cannot lie, and it
+          // is the same value the UI booking gate reads.
+          const routeMode = (await this.store.getTask(t.taskId))?.route_mode ?? ''
+          let task: { id: string }
+          if (routeMode === 'mcp') {
+            // MCP-direct debug mode (task route_mode='mcp'): NO per-user sandbox at all.
+            // Omitting workspaceId makes the relay create a plain, VM-less workspace for this
+            // task (a record-only insert; the org agent profile's connector set — including the
+            // delegated flight MCP — is copied in the same transaction). No `skills` either:
+            // installing one is what would touch a VM. The routing contract rides as a header on
+            // this FIRST prompt — task creation launches the first turn immediately, so agent
+            // instructions PATCHed after create would miss it, and there is no agent computer
+            // here to configure. `actor` unchanged: it is what the delegated credential
+            // resolution keys on.
+            task = await rebyteJSON<{ id: string }>('/tasks', {
+              method: 'POST',
+              body: JSON.stringify({ prompt: `${MCP_ROUTING_PREAMBLE}\n\n${t.prompt}`, actor: t.userEmail, ...(t.files?.length ? { files: t.files } : {}) }),
+              config,
+            })
+          } else {
+            const ac = await this.agentComputerFor(t.userEmail, t.travelkitToken, cfg.systemPrompt)
+            task = await rebyteJSON<{ id: string }>('/tasks', {
+              method: 'POST',
+              // `files` (if any) ride here so the relay stages them into the sandbox /code/<filename>
+              // before the first turn runs; the wire prompt's attachment suffix points the manager at them.
+              // `actor` names the END USER behind this task (t.userEmail IS `<org>:<uid>`). The relay
+              // treats it as an opaque identifier and hands it back to our /oauth/token when the agent
+              // reaches for an MCP tool — that is how the tool call gets THIS employee's credential
+              // instead of an org-wide one. Relay keys are org-scoped, so nothing else carries a person.
+              body: JSON.stringify({ prompt: t.prompt, workspaceId: ac.id, actor: t.userEmail, skills: [toSkillRef(cfg.skillRef.trim() || SKILL_REF)], ...(t.files?.length ? { files: t.files } : {}) }),
+              config,
+            })
+          }
           relayTaskId = task.id
           await this.ctx.storage.put('relayTaskId', relayTaskId)
-          await this.store.setTaskRelayId(t.taskId, relayTaskId)
+          await this.store.setTaskRelayId(t.taskId, relayTaskId, relayAuth)
         } else {
           // Follow-up turn: append this prompt to the existing relay task. We send the
           // user's prompt alone. /events then streams this latest prompt.
           await rebyteJSON(`/tasks/${relayTaskId}/prompts`, {
             method: 'POST',
-            // Follow-up files stage into the SAME sandbox before this prompt runs.
-            body: JSON.stringify({ prompt: t.prompt, ...(t.files?.length ? { files: t.files } : {}) }),
+            // Follow-up files stage into the SAME sandbox before this prompt runs. `actor` rides on
+            // every turn, not just the first: a session outlives any one credential exchange, so the
+            // follow-up that actually calls a tool has to carry the identity too.
+            body: JSON.stringify({ prompt: t.prompt, actor: t.userEmail, ...(t.files?.length ? { files: t.files } : {}) }),
             config,
           })
         }
@@ -878,9 +1006,17 @@ export class TaskDO extends DurableObject<Env> {
         if (!isObj(msg.data)) continue
         rawCount++
         const ev = msg.data as RelayEvent
-        const seq = typeof ev.seq === 'number' ? ev.seq : t.lastRelaySeq + 1
-        if (seq <= t.lastRelaySeq) continue
-        t.lastRelaySeq = seq
+        if (typeof ev.eventKey === 'string' && ev.eventKey) {
+          // Identity dedupe: survives reconnect replays AND relay-side seq
+          // renumbering (late-visible rows insert mid-timeline upstream).
+          if (t.seenEventKeys?.[ev.eventKey]) continue
+          ;(t.seenEventKeys ??= {})[ev.eventKey] = 1
+        } else {
+          // Legacy relay without eventKey: the old high-water gate.
+          const seq = typeof ev.seq === 'number' ? ev.seq : t.lastRelaySeq + 1
+          if (seq <= t.lastRelaySeq) continue
+          t.lastRelaySeq = seq
+        }
         await this.translate(t, ev)
         if (t.waitingForAnswer) return { terminal: false, awaitingUser: true }
       }

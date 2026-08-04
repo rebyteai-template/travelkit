@@ -116,16 +116,7 @@ export function ChatPanel({
             if (b.activity.state === 'waiting') return null
             return (
               <div key={b.key} className="msg full agent-progress-message">
-                <AgentStatus run={b.activity} />
-              </div>
-            )
-          }
-          if (b.runUrl) {
-            return (
-              <div key={b.key} className="msg full">
-                <a className="run-link" href={b.runUrl} target="_blank" rel="noreferrer">
-                  ↗ 在 rebyte 查看本次运行
-                </a>
+                <AgentStatus run={b.activity} runId={b.runId} />
               </div>
             )
           }

@@ -168,6 +168,8 @@ export const newSandbox = (): Promise<{ sandboxId?: string }> => postJson('/debu
 export interface DebugConfig {
   skillRef: string
   systemPrompt: string
+  /** '' | 'vm' = 沙箱 VM + skill（现状路径）；'mcp' = 首轮不建 VM，manager 直连 flight MCP 工具。 */
+  routeMode: string
   defaults: { skillRef: string; systemPrompt: string }
   isAdmin: boolean
 }
@@ -175,17 +177,17 @@ export interface DebugConfig {
 export const getDebugConfig = (): Promise<DebugConfig> => json('/debug/config')
 /** Write the global debug config (admin only → 403 otherwise). Empty string reverts that field to the
  *  built-in default. The panel re-fetches on success (invalidateQueries), so this just acks. */
-export const saveDebugConfig = (patch: { skillRef: string; systemPrompt: string }): Promise<{ ok: boolean }> =>
+export const saveDebugConfig = (patch: { skillRef: string; systemPrompt: string; routeMode: string }): Promise<{ ok: boolean }> =>
   postJson('/debug/config', patch)
 
 export async function loadContent(
   taskId: string,
-): Promise<{ task: { id: string; status: string }; prompts: PromptContent[] } | null> {
+): Promise<{ task: { id: string; status: string; routeMode?: string }; prompts: PromptContent[] } | null> {
   const r = await fetch(`${BASE}/tasks/${taskId}/content`, { headers: authHeaders() })
   if (r.status === 404) return null
   if (!r.ok) throw new Error(`loadContent failed: ${r.status}`)
   const data = (await r.json()) as {
-    task: { id: string; status: string }
+    task: { id: string; status: string; routeMode?: string }
     prompts: Array<Omit<PromptContent, 'attachments'> & { attachments?: AttachmentMeta[] }>
   }
   // Derive rendition URLs client-side (single source: toAttachment) so a reload matches the

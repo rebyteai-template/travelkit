@@ -18,6 +18,7 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import type { Store, Task } from './store.ts'
+import { normalizeRouteMode } from './store.ts'
 import { MAX_UPLOAD_BYTES, attachmentPromptSuffix } from './attachments.ts'
 import type { FileRef } from './rebyte/client.ts'
 import { isUserQuestionAnswer, type UserQuestionAnswer } from '../src/user-question.ts'
@@ -109,7 +110,11 @@ app.post('/tasks', async (c) => {
 
   const taskId = crypto.randomUUID()
   const promptId = crypto.randomUUID()
-  await store.createTask(taskId, DEFAULT_PROJECT_ID, userEmail)
+  // Route is decided ONCE, here, and stamped on the task row: the global config is
+  // "next new session" semantics, so everything downstream (task-do's first-turn
+  // branch, the UI booking gate) reads the stamp, never re-reads the config.
+  const routeMode = normalizeRouteMode((await store.getConfig()).routeMode)
+  await store.createTask(taskId, DEFAULT_PROJECT_ID, userEmail, routeMode)
   await store.createPrompt(promptId, taskId, turn.text) // stored UI text — empty for image-only (bubble = thumbnail)
   await store.linkPromptFiles(promptId, turn.files.map((f) => f.id)) // bubble attachments (display)
   await runTurn(taskId, DEFAULT_PROJECT_ID, promptId, turn.wirePrompt, { files: turn.files })
@@ -220,7 +225,9 @@ app.get('/tasks/:id/content', async (c) => {
       return { id: p.id, prompt: p.prompt, status: p.status, created_at: p.created_at, completed_at: p.completed_at, frames, attachments }
     }),
   )
-  return c.json({ task: { id: task.id, status: task.status }, prompts })
+  // routeMode drives the UI booking gate: mcp-route sessions cannot book until the
+  // transaction tools land, and the gate must key off THIS session's stamp.
+  return c.json({ task: { id: task.id, status: task.status, routeMode: task.route_mode ?? '' }, prompts })
 })
 
 app.get('/prompts/:id/stream', async (c) => {
@@ -278,6 +285,8 @@ app.get('/debug/config', async (c) => {
   return c.json({
     skillRef: cfg.skillRef,
     systemPrompt: cfg.systemPrompt,
+    // '' | 'vm' → 沙箱 VM + skill（现状）；'mcp' → 首轮不建 VM，manager 直连 flight MCP 工具。
+    routeMode: cfg.routeMode,
     // Built-in defaults, for the panel's placeholder / "填入默认" (empty field → these apply).
     defaults: { skillRef: DEFAULT_SKILL_REF, systemPrompt: DEFAULT_SYSTEM_PROMPT },
     isAdmin: c.var.isAdmin, // panel disables saving for non-admins
@@ -288,8 +297,10 @@ app.get('/debug/config', async (c) => {
 // the built-in default. Both fields are optional; only provided ones are written.
 app.post('/debug/config', async (c) => {
   if (!c.var.isAdmin) return c.json({ error: 'forbidden — not an admin uid (ADMIN_UIDS)' }, 403)
-  const body = await c.req.json<{ skillRef?: string; systemPrompt?: string }>()
-  await c.var.store.setConfig({ skillRef: body.skillRef, systemPrompt: body.systemPrompt })
+  const body = await c.req.json<{ skillRef?: string; systemPrompt?: string; routeMode?: string }>()
+  // routeMode is an enum, not free text — normalizeRouteMode is the single authority.
+  const routeMode = body.routeMode === undefined ? undefined : normalizeRouteMode(body.routeMode)
+  await c.var.store.setConfig({ skillRef: body.skillRef, systemPrompt: body.systemPrompt, routeMode })
   // No read-back: the client re-fetches via invalidateQueries (useSaveDebugConfig) and ignores this body.
   return c.json({ ok: true })
 })
