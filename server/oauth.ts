@@ -646,11 +646,16 @@ export function authorizationServer<E extends OAuthEnv = OAuthEnv>(storeFor: (en
   as.all('/oauth/register', () => methodNotAllowed('POST'))
 
   // ── ② the actual credential ───────────────────────────────────────────────────────────
-  // Service-authed, never user-authed: the caller is our MCP resource server, which has already
-  // verified the assertion from ① and is now asking for the token behind it. The status codes are
-  // the contract (mcp/src/infrastructure/tripdesk-client.ts): 403/404/410 = "this tenant has no
-  // credential", non-retryable, becomes user guidance; 401 = our service token is wrong, a
-  // retryable ops error; 5xx = we are broken.
+  // Service-authed, never user-authed: the caller is our MCP resource server, asking for the
+  // credential behind an opaque `key`. Two key shapes, discriminated by ':' (deterministic:
+  // a tenant key is `<org>:<uid>` with both halves non-empty, an agent-computer id is a UUID
+  // and never contains ':'):
+  //   · contains ':'    → it IS the tenant key (dormant oauth route: org/uid from JWT claims)
+  //   · no ':'          → an agent_computers.ac_id, the workspace id the relay stamps onto
+  //                       every remote MCP call — resolve it to its tenant first
+  // The status codes are the contract (mcp/src/infrastructure/tripdesk-client.ts): 403/404/410
+  // = "this tenant has no credential", non-retryable, becomes user guidance; 401 = our service
+  // token is wrong, a retryable ops error; 5xx = we are broken.
   as.post('/internal/simplifly-credential', async (c) => {
     const env = c.env
     if (!env.TRIPDESK_SERVICE_TOKEN) {
@@ -687,18 +692,36 @@ export function authorizationServer<E extends OAuthEnv = OAuthEnv>(storeFor: (en
       return json({ error: 'invalid_request' }, 400, NO_STORE)
     }
     const input = (body ?? {}) as Record<string, unknown>
-    const org = typeof input.org === 'string' ? input.org : ''
-    const uid = typeof input.uid === 'string' ? input.uid : ''
-    if (!org || !uid) return json({ error: 'invalid_request' }, 400, NO_STORE)
+    const key = typeof input.key === 'string' ? input.key : ''
+    if (!key || key.length > 300) return json({ error: 'invalid_request' }, 400, NO_STORE)
+
+    const store = storeFor(env)
+    let tenant: string
+    let via = ''
+    if (key.includes(':')) {
+      tenant = key
+    } else {
+      let userEmail: string | null
+      try {
+        userEmail = await store.getAgentComputerUserByAcId(key)
+      } catch (e) {
+        console.log(`[oauth] agent-computer lookup FAILED ac=${key} error=${(e as Error).message}`)
+        return json({ error: 'server_error' }, 503, NO_STORE)
+      }
+      // A stale/replaced ac_id (replaceAgentComputer overwrote the row) misses here. That is
+      // the CORRECT degradation: "no credential", never another tenant's.
+      if (!userEmail) return json({ error: 'credential_unavailable' }, 404, NO_STORE)
+      tenant = userEmail
+      via = ` ac=${key}`
+    }
 
     // Always the last token received, never a judgement about it: it carries no `exp`, so
     // "still valid?" is a question we cannot answer and must not guess at. A genuinely dead
     // token surfaces upstream as Simplifly 401020, which the MCP already turns into
     // "reopen FlyAI from the company portal".
-    const tenant = formatActor(org, uid)
     let token: string | undefined
     try {
-      token = await storeFor(env).getTenantCredential(tenant)
+      token = await store.getTenantCredential(tenant)
     } catch (e) {
       // Same rule as the token endpoint: a storage failure is a retryable 5xx, never the
       // non-retryable "this employee has no credential" (404) the client turns into user guidance.
@@ -709,7 +732,7 @@ export function authorizationServer<E extends OAuthEnv = OAuthEnv>(storeFor: (en
 
     // Attribution: the same fingerprint the token endpoint logged for this actor. Matching pairs
     // are the evidence PLAN §6 asks for; a mismatch is a silent fallback to somebody else's token.
-    console.log(`[oauth] credential served tenant=${tenant} cred=${await credentialFingerprint(token)}`)
+    console.log(`[oauth] credential served tenant=${tenant}${via} cred=${await credentialFingerprint(token)}`)
 
     // The ONLY response in this repo that carries the raw credential.
     return json(

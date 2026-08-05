@@ -117,7 +117,7 @@ function harness(env: Partial<Env> = {}) {
         new Request('https://tripdesk.example/internal/simplifly-credential', {
           method: 'POST',
           headers: { Authorization: `Bearer ${SERVICE_TOKEN}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ org: ORG, uid: UID }),
+          body: JSON.stringify({ key: TENANT }),
         }),
         bindings,
       ),

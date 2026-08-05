@@ -44,8 +44,8 @@ function completedLabel(run: AgentActivityRun): string {
 
 /** Copy-the-run-id affordance on the completed status line. Hidden until the row is hovered;
  *  a click copies the raw run id (what a user/PM hands back to report a problem) and briefly
- *  confirms. Not a link: the run is owned by the employee's headless account, so there is
- *  nothing for the user to click through to — the id itself is the debugging handle. */
+ *  confirms. Not a link: the embedded workbench user has no rebyte dashboard login to click
+ *  through with — the id itself is the debugging handle. */
 /** Copy `text`, working in BOTH the top frame and an embedded iframe.
  *
  *  travelkit runs inside the TripDesk iframe in production, where the async Clipboard API

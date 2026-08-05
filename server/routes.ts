@@ -285,7 +285,7 @@ app.get('/debug/config', async (c) => {
   return c.json({
     skillRef: cfg.skillRef,
     systemPrompt: cfg.systemPrompt,
-    // '' | 'vm' → 沙箱 VM + skill（现状）；'mcp' → 首轮不建 VM，manager 直连 flight MCP 工具。
+    // '' | 'vm' → 沙箱 VM + skill（现状）；'mcp' → 同一个人的 agent computer，manager 直连 flight MCP 工具。
     routeMode: cfg.routeMode,
     // Built-in defaults, for the panel's placeholder / "填入默认" (empty field → these apply).
     defaults: { skillRef: DEFAULT_SKILL_REF, systemPrompt: DEFAULT_SYSTEM_PROMPT },

@@ -30,10 +30,13 @@ const CREATE_TABLE = migration('0007_tenant_credential.sql')
 const ADD_LAST_SEEN = migration('0008_credential_observability.sql')
 const INIT_TABLES = migration('0001_init.sql')
 const MULTITENANT = migration('0002_multitenant.sql')
+const TOKEN_HASH = migration('0003_token_hash.sql')
+const SEED_VERSION = migration('0004_seed_version.sql')
 const ROUTE_MODE = migration('0009_task_route_mode.sql')
 const OAUTH_CLIENTS = migration('0010_oauth_clients.sql')
 const EMPLOYEE_ACCOUNTS = migration('0011_employee_accounts.sql')
 const RELAY_AUTH = migration('0012_task_relay_auth.sql')
+const SINGLE_ORG = migration('0013_single_org_mcp.sql')
 
 const TENANT = formatActor('ORG42', 'EMP10086')
 const ALICE = 'TK_alice'
@@ -196,41 +199,40 @@ test('route_mode: stamped at create and read back; pre-stamp rows read as the VM
   assert.equal((await store.getTask('t-legacy'))?.route_mode, '')
 })
 
-test('relay_auth: stamped WITH the relay id, and every pre-stamp row reads as the org key', async () => {
-  const { store, db } = fixture([INIT_TABLES, MULTITENANT, ROUTE_MODE, RELAY_AUTH])
+test('0013 retires the per-employee layer; setTaskRelayId works without relay_auth', async () => {
+  // The full migration chain the columns/tables at stake ride through: 0011/0012 create the
+  // layer (the files are immutable — wrangler tracks applied migrations by name), 0013 drops it.
+  const { store, db } = fixture([INIT_TABLES, MULTITENANT, ROUTE_MODE, EMPLOYEE_ACCOUNTS, RELAY_AUTH, SINGLE_ORG])
 
-  await store.createTask('t-emp', 'proj', TENANT, 'mcp')
-  await store.setTaskRelayId('t-emp', 'relay-1', 'employee')
-  const stamped = await store.getTask('t-emp')
-  assert.equal(stamped?.relay_task_id, 'relay-1')
-  assert.equal(stamped?.relay_auth, 'employee')
+  await store.createTask('t-mcp', 'proj', TENANT, 'mcp')
+  await store.setTaskRelayId('t-mcp', 'relay-1')
+  assert.equal((await store.getTask('t-mcp'))?.relay_task_id, 'relay-1')
 
-  // A row created before the column existed (raw INSERT) must read as '' = the org key —
-  // every pre-feature session WAS created with the org key, so any other default would
-  // make this exact migration the thing that breaks them.
-  db.prepare(`INSERT INTO tasks (id, project_id, user_email) VALUES (?, ?, ?)`).run('t-legacy', 'proj', TENANT)
-  assert.equal((await store.getTask('t-legacy'))?.relay_auth, '')
+  assert.equal(
+    db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'employee_accounts'`).get(),
+    undefined,
+  )
+  const taskColumns = (db.prepare(`PRAGMA table_info(tasks)`).all() as Array<{ name: string }>).map((c) => c.name)
+  assert.equal(taskColumns.includes('relay_auth'), false)
+  // /internal resolves credentials by ac_id now — 0013 backs that lookup with an index.
+  assert.notEqual(
+    db.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_computers_ac'`).get(),
+    undefined,
+  )
 })
 
-test('employee_accounts: first writer wins — a second provision can never strand the recorded key', async () => {
-  const { store } = fixture([EMPLOYEE_ACCOUNTS])
+test('getAgentComputerUserByAcId: an ac_id names its tenant; a replaced one misses to null', async () => {
+  const { store } = fixture([INIT_TABLES, MULTITENANT, TOKEN_HASH, SEED_VERSION, RELAY_AUTH, SINGLE_ORG])
 
-  await store.saveEmployeeAccount(TENANT, 'acct_winner', 'rbk_winner')
-  const stored = await store.getEmployeeAccount(TENANT)
-  assert.equal(stored?.accountId, 'acct_winner')
-  assert.equal(stored?.apiKey, 'rbk_winner')
-  assert.equal(stored?.registeredCredentialFp, null)
+  await store.saveAgentComputer(TENANT, 'ac-uuid-1', 'sb-1', 'hash-1', 'v1')
+  assert.equal(await store.getAgentComputerUserByAcId('ac-uuid-1'), TENANT)
+  assert.equal(await store.getAgentComputerUserByAcId('ac-never-existed'), null)
 
-  // INSERT OR IGNORE, asserted against real SQLite: the relay hands an account key back
-  // exactly once, so this row is its only copy. Overwriting would make `acct_winner`
-  // unreachable forever — the loser's own account is the one that must be abandoned.
-  await store.saveEmployeeAccount(TENANT, 'acct_loser', 'rbk_loser')
-  assert.equal((await store.getEmployeeAccount(TENANT))?.accountId, 'acct_winner')
-
-  await store.setRegisteredCredentialFingerprint(TENANT, 'fp-abc123')
-  assert.equal((await store.getEmployeeAccount(TENANT))?.registeredCredentialFp, 'fp-abc123')
-
-  assert.equal(await store.getEmployeeAccount('51049:nobody'), undefined)
+  // Debug "new VM" repoints the row (replaceAgentComputer): the abandoned ac_id must MISS —
+  // resolving it to any tenant would serve a credential through a workspace nothing owns.
+  await store.replaceAgentComputer(TENANT, 'ac-uuid-2', 'sb-2', 'hash-2', 'v1')
+  assert.equal(await store.getAgentComputerUserByAcId('ac-uuid-1'), null)
+  assert.equal(await store.getAgentComputerUserByAcId('ac-uuid-2'), TENANT)
 })
 
 test('oauth_clients: the REAL SQL round-trips a hash, misses cleanly, and refuses a duplicate id', async () => {

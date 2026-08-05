@@ -399,9 +399,9 @@ export interface ChatBubble {
   /** One compact, collapsible run summary. Structured business results stay separate. */
   activity?: AgentActivityRun
   /** This turn's raw rebyte run id, rendered as a copy affordance on the activity line so a
-   *  user/PM can hand it back to report a problem. NOT a link: on the MCP route the run is
-   *  owned by the employee's headless account, which the rebyte dashboard refuses to show —
-   *  the id is a debugging handle, not something to click through to. */
+   *  user/PM can hand it back to report a problem. NOT a link: every run belongs to the single
+   *  org account now, but the embedded workbench user has no rebyte dashboard login to follow
+   *  a link with — the id is a debugging handle for ops, not something to click through to. */
   runId?: string
 }
 

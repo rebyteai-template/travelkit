@@ -77,36 +77,6 @@ export function createD1Store(db: D1Database): Store {
         .first<{ token: string }>()
       return row?.token ?? undefined
     },
-    async getEmployeeAccount(userEmail) {
-      const row = await db
-        .prepare(
-          `SELECT account_id AS accountId, api_key AS apiKey,
-                  registered_credential_fp AS registeredCredentialFp
-             FROM employee_accounts WHERE user_email = ?`,
-        )
-        .bind(userEmail)
-        .first<{ accountId: string; apiKey: string; registeredCredentialFp: string | null }>()
-      return row ?? undefined
-    },
-    async saveEmployeeAccount(userEmail, accountId, apiKey) {
-      // INSERT OR IGNORE, not an upsert: this row is the only copy of `apiKey`, so a
-      // second concurrent provision must abandon its own account rather than overwrite
-      // (and permanently strand) the one already recorded.
-      await db
-        .prepare(`INSERT OR IGNORE INTO employee_accounts (user_email, account_id, api_key) VALUES (?, ?, ?)`)
-        .bind(userEmail, accountId, apiKey)
-        .run()
-    },
-    async setRegisteredCredentialFingerprint(userEmail, fingerprint) {
-      await db
-        .prepare(
-          `UPDATE employee_accounts
-              SET registered_credential_fp = ?, updated_at = datetime('now')
-            WHERE user_email = ?`,
-        )
-        .bind(fingerprint, userEmail)
-        .run()
-    },
     async createOAuthClient(clientId, clientSecretHash, clientName) {
       await db
         .prepare(`INSERT INTO oauth_clients (client_id, client_secret_hash, client_name) VALUES (?, ?, ?)`)
@@ -126,6 +96,13 @@ export function createD1Store(db: D1Database): Store {
         .bind(userEmail)
         .first<AgentComputerRow>()
       return row ?? undefined
+    },
+    async getAgentComputerUserByAcId(acId) {
+      const row = await db
+        .prepare(`SELECT user_email FROM agent_computers WHERE ac_id = ?`)
+        .bind(acId)
+        .first<{ user_email: string }>()
+      return row?.user_email ?? null
     },
     async saveAgentComputer(userEmail, acId, sandboxId, tokenHash, seedVersion) {
       await db
@@ -184,10 +161,10 @@ export function createD1Store(db: D1Database): Store {
     async setTaskStatus(id, status) {
       await db.prepare(`UPDATE tasks SET status = ? WHERE id = ?`).bind(status, id).run()
     },
-    async setTaskRelayId(id, relayTaskId, relayAuth) {
+    async setTaskRelayId(id, relayTaskId) {
       await db
-        .prepare(`UPDATE tasks SET relay_task_id = ?, relay_auth = ? WHERE id = ?`)
-        .bind(relayTaskId, relayAuth, id)
+        .prepare(`UPDATE tasks SET relay_task_id = ? WHERE id = ?`)
+        .bind(relayTaskId, id)
         .run()
     },
 

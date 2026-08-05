@@ -168,7 +168,7 @@ export const newSandbox = (): Promise<{ sandboxId?: string }> => postJson('/debu
 export interface DebugConfig {
   skillRef: string
   systemPrompt: string
-  /** '' | 'vm' = 沙箱 VM + skill（现状路径）；'mcp' = 首轮不建 VM，manager 直连 flight MCP 工具。 */
+  /** '' | 'vm' = 沙箱 VM + skill（现状路径）；'mcp' = 同一个人的 agent computer，manager 直连 flight MCP 工具。 */
   routeMode: string
   defaults: { skillRef: string; systemPrompt: string }
   isAdmin: boolean

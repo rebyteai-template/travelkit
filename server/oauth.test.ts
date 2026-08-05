@@ -24,12 +24,17 @@ const TOKEN = 'TK_the_employees_simplifly_token'
 const { privateKey } = await generateKeyPair('ES256', { extractable: true })
 const SIGNING_KEY = JSON.stringify({ ...(await exportJWK(privateKey)), alg: 'ES256', use: 'sig', kid: 'test-key' })
 
-/** Only the three credential methods matter to the AS; the rest of the Store contract is
+/** Only the credential/lookup methods matter to the AS; the rest of the Store contract is
  *  unreachable from these routes. `broken` simulates a storage plane that is up for reads and
  *  down for writes (an unapplied migration, a quota event) — the case the endpoint has to tell
- *  apart from "we have never seen this tenant". */
+ *  apart from "we have never seen this tenant". `agentComputers` maps ac_id → tenant key,
+ *  mirroring the agent_computers reverse lookup /internal resolves colon-free keys through. */
 type StoreFault = 'read' | 'write' | 'probe' | 'clients'
-function credentialStore(seed: Record<string, string> = {}, broken: StoreFault[] = []): Store {
+function credentialStore(
+  seed: Record<string, string> = {},
+  broken: StoreFault[] = [],
+  agentComputers: Record<string, string> = {},
+): Store {
   const rows = new Map(Object.entries(seed))
   // client_id → SHA-256 hex of the secret, mirroring migrations/0010 (never the plaintext).
   const clients = new Map<string, string>()
@@ -47,6 +52,10 @@ function credentialStore(seed: Record<string, string> = {}, broken: StoreFault[]
     },
     async probeCredentialStore() {
       boom('probe')
+    },
+    async getAgentComputerUserByAcId(acId: string) {
+      boom('read')
+      return agentComputers[acId] ?? null
     },
     async createOAuthClient(clientId: string, clientSecretHash: string) {
       boom('clients')
@@ -76,8 +85,9 @@ function server(
   env: Partial<OAuthEnv> = {},
   seed: Record<string, string> = { [ACTOR]: TOKEN },
   broken: StoreFault[] = [],
+  agentComputers: Record<string, string> = {},
 ) {
-  const store = credentialStore(seed, broken)
+  const store = credentialStore(seed, broken, agentComputers)
   const app = authorizationServer(() => store)
   const bindings = {
     OAUTH_SIGNING_KEY: SIGNING_KEY,
@@ -308,8 +318,11 @@ test('THE DEAD END: a broken credential store is a retryable 5xx, never "reopen 
 
 test('/internal: a broken store is 503 (retryable), not 404 (which becomes user guidance)', async () => {
   const as = server({}, { [ACTOR]: TOKEN }, ['read'])
-  const res = await as.credential({ org: 'ORG42', uid: 'EMP10086' })
+  const res = await as.credential({ key: ACTOR })
   assert.equal(res.status, 503, '404 means "this employee has no credential" to tripdesk-client.ts')
+  // The ac_id hop is the same storage plane, so a colon-free key must answer the same 503.
+  const viaAc = server({}, { [ACTOR]: TOKEN }, ['read'], { 'ac-uuid-1': ACTOR })
+  assert.equal((await viaAc.credential({ key: 'ac-uuid-1' })).status, 503)
 })
 
 test('RFC 6749 §2.3.1: form-encoded Basic halves authenticate, and so do raw ones', async () => {
@@ -350,11 +363,11 @@ test('the credential endpoint locks out a guesser and logs every attempt', async
   const as = server()
   const { lines } = await captureLogs(async () => {
     for (let i = 0; i < 10; i += 1) {
-      assert.equal((await as.credential({ org: 'ORG42', uid: 'EMP10086' }, 'Bearer nope')).status, 401)
+      assert.equal((await as.credential({ key: ACTOR }, 'Bearer nope')).status, 401)
     }
   })
   assert.equal(lines.filter((l) => l.includes('service authentication FAILED')).length, 10)
-  const locked = await as.credential({ org: 'ORG42', uid: 'EMP10086' }, 'Bearer nope')
+  const locked = await as.credential({ key: ACTOR }, 'Bearer nope')
   assert.equal(locked.status, 429, 'this endpoint returns a full-privilege, non-revocable credential')
   assert.ok(Number(locked.headers.get('retry-after')) > 0)
   // 429 is retryable to tripdesk-client.ts (it is not 401/403/404/410), so a legitimate caller
@@ -367,7 +380,7 @@ test('attribution is provable from the logs, and the logs carry nothing reversib
   const as = server()
   const { lines } = await captureLogs(async () => {
     await as.token(as.grant())
-    await as.credential({ org: 'ORG42', uid: 'EMP10086' })
+    await as.credential({ key: ACTOR })
   })
   const issued = lines.find((l) => l.includes('token issued'))
   const served = lines.find((l) => l.includes('credential served'))
@@ -587,17 +600,33 @@ test('discovery advertises registration only while it is usable', async () => {
   assert.equal(without.registration_endpoint, undefined, 'discovery naming a permanent 503 is a dead path')
 })
 
-test('/internal/simplifly-credential: the service token gets the tenant\'s CURRENT token', async () => {
+test('/internal/simplifly-credential: a `key` WITH a colon is the tenant key — direct hit', async () => {
   const as = server()
-  const res = await as.credential({ org: 'ORG42', uid: 'EMP10086' })
+  const res = await as.credential({ key: ACTOR })
   assert.equal(res.status, 200)
   assert.deepEqual(await res.json(), { authToken: TOKEN })
   assert.equal(res.headers.get('cache-control'), 'no-store')
 })
 
+test('/internal/simplifly-credential: a colon-free `key` is an ac_id, resolved via agent_computers', async () => {
+  // The static route: the MCP forwards the relay-injected workspace id (= agent_computers.ac_id,
+  // a UUID — never contains ':'), and the credential served is the OWNING tenant's.
+  const as = server({}, { [ACTOR]: TOKEN }, [], { 'ac-uuid-1': ACTOR })
+  const res = await as.credential({ key: 'ac-uuid-1' })
+  assert.equal(res.status, 200)
+  assert.deepEqual(await res.json(), { authToken: TOKEN })
+})
+
+test('/internal/simplifly-credential: an unknown ac_id → 404, never another tenant', async () => {
+  // A replaced/stale ac_id has no agent_computers row. "No credential" is the CORRECT
+  // degradation — same non-retryable band as a tenant with no credential.
+  const as = server({}, { [ACTOR]: TOKEN }, [], { 'ac-uuid-1': ACTOR })
+  assert.equal((await as.credential({ key: 'ac-uuid-replaced' })).status, 404)
+})
+
 test('/internal/simplifly-credential: baseUrl rides along only when configured', async () => {
   const as = server({ SIMPLIFLY_BASE_URL: 'https://api-ap-east-1.simplifly.tech' })
-  const res = await as.credential({ org: 'ORG42', uid: 'EMP10086' })
+  const res = await as.credential({ key: ACTOR })
   assert.deepEqual(await res.json(), { authToken: TOKEN, baseUrl: 'https://api-ap-east-1.simplifly.tech' })
 })
 
@@ -608,7 +637,7 @@ test('/internal/simplifly-credential is SERVICE-authed: a user token is not a se
     ['a wrong service token', 'Bearer nope'],
     ['no authorization', ''],
   ] as const) {
-    const res = await as.credential({ org: 'ORG42', uid: 'EMP10086' }, auth)
+    const res = await as.credential({ key: ACTOR }, auth)
     assert.equal(res.status, 401, name)
     assert.equal(JSON.stringify(await res.json()).includes(TOKEN), false, name)
   }
@@ -616,7 +645,7 @@ test('/internal/simplifly-credential is SERVICE-authed: a user token is not a se
 
 test('/internal/simplifly-credential: no credential → 404 (the MCP turns it into user guidance)', async () => {
   const as = server()
-  const res = await as.credential({ org: 'ORG42', uid: 'ghost' })
+  const res = await as.credential({ key: formatActor('ORG42', 'ghost') })
   // 403/404/410 are the client's non-retryable band; 401 would mean "our service token is wrong"
   // and 5xx "retry", so a missing credential MUST land here.
   assert.equal(res.status, 404)
@@ -624,13 +653,14 @@ test('/internal/simplifly-credential: no credential → 404 (the MCP turns it in
 
 test('/internal/simplifly-credential without a service token configured fails closed, not 404', async () => {
   const as = server({ TRIPDESK_SERVICE_TOKEN: undefined })
-  const res = await as.credential({ org: 'ORG42', uid: 'EMP10086' })
+  const res = await as.credential({ key: ACTOR })
   assert.equal(res.status, 503, 'an unconfigured server must not claim the employee has no credential')
 })
 
-test('/internal/simplifly-credential rejects a body without a tenant', async () => {
+test('/internal/simplifly-credential rejects a body without a usable key', async () => {
   const as = server()
-  for (const body of [{}, { org: 'ORG42' }, { uid: 'EMP10086' }, { org: '', uid: '' }, { org: 1, uid: 2 }]) {
+  // The old `{org, uid}` shape is DELETED, not tolerated — it must 400 like any other keyless body.
+  for (const body of [{}, { key: '' }, { key: 42 }, { key: 'x'.repeat(301) }, { org: 'ORG42', uid: 'EMP10086' }]) {
     assert.equal((await as.credential(body)).status, 400, JSON.stringify(body))
   }
 })
@@ -644,7 +674,7 @@ test('SECURITY: the raw credential appears in exactly one response and nowhere e
       as.token(as.grant(), `Basic ${btoa(`${CLIENT_ID}:nope`)}`),
       as.get('/.well-known/jwks.json'),
       as.get('/.well-known/oauth-authorization-server'),
-      as.credential({ org: 'ORG42', uid: 'EMP10086' }, 'Bearer nope'),
+      as.credential({ key: ACTOR }, 'Bearer nope'),
     ].map(async (p) => (await p).text()),
   )
   for (const body of bodies) {
