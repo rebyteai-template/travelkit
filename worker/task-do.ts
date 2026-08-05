@@ -32,8 +32,7 @@ import { isObj, parseSSE } from '../server/rebyte/sse.ts'
 import { rebyteJSON, rebyteFetch, RebyteError, type RebyteConfig, type FileRef } from '../server/rebyte/client.ts'
 import { provisionComputer, seedSandbox, writeClaudeMd, removeStaleArtifacts, applyCredential, SEED_VERSION, type ProvisionedComputer } from './seed.ts'
 import { SKILL_REF, toSkillRef } from './skill-ref.ts'
-import { MCP_ROUTING_PREAMBLE } from './vm-system-prompt.ts'
-import { ensureAgentConfig } from '../server/rebyte/agent-config.ts'
+import { ensureAgentConfig, MCP_AGENT_INSTRUCTIONS } from '../server/rebyte/agent-config.ts'
 import { shouldDrainTerminal, shouldRetryWindowError, turnExpired, TERMINAL_STATUSES } from './turn-finalize.ts'
 import { framesHaveAnswerText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
 import { sha256Hex } from '../server/digest.ts'
@@ -751,13 +750,13 @@ export class TaskDO extends DurableObject<Env> {
             // remote MCP call as X-Rebyte-Workspace-Id, and the flight MCP keys its per-employee
             // credential lookup on it (travelkit /internal resolves ac_id → tenant). No `skills`
             // on this route — the flight tools come from the org profile's connector set. The
-            // routing contract rides as a preamble on this FIRST prompt: the workspace carries
-            // the VM route's AGENT_INSTRUCTIONS (delegate-to-sandbox), and the preamble's
-            // override sentence supersedes that delegation clause for this session.
-            const ac = await this.agentComputerFor(t.userEmail, t.travelkitToken, cfg.systemPrompt)
+            // workspace carries route-specific manager instructions: MCP sessions get the minimal
+            // MCP_AGENT_INSTRUCTIONS (tool procedure lives in the tools' own descriptions), not
+            // the VM route's delegate-to-sandbox text; the prompt itself rides bare.
+            const ac = await this.agentComputerFor(t.userEmail, t.travelkitToken, cfg.systemPrompt.trim() ? cfg.systemPrompt : MCP_AGENT_INSTRUCTIONS)
             task = await rebyteJSON<{ id: string }>('/tasks', {
               method: 'POST',
-              body: JSON.stringify({ prompt: `${MCP_ROUTING_PREAMBLE}\n\n${t.prompt}`, workspaceId: ac.id, actor: t.userEmail, ...(t.files?.length ? { files: t.files } : {}) }),
+              body: JSON.stringify({ prompt: t.prompt, workspaceId: ac.id, actor: t.userEmail, ...(t.files?.length ? { files: t.files } : {}) }),
               config,
             })
           } else {

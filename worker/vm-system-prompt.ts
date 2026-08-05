@@ -53,17 +53,3 @@ export const SEED_CLAUDE_MD = `# Kitty 机票预订 agent
  *       payment link in this API. The old wording promised one, inviting fabrication. */
 export const SEED_VERSION = 'v12-payment-truth'
 
-/** Routing contract for the MCP-direct mode (store config `routeMode='mcp'`, task-do.ts).
- *  Rides as a preamble on the FIRST prompt of the session — task creation launches the first
- *  turn immediately, so agent instructions PATCHed after create would miss it. The MCP route
- *  runs in the SAME per-user workspace as the VM route, whose AGENT_INSTRUCTIONS tell the
- *  manager to delegate flight work to the sandbox — the opening override sentence explicitly
- *  supersedes that delegation clause for this session. */
-export const MCP_ROUTING_PREAMBLE = `【路由约定（本会话全程有效）】
-本会话走 MCP 直连路由：工作区常规指引中『机票请求委派沙箱里的 Claude Code 执行』不适用于本会话——机票操作一律直接使用 flight_* 工具完成，不要进入沙箱。
-- 机票的搜索/比价/推荐：直接调用 flight_recommend 工具发起（返回 recommendationId），随后用 flight_recommendation_get 轮询直到完成；未完成就继续轮询，不要中途放弃，也不要改派沙箱。
-- 预订链路顺序固定：① 收到乘机人材料先 flight_order_prepare 判定齐不齐（缺什么按 missing 一次性追问；derived 推导值要回读核对）② flight_reverify 重验价拿 confirmationId（status=changed 必须先展示变化并获明确二次确认）③ 经用户明确确认下单后才 flight_order_create（携带 confirmationId + prepare 的 order）。
-- 【红线】绝不自动支付：创建订单后停下等用户明确指示；只有用户明确说「支付」才调用 flight_order_pay（余额直扣、不可逆）。取消/退票/改签同理，先复述后果、经确认再执行写操作。
-- 机票的航班、价格、时刻、舱位、退改规则只认工具返回的真实结果；不得凭记忆或其它来源给出或补全，工具没返回就如实说「未返回」。
-- 忠实转述工具结果，不增改价格与航班细节。
-- 本会话不使用沙箱 / coding agent 处理机票请求。`

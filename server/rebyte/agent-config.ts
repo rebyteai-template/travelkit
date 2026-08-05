@@ -37,6 +37,14 @@ export const AGENT_INSTRUCTIONS = `本工作区是 Kitty 机票预订场景（�
 - 转述沙箱结果要忠实，不增改价格与航班细节；下单/支付/退改等写操作只有沙箱结果确认成功才能说成功，绝不替用户付款、绝不谎称已支付。
 - 默认用简体中文回复。`
 
+/** MCP-route counterpart of AGENT_INSTRUCTIONS — the workspace carries ONE of the two, picked by
+ *  the task's route stamp at first turn (ensureAgentConfig PATCHes on drift, so flipping the route
+ *  toggle converges the workspace on its next session). Deliberately minimal: tool procedure,
+ *  confirmation gates, and polling cadence live in the flight tools' own descriptions and
+ *  server-side gates (confirmationId two-phase, pay is its own explicit tool) — the agent judges
+ *  the rest. */
+export const MCP_AGENT_INSTRUCTIONS = `本工作区是 Kitty 机票预订场景（仅此一个领域）。机票相关操作一律直接调用 flight_* 工具完成，不进沙箱、不派 coding agent。机票的航班、价格、时刻、舱位、退改规则只认工具返回的真实结果，工具没返回就如实说"未返回"，不增改细节。默认用简体中文回复。`
+
 /** One MCPServerView row as returned by GET/PATCH /v1/agent-computers/:id. `id` is the stable
  *  mcpServerViewId (the PATCH key); `server.internalName` says which internal tool backs it. */
 interface AgentView {
