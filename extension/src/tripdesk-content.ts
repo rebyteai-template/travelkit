@@ -1,9 +1,4 @@
-import {
-  BRIDGE_CHANNEL,
-  TRAVELKIT_ORIGIN,
-  type BridgeMessage,
-  type PageMessage,
-} from '@travelkit/contract'
+import { BRIDGE_CHANNEL, type BridgeMessage, type PageMessage } from '@travelkit/contract'
 
 /**
  * The bridge between the TravelKit SPA and this extension.
@@ -24,9 +19,13 @@ import {
 
 /** Ignore anything that is not this app talking to us: right window, right origin, right tag.
  *  The parent frame is cross-origin and cannot read these messages, but a co-resident script in
- *  THIS frame could post one, so the check is not decoration. */
+ *  THIS frame could post one, so the check is not decoration.
+ *
+ *  `location.origin` is the tightest check available and needs no constant: this script only
+ *  runs on origins `content_scripts.matches` allowed, so the frame's own origin IS the allowed
+ *  one. Keeping the allowlist in the manifest alone means there is exactly one place to audit. */
 function isFromApp(event: MessageEvent): boolean {
-  return event.source === window && event.origin === TRAVELKIT_ORIGIN
+  return event.source === window && event.origin === location.origin
 }
 
 window.addEventListener('message', (event: MessageEvent) => {
@@ -63,10 +62,10 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
   }
 })
 
-/** Always address the app's own origin explicitly — never `'*'`, which would broadcast to
+/** Always address this frame's own origin explicitly — never `'*'`, which would broadcast to
  *  whatever else is listening on this window. */
 function post(message: BridgeMessage): void {
-  window.postMessage(message, TRAVELKIT_ORIGIN)
+  window.postMessage(message, location.origin)
 }
 
 // Announce ourselves so the app can drop its "install the extension" hint. Carries only a

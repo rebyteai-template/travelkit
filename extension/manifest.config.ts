@@ -2,6 +2,17 @@ import { defineManifest } from '@crxjs/vite-plugin'
 
 import pkg from './package.json' with { type: 'json' }
 
+/** Where the app is served. `matches` is the ONLY thing that decides which origins this
+ *  extension will talk to — both bridge ends then check against their own frame origin — so
+ *  the dev server is added here and nowhere else, and only for a dev build.
+ *
+ *  `pnpm --filter extension build` (mode=production) therefore ships a manifest that knows
+ *  about tripdesk and nothing else; the localhost entry cannot leak into a release. */
+const DEV = process.env.NODE_ENV !== 'production'
+const APP_ORIGINS = DEV
+  ? ['https://tripdesk.impo.ai/*', 'http://localhost:4000/*', 'http://127.0.0.1:4000/*']
+  : ['https://tripdesk.impo.ai/*']
+
 /**
  * Least privilege, deliberately.
  *
@@ -24,10 +35,7 @@ export default defineManifest({
   version: pkg.version,
   minimum_chrome_version: '116',
 
-  host_permissions: [
-    'https://flights.ctrip.com/*',
-    'https://tripdesk.impo.ai/*',
-  ],
+  host_permissions: ['https://flights.ctrip.com/*', ...APP_ORIGINS],
   // `storage` only — the service worker is recycled freely, so the pending tabId→nonce map has
   // to survive in chrome.storage.session rather than in a module-level variable.
   permissions: ['storage'],
@@ -51,7 +59,7 @@ export default defineManifest({
       // wherever the app is embedded — which is exactly why the bridge is a content script and
       // not `externally_connectable` (that would additionally require the unknown top-frame
       // origin in `matches`, so it cannot work here at all).
-      matches: ['https://tripdesk.impo.ai/*'],
+      matches: APP_ORIGINS,
       js: ['src/tripdesk-content.ts'],
       all_frames: true,
       run_at: 'document_idle',

@@ -81,7 +81,3 @@ export type PageMessage =
 /** Namespace tag on every bridge message. Both sides check it (plus the window origin) before
  *  looking at anything else, so unrelated postMessage traffic on the same window is ignored. */
 export const BRIDGE_CHANNEL = 'travelkit-ctrip-bridge' as const
-
-/** The only origin the bridge operates on. Pinned in both the extension's content-script match
- *  and the SPA's origin check — never widened to the (arbitrary, customer-owned) top frame. */
-export const TRAVELKIT_ORIGIN = 'https://tripdesk.impo.ai' as const

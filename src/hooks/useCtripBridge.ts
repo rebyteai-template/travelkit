@@ -1,12 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import {
-  BRIDGE_CHANNEL,
-  CTRIP_CURRENCY,
-  TRAVELKIT_ORIGIN,
-  type BridgeMessage,
-  type CtripCapture,
-} from '@travelkit/contract'
+import { BRIDGE_CHANNEL, CTRIP_CURRENCY, type BridgeMessage, type CtripCapture } from '@travelkit/contract'
 
 /**
  * Talks to the Ctrip-price browser extension, if the operator installed one.
@@ -50,7 +44,9 @@ export function useCtripBridge(): CtripBridge {
     function onMessage(event: MessageEvent) {
       // Only our own frame, our own origin, our own channel tag. The embedding customer page is
       // cross-origin and cannot post here, but a co-resident content script in this frame could.
-      if (event.source !== window || event.origin !== TRAVELKIT_ORIGIN) return
+      // Comparing against our OWN origin is both the tightest check and the one that cannot drift
+      // from wherever the app happens to be served (prod, a preview, dev on localhost).
+      if (event.source !== window || event.origin !== window.location.origin) return
       const data = event.data as Partial<BridgeMessage> | null
       if (!data || data.channel !== BRIDGE_CHANNEL) return
 
@@ -87,7 +83,7 @@ export function useCtripBridge(): CtripBridge {
     return new Promise<CtripCapture | null>((resolve) => {
       const nonce = crypto.randomUUID()
       waiting.current.set(nonce, resolve)
-      window.postMessage({ channel: BRIDGE_CHANNEL, type: 'capture-request', nonce, url }, TRAVELKIT_ORIGIN)
+      window.postMessage({ channel: BRIDGE_CHANNEL, type: 'capture-request', nonce, url }, window.location.origin)
       // Never leave a caller hanging: if no extension is listening, nothing will ever reply.
       window.setTimeout(() => {
         if (!waiting.current.has(nonce)) return
