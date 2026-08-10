@@ -8,6 +8,7 @@ import type {
   RecommendationStatus,
   SearchResult,
 } from '../frames.ts'
+import type { ReferencePrice } from '../api.ts'
 import { paxSummary, planTotal } from '../booking.ts'
 import { buildRecommendationContinuationPrompt, buildRecommendationRetryPrompt } from '../operator-actions.ts'
 import { flightDateCn, flightMoney, flightRouteCell, journeyRoleLabel } from '../lib/flight-display.ts'
@@ -134,11 +135,108 @@ function SegmentFactLines({ plan, journeyIndex, segmentIndex, field }: {
   )
 }
 
-function PlanSummary({ plan, busy, onAction, onStartBooking }: {
+/** The Ctrip figure for one plan, beside our own total.
+ *
+ *  Two deliberate restraints. First, the two numbers are NOT on the same footing: Ctrip's list
+ *  page quotes a pre-tax fare while our total is tax-inclusive, so the gap is labelled as
+ *  un-normalized rather than presented as a clean saving — OP gets the comparison without being
+ *  handed a falsely precise one. Second, it never judges the plan: no reordering, no dropping,
+ *  no "cheaper elsewhere" warning (CLAUDE.md 推荐边界) — it shows the numbers and stops. */
+function ReferencePriceCell({ plan, total, price, onSave, onCapture, captureError }: {
+  plan: RecommendationPlan
+  total: { amount: number; currency: string }
+  price?: ReferencePrice
+  onSave: (planId: string, amount: number, currency: string) => void
+  onCapture?: (planId: string, url: string) => Promise<void>
+  captureError?: string | null
+}) {
+  const [draft, setDraft] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [capturing, setCapturing] = useState(false)
+
+  function commit() {
+    const amount = Number(draft.trim())
+    if (!Number.isFinite(amount) || amount <= 0) return
+    onSave(plan.planId, amount, total.currency)
+    setDraft('')
+    setEditing(false)
+  }
+
+  async function runCapture() {
+    if (!onCapture || !plan.ctripUrl) return
+    setCapturing(true)
+    try {
+      await onCapture(plan.planId, plan.ctripUrl)
+    } finally {
+      setCapturing(false)
+    }
+  }
+
+  if (price && !editing) {
+    const gap = Math.round((price.amount - total.amount) * 100) / 100
+    return (
+      <div className="recommend-reference">
+        <span className="recommend-reference-label">
+          携程{price.source === 'ctrip-extension' ? '（插件读取）' : ''}
+        </span>
+        <strong className="recommend-reference-amount mono">
+          {recommendationMoney(price.amount, price.currency)}
+        </strong>
+        {price.currency === total.currency ? (
+          <span className={`recommend-reference-gap ${gap >= 0 ? 'is-cheaper' : 'is-dearer'}`}>
+            {gap >= 0 ? '我们低 ' : '我们高 '}
+            <span className="mono">{recommendationMoney(Math.abs(gap), total.currency)}</span>
+            <span className="recommend-reference-caveat" title="携程列表页为不含税票面价，我们的总价含税，差额未做口径对齐">
+              税费口径未对齐
+            </span>
+          </span>
+        ) : null}
+        <button type="button" className="recommend-reference-edit" onClick={() => { setDraft(String(price.amount)); setEditing(true) }}>
+          修改
+        </button>
+      </div>
+    )
+  }
+
+  const canCapture = Boolean(onCapture && plan.ctripUrl)
+  return (
+    <div className="recommend-reference">
+      <label className="recommend-reference-label" htmlFor={`ref-${plan.planId}`}>携程价</label>
+      <input
+        id={`ref-${plan.planId}`}
+        className="recommend-reference-input mono"
+        inputMode="decimal"
+        placeholder={canCapture ? '读取或手填' : '手动填写'}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => { if (event.key === 'Enter') commit() }}
+        onBlur={commit}
+      />
+      {canCapture ? (
+        <button type="button" className="recommend-reference-capture" disabled={capturing} onClick={() => void runCapture()}>
+          {capturing ? '读取中…' : '自动读取'}
+        </button>
+      ) : null}
+      {/* Only ever a hint next to a still-usable input — a failed read never blocks manual entry. */}
+      {captureError ? <span className="recommend-reference-error">{captureError}</span> : null}
+    </div>
+  )
+}
+
+function PlanSummary({ plan, busy, onAction, onStartBooking, referencePrice, onSaveReferencePrice, onCaptureReferencePrice, captureError }: {
   plan: RecommendationPlan
   busy: boolean
   onAction: (prompt: string) => void
   onStartBooking?: (plan: RecommendationPlan) => void
+  referencePrice?: ReferencePrice
+  /** Present only when a browser extension answered. Absent = the operator reads Ctrip in a
+   *  tab and types the figure, which is the baseline flow. */
+  onCaptureReferencePrice?: (planId: string, url: string) => Promise<void>
+  captureError?: string | null
+  /** Grants the Ctrip-comparison cell, the way `onStartBooking` grants the booking entry.
+   *  Withheld by default so a caller that forgets renders no input rather than one whose
+   *  writes silently go nowhere. */
+  onSaveReferencePrice?: (planId: string, amount: number, currency: string) => void
 }) {
   const total = planTotal(plan)
   const canBook = Boolean(onStartBooking) && plan.capabilities.canBook && plan.validity.status === 'verified'
@@ -164,6 +262,16 @@ function PlanSummary({ plan, busy, onAction, onStartBooking }: {
         <span className="recommend-plan-total-label">总价</span>
         <strong className="recommend-plan-total-amount mono">{recommendationMoney(total.amount, total.currency)}</strong>
       </div>
+      {onSaveReferencePrice ? (
+        <ReferencePriceCell
+          plan={plan}
+          total={total}
+          price={referencePrice}
+          onSave={onSaveReferencePrice}
+          onCapture={onCaptureReferencePrice}
+          captureError={captureError}
+        />
+      ) : null}
       <ul className="recommend-plan-journeys">
         {plan.journeys.map((journey, journeyIndex) => (
           <li key={journey.journeyId}>
@@ -243,11 +351,15 @@ function recommendationRows(plan: RecommendationPlan) {
   )
 }
 
-function RecommendationTable({ plans, busy, onAction, onStartBooking }: {
+function RecommendationTable({ plans, busy, onAction, onStartBooking, referencePrices, onSaveReferencePrice, onCaptureReferencePrice, captureError }: {
   plans: RecommendationPlan[]
   busy: boolean
   onAction: (prompt: string) => void
   onStartBooking?: (plan: RecommendationPlan) => void
+  referencePrices?: Record<string, ReferencePrice>
+  onSaveReferencePrice?: (planId: string, amount: number, currency: string) => void
+  onCaptureReferencePrice?: (planId: string, url: string) => Promise<void>
+  captureError?: string | null
 }) {
   return (
     <div className="table-scroll recommend-table-scroll">
@@ -278,7 +390,16 @@ function RecommendationTable({ plans, busy, onAction, onStartBooking }: {
               >
                 {row.isFirstPlanRow ? (
                   <th scope="rowgroup" rowSpan={rows.length} className="recommend-plan-cell">
-                    <PlanSummary plan={plan} busy={busy} onAction={onAction} onStartBooking={onStartBooking} />
+                    <PlanSummary
+                      plan={plan}
+                      busy={busy}
+                      onAction={onAction}
+                      onStartBooking={onStartBooking}
+                      referencePrice={referencePrices?.[plan.planId]}
+                      onSaveReferencePrice={onSaveReferencePrice}
+                      onCaptureReferencePrice={onCaptureReferencePrice}
+                      captureError={captureError}
+                    />
                   </th>
                 ) : null}
                 {row.isFirstJourneyRow ? (
@@ -325,11 +446,19 @@ function RecommendationTable({ plans, busy, onAction, onStartBooking }: {
   )
 }
 
-export function FlightRecommendationsView({ result, evidence = [], busy, onAction, isLatest = false, onStartBooking, staleNotice }: {
+export function FlightRecommendationsView({ result, evidence = [], busy, onAction, isLatest = false, onStartBooking, staleNotice, referencePrices, onSaveReferencePrice, onCaptureReferencePrice, captureError }: {
   result: FlightRecommendations
   evidence?: SearchResult[]
   busy: boolean
   onAction: (prompt: string) => void
+  /** Recorded Ctrip figures for these plans, indexed by planId. Display-only — it never
+   *  reorders, filters or annotates a plan's standing (CLAUDE.md 推荐边界). */
+  referencePrices?: Record<string, ReferencePrice>
+  /** Grants the Ctrip-comparison cell. See PlanSummary. */
+  onSaveReferencePrice?: (planId: string, amount: number, currency: string) => void
+  /** Grants in-place capture via the optional browser extension. See PlanSummary. */
+  onCaptureReferencePrice?: (planId: string, url: string) => Promise<void>
+  captureError?: string | null
   /** Grants the "load more" capability, the way `onContinue` grants the fare CTA. Only the
    *  task's newest recommendation may continue: the skill consumes a continuation token per
    *  page and mints a new one, so an older page's token is already dead. Withheld by default
@@ -395,6 +524,10 @@ export function FlightRecommendationsView({ result, evidence = [], busy, onActio
           busy={busy}
           onAction={onAction}
           onStartBooking={staleNotice ? undefined : onStartBooking}
+          referencePrices={referencePrices}
+          onSaveReferencePrice={onSaveReferencePrice}
+          onCaptureReferencePrice={onCaptureReferencePrice}
+          captureError={captureError}
         />
       ) : null}
 

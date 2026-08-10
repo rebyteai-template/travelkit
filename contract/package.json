@@ -1,0 +1,13 @@
+{
+  "name": "@travelkit/contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Types shared by the TravelKit app and the Ctrip-price browser extension. Types only, zero dependencies.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

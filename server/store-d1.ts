@@ -8,7 +8,7 @@
  * migrations/0001_init.sql (applied via `wrangler d1 migrations apply`), so unlike
  * the old better-sqlite3 driver this file does no CREATE TABLE / PRAGMA at runtime.
  */
-import type { Store, Task, Prompt, TaskSummary, AgentComputerRow, AttachmentMeta } from './store.ts'
+import type { Store, Task, Prompt, TaskSummary, AgentComputerRow, AttachmentMeta, ReferencePrice } from './store.ts'
 
 /** Reserved `tenant_credentials` key for the write-plane probe. Deliberately colon-free: a tenant
  *  key is always `<org>:<uid>`, so this row is unreachable through any tenant lookup. */
@@ -292,6 +292,35 @@ export function createD1Store(db: D1Database): Store {
       // One batched round-trip instead of N sequential INSERTs.
       const stmt = db.prepare(`INSERT OR IGNORE INTO prompt_files (prompt_id, idx, file_id) VALUES (?, ?, ?)`)
       await db.batch(fileIds.map((id, i) => stmt.bind(promptId, i, id)))
+    },
+    async saveReferencePrice(userEmail, taskId, planId, price, raw) {
+      await db
+        .prepare(
+          `INSERT INTO reference_prices
+             (user_email, task_id, plan_id, amount, currency, source, source_url, captured_at, raw_json, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+           ON CONFLICT(user_email, task_id, plan_id) DO UPDATE SET
+             amount      = excluded.amount,
+             currency    = excluded.currency,
+             source      = excluded.source,
+             source_url  = excluded.source_url,
+             captured_at = excluded.captured_at,
+             raw_json    = excluded.raw_json,
+             updated_at  = excluded.updated_at`,
+        )
+        .bind(userEmail, taskId, planId, price.amount, price.currency, price.source, price.sourceUrl, price.capturedAt, raw)
+        .run()
+    },
+    async listReferencePrices(userEmail, taskId) {
+      const { results } = await db
+        .prepare(
+          `SELECT plan_id AS planId, amount, currency, source,
+                  source_url AS sourceUrl, captured_at AS capturedAt, updated_at AS updatedAt
+             FROM reference_prices WHERE user_email = ? AND task_id = ?`,
+        )
+        .bind(userEmail, taskId)
+        .all<ReferencePrice>()
+      return results
     },
     async listPromptAttachments(promptId) {
       const { results } = await db

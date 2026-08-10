@@ -162,6 +162,39 @@ export const cancelPrompt = (promptId: string): Promise<{ ok: boolean }> =>
  *  for the VM to boot. Hidden behind the sidebar-brand 10-click easter egg in App.tsx. */
 export const newSandbox = (): Promise<{ sandboxId?: string }> => postJson('/debug/new-sandbox', {})
 
+/** What Ctrip is asking for a plan, as recorded by OP (typed) or the browser extension (scraped).
+ *  Deliberately separate from the recommendation itself: our plan totals are verified with the
+ *  supplier, this is a figure off another company's page, and the UI must keep them distinguishable. */
+export interface ReferencePrice {
+  planId: string
+  amount: number
+  currency: string
+  source: 'manual' | 'ctrip-extension'
+  sourceUrl: string | null
+  capturedAt: string
+  updatedAt: string
+}
+
+/** Every Ctrip comparison recorded against this task, to hydrate the table on load. */
+export async function listReferencePrices(taskId: string): Promise<ReferencePrice[]> {
+  return (await json<{ referencePrices: ReferencePrice[] }>(`/tasks/${taskId}/reference-prices`)).referencePrices
+}
+
+/** Record (or overwrite) one plan's Ctrip comparison. Manual entry and extension capture use the
+ *  same endpoint — `source` is the only thing that differs, and the server re-validates everything. */
+export const saveReferencePrice = (
+  taskId: string,
+  planId: string,
+  price: {
+    amount: number
+    currency: string
+    source: 'manual' | 'ctrip-extension'
+    sourceUrl?: string | null
+    capturedAt?: string
+    raw?: unknown
+  },
+): Promise<{ ok: boolean }> => postJson(`/tasks/${taskId}/plans/${planId}/reference-price`, price)
+
 /** The GLOBAL debug config (skill ref + manager prompt) shared by EVERY user — not per-browser.
  *  `defaults` are the built-in fallbacks (shown as placeholders; an empty field = use the default).
  *  `isAdmin` says whether THIS caller may save (uid ∈ ADMIN_UIDS). */

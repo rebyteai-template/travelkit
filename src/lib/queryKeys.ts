@@ -10,9 +10,11 @@ export const queryKeys = {
   sessions: () => ['sessions'] as const,
   taskContent: (taskId: string) => ['taskContent', taskId] as const,
   debugConfig: () => ['debugConfig'] as const,
+  referencePrices: (taskId: string) => ['referencePrices', taskId] as const,
 }
 
 /** Enable conditions for queries whose params may be absent. */
 export const queryEnabled = {
   taskContent: (taskId: string | null | undefined) => !!taskId,
+  referencePrices: (taskId: string | null | undefined) => !!taskId,
 }

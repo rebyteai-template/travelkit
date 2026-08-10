@@ -13,6 +13,8 @@ import { Lightbox } from './Lightbox.tsx'
 import { UserQuestion } from './UserQuestion.tsx'
 import { AgentStatus } from './AgentStatus.tsx'
 import type { UserQuestionAnswer } from '../user-question.ts'
+import { useReferencePrices, useSaveReferencePrice } from '../hooks/useReferencePrices.ts'
+import { captureToPrice, useCtripBridge } from '../hooks/useCtripBridge.ts'
 
 /** Local-timezone send time shown under a bubble (HH:MM today, M月D日 HH:MM otherwise); the full
  *  date + timezone is on hover. Renders nothing when the bubble carries no timestamp. */
@@ -85,6 +87,36 @@ export function ChatPanel({
 }) {
   const chatRef = useRef<HTMLDivElement>(null)
   const [lightbox, setLightbox] = useState<string | null>(null)
+  // The Ctrip comparison figures for this session. taskId is captured here rather than
+  // threaded down through the table — the recommendation components stay task-agnostic and
+  // take a plain callback, the same shape as onStartBooking.
+  const { byPlan: referencePrices } = useReferencePrices(sessionKey)
+  const saveReferencePrice = useSaveReferencePrice(sessionKey)
+  const bridge = useCtripBridge()
+  const onSaveReferencePrice = sessionKey
+    ? (planId: string, amount: number, currency: string) =>
+        saveReferencePrice.mutate({ planId, amount, currency, source: 'manual' })
+    : undefined
+  // Only offered once an extension has actually answered. Without one the plan cell keeps the
+  // plain Ctrip link and the manual input, which is the baseline flow for everyone else.
+  const onCaptureReferencePrice = sessionKey && bridge.installed
+    ? async (planId: string, url: string) => {
+        const capture = await bridge.capture(url)
+        const price = capture && captureToPrice(capture)
+        // A capture that read nothing usable leaves the manual input alone rather than writing
+        // a zero — the operator is about to quote against this number.
+        if (!capture || !price) return
+        saveReferencePrice.mutate({
+          planId,
+          amount: price.amount,
+          currency: price.currency,
+          source: 'ctrip-extension',
+          sourceUrl: capture.url,
+          capturedAt: capture.capturedAt,
+          raw: capture,
+        })
+      }
+    : undefined
   const latestActivity = [...chat].reverse().find((bubble) => bubble.activity)?.activity
   const hasLiveActivity = latestActivity?.state === 'active'
   useLayoutEffect(() => {
@@ -175,6 +207,10 @@ export function ChatPanel({
                         isLatest={b.recommendations === recommendationsLatest}
                         onStartBooking={onStartBooking}
                         staleNotice={staleNotice}
+                        referencePrices={referencePrices}
+                        onSaveReferencePrice={onSaveReferencePrice}
+                        onCaptureReferencePrice={onCaptureReferencePrice}
+                        captureError={bridge.lastError}
                       />
                     )
                     : b.cards
