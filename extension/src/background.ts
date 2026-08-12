@@ -15,6 +15,10 @@ import type { CtripCapture } from '@travelkit/contract'
 
 /** ctrip tabId → who asked. Session-scoped: pending work is meaningless across a browser restart. */
 const PENDING_KEY = 'pendingCaptures'
+/** The single window we reuse for every capture. The page is deliberately left open afterwards
+ *  so the operator can go and look at it when a number seems off — but one window PER CLICK
+ *  would bury the desktop, and every plan in a recommendation shares the same Ctrip URL anyway. */
+const CAPTURE_WINDOW_KEY = 'captureWindow'
 
 interface Pending {
   /** Correlates the reply with the SPA's request. */
@@ -71,10 +75,29 @@ function isCtripListUrl(url: string): boolean {
  * offset rather than stacked exactly behind, because a fully occluded window can be marked
  * hidden by Chrome and we would be back to the throttled case.
  */
-async function openCapture(url: string, nonce: string, sourceTabId: number): Promise<void> {
-  let tabId: number | undefined
-  let windowId: number | undefined
+/** Point the existing capture window at `url` and return its tab, or undefined if we do not
+ *  have one any more (first run, or the operator closed it). Re-navigating re-injects the
+ *  content script, which is what actually re-runs the capture. */
+async function reuseCaptureWindow(url: string): Promise<{ tabId: number; windowId: number | undefined } | undefined> {
+  const stored = (await chrome.storage.session.get(CAPTURE_WINDOW_KEY))[CAPTURE_WINDOW_KEY] as
+    | { tabId: number; windowId: number }
+    | undefined
+  if (!stored) return undefined
+  try {
+    const tab = await chrome.tabs.get(stored.tabId)
+    if (tab.id === undefined) return undefined
+    // Same URL would not reload on its own, and a reload is how the content script runs again.
+    if (tab.url === url) await chrome.tabs.reload(tab.id)
+    else await chrome.tabs.update(tab.id, { url })
+    return stored
+  } catch {
+    return undefined // window/tab is gone — caller makes a new one
+  }
+}
 
+/** Make the capture window. `focused: false` is the whole point: the page has to be visible to
+ *  render, but the operator's keyboard focus must stay in TravelKit. */
+async function spawnCaptureWindow(url: string): Promise<{ tabId: number; windowId: number } | undefined> {
   try {
     const win = await chrome.windows.create({
       url,
@@ -85,21 +108,32 @@ async function openCapture(url: string, nonce: string, sourceTabId: number): Pro
       top: 60,
       left: 60,
     })
-    windowId = win?.id
-    tabId = win?.tabs?.[0]?.id
+    const tabId = win?.tabs?.[0]?.id
+    const windowId = win?.id
+    if (tabId === undefined || windowId === undefined) return undefined
+    await chrome.storage.session.set({ [CAPTURE_WINDOW_KEY]: { tabId, windowId } })
+    return { tabId, windowId }
   } catch {
-    /* popup blocked or unsupported — fall through to a plain tab */
+    return undefined
   }
+}
 
-  // Last resort. It renders poorly in the background, but a capture that reports zero flights
-  // is a reported failure, not a wrong price, and the content script will ask to be revealed.
-  if (tabId === undefined) {
+async function openCapture(url: string, nonce: string, sourceTabId: number): Promise<void> {
+  // Reuse the window we already have, if it is still around. Navigating it re-injects the
+  // content script, which is what re-runs the capture.
+  let target = await reuseCaptureWindow(url)
+
+  if (!target) target = await spawnCaptureWindow(url)
+
+  // Last resort when a popup cannot be created at all. A background tab renders poorly, but the
+  // content script reports zero flights honestly and asks to be revealed rather than guessing.
+  if (!target) {
     const tab = await chrome.tabs.create({ url, active: false })
-    tabId = tab.id
-    windowId = undefined
+    if (tab.id === undefined) return
+    target = { tabId: tab.id, windowId: undefined }
   }
-  if (tabId === undefined) return
 
+  const { tabId, windowId } = target
   const map = await readPending()
   map[String(tabId)] = { nonce, sourceTabId, windowId }
   await writePending(map)
@@ -111,16 +145,6 @@ async function reply(tabId: number, message: unknown): Promise<void> {
     await chrome.tabs.sendMessage(tabId, message)
   } catch {
     /* the asking tab is gone — drop the result */
-  }
-}
-
-/** Close a popup window we created for a capture. Never touches a window we did not spawn. */
-async function disposePopup(windowId: number | undefined): Promise<void> {
-  if (windowId === undefined) return
-  try {
-    await chrome.windows.remove(windowId)
-  } catch {
-    /* already gone */
   }
 }
 
@@ -177,9 +201,6 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
         nonce: pending.nonce,
         capture: tagged.capture as CtripCapture,
       })
-      // Dispose of the popup WE spawned — one per capture would litter the desktop. This is not
-      // the tab-closing the operator asked us to drop: that was a tab in their own window.
-      await disposePopup(pending.windowId)
       return
     }
 

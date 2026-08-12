@@ -52,6 +52,12 @@ checks = [
         "NODE_ENV !== 'production'" in manifest_src
         and manifest_src.index('const DEV') < manifest_src.index('localhost:4000')),
     ('SW：只开 flights.ctrip.com',  "hostname === 'flights.ctrip.com'" in sw),
+    # The operator's one hard requirement: capturing must never steal keyboard focus. The only
+    # place focus may be taken is revealTab, for a failure a person has to go and fix.
+    ('抓取窗口不抢焦点',
+        'focused: false' in sw
+        and sw.count('focused: true') == 1
+        and 'focused: true' in sw[sw.index('async function revealTab'):]),
     ('服务端：sourceUrl 白名单',    "startsWith('https://flights.ctrip.com/')" in routes),
     ('服务端：身份取自 session/path',
         'ownedTask(store, taskId, userEmail)' in routes and "c.req.param('planId')" in routes),
