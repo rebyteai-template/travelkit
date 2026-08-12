@@ -31,7 +31,16 @@ function isFromApp(event: MessageEvent): boolean {
 window.addEventListener('message', (event: MessageEvent) => {
   if (!isFromApp(event)) return
   const data = event.data as Partial<PageMessage> | null
-  if (!data || data.channel !== BRIDGE_CHANNEL || data.type !== 'capture-request') return
+  if (!data || data.channel !== BRIDGE_CHANNEL) return
+
+  // The app asking whether anyone is here. Answering on demand is what makes the handshake
+  // order-independent — the announce below can fire before the app is listening.
+  if (data.type === 'ping') {
+    announce()
+    return
+  }
+
+  if (data.type !== 'capture-request') return
   if (typeof data.url !== 'string' || typeof data.nonce !== 'string') return
 
   // The URL is validated again in the service worker before any tab is opened — this side is
@@ -68,6 +77,13 @@ function post(message: BridgeMessage): void {
   window.postMessage(message, location.origin)
 }
 
-// Announce ourselves so the app can drop its "install the extension" hint. Carries only a
-// version string.
-post({ channel: BRIDGE_CHANNEL, type: 'extension-ready', version: chrome.runtime.getManifest().version })
+/** Tell the app we exist. Carries only a version string. */
+function announce(): void {
+  post({ channel: BRIDGE_CHANNEL, type: 'extension-ready', version: chrome.runtime.getManifest().version })
+}
+
+// Fire once on injection for the case where the app is already listening. This alone is NOT
+// enough — at `document_idle` the app's React listener may not be attached yet, and a missed
+// announce would look exactly like "no extension installed" forever. The `ping` handler above
+// is the reliable half; this just makes the common case instant.
+announce()

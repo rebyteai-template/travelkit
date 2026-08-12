@@ -72,10 +72,18 @@ export function useCtripBridge(): CtripBridge {
     }
 
     window.addEventListener('message', onMessage)
+    // Ask, rather than only waiting to be told. The extension's own announce fires once at
+    // `document_idle` and can beat this listener into existence; without a ping that miss is
+    // permanent and looks identical to "not installed". Asking makes the order irrelevant.
+    // Repeated a couple of times because the content script may still be injecting on a cold load.
+    const ping = () => window.postMessage({ channel: BRIDGE_CHANNEL, type: 'ping' }, window.location.origin)
+    ping()
+    const retries = [250, 1000].map((delay) => window.setTimeout(ping, delay))
     const timer = window.setTimeout(() => setInstalled((current) => current ?? false), READY_GRACE_MS)
     return () => {
       window.removeEventListener('message', onMessage)
       window.clearTimeout(timer)
+      retries.forEach(window.clearTimeout)
     }
   }, [])
 

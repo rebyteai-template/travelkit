@@ -18,12 +18,19 @@ bridge = read('extension/src/tripdesk-content.ts')
 spa = read('src/hooks/useCtripBridge.ts')
 routes = read('server/routes.ts')
 sw = read('extension/src/background.ts')
+manifest_src = (root / 'extension/manifest.config.ts').read_text(encoding='utf8')
+
+# Which app origins this build actually allows, and whether it is the dev variant.
+APP_ORIGINS = mani['content_scripts'][1]['matches']
+IS_DEV = any('localhost' in o or '127.0.0.1' in o for o in APP_ORIGINS)
 
 checks = [
     ('权限：无 tabs',              'tabs' not in (mani.get('permissions') or [])),
     ('权限：无 <all_urls>',        '<all_urls>' not in json.dumps(mani)),
-    ('权限：host 恰为携程+tripdesk',
-        sorted(mani['host_permissions']) == ['https://flights.ctrip.com/*', 'https://tripdesk.impo.ai/*']),
+    # dist holds whichever variant was built last, so judge against that rather than
+    # assuming production — a dev build carrying localhost is correct, not a violation.
+    ('权限：host = 携程 + 允许的 app 源',
+        sorted(mani['host_permissions']) == sorted(['https://flights.ctrip.com/*'] + APP_ORIGINS)),
     ('桥：不读 sessionStorage',    'sessionStorage' not in bridge),
     ('扩展：全域无 td_tk',          'td_tk' not in ext_src),
     ('扩展：全域无 X-Travelkit',    'X-Travelkit' not in ext_src),
@@ -36,9 +43,14 @@ checks = [
     ('桥：校验 event.source',       'event.source === window' in bridge),
     ('SPA：校验 origin+source',
         'event.source !== window || event.origin !== window.location.origin' in spa),
-    ('生产 manifest 无 localhost',
-        not any('localhost' in x or '127.0.0.1' in x
-                for x in mani['host_permissions'] + [m for cs in mani['content_scripts'] for m in cs['matches']])),
+    # A dev build may add the dev server; nothing else. A prod build may add nothing at all.
+    ('构建变体：dev 只多出本地 4000，prod 一条不多',
+        set(APP_ORIGINS) - {'https://tripdesk.impo.ai/*'} <=
+        ({'http://localhost:4000/*', 'http://127.0.0.1:4000/*'} if IS_DEV else set())),
+    # The gate itself, read from source: localhost can only ever enter a non-production build.
+    ('源码里 localhost 受 NODE_ENV 门控',
+        "NODE_ENV !== 'production'" in manifest_src
+        and manifest_src.index('const DEV') < manifest_src.index('localhost:4000')),
     ('SW：只开 flights.ctrip.com',  "hostname === 'flights.ctrip.com'" in sw),
     ('服务端：sourceUrl 白名单',    "startsWith('https://flights.ctrip.com/')" in routes),
     ('服务端：身份取自 session/path',

@@ -76,7 +76,14 @@ export type BridgeMessage =
 /** Messages the SPA puts on the bridge, addressed to the extension. */
 export type PageMessage =
   /** Asking the extension to open a Ctrip page and read it. `nonce` correlates the reply. */
-  { channel: typeof BRIDGE_CHANNEL; type: 'capture-request'; nonce: string; url: string }
+  | { channel: typeof BRIDGE_CHANNEL; type: 'capture-request'; nonce: string; url: string }
+  /** "Anyone there?" — the app asks on mount and the extension answers `extension-ready`.
+   *
+   *  Needed because the extension's unsolicited announce fires once, at `document_idle`,
+   *  which can easily land BEFORE React has attached its listener; that message is then gone
+   *  and the app would decide, wrongly and permanently, that no extension is installed.
+   *  Making the app able to ask removes the ordering from the equation entirely. */
+  | { channel: typeof BRIDGE_CHANNEL; type: 'ping' }
 
 /** Namespace tag on every bridge message. Both sides check it (plus the window origin) before
  *  looking at anything else, so unrelated postMessage traffic on the same window is ignored. */
