@@ -77,16 +77,6 @@ async function reply(tabId: number, message: unknown): Promise<void> {
   }
 }
 
-/** We opened this tab and we read what we needed, so we clean it up. Leaving a pile of Ctrip
- *  tabs behind would be its own annoyance, and the operator never had to see this one. */
-async function disposeTab(tabId: number): Promise<void> {
-  try {
-    await chrome.tabs.remove(tabId)
-  } catch {
-    /* already closed */
-  }
-}
-
 /** Bring the tab forward instead of closing it, for the failures a person has to resolve —
  *  chiefly Ctrip refusing a browser with no session, where the fix is to log in on that page.
  *  Closing it would hide the one thing the operator needs to act on. */
@@ -120,6 +110,14 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     const ctripTabId = sender.tab?.id
     if (ctripTabId === undefined) return
 
+    // A hidden tab that still has not rendered asks to be shown. Chrome withholds painting and
+    // rAF from background tabs, and if Ctrip's list turns out to need either, being visible is
+    // the only way through — better a visible tab than a capture that quietly failed.
+    if (tagged.type === 'reveal-tab') {
+      await revealTab(ctripTabId)
+      return
+    }
+
     if (tagged.type === 'ctrip-capture') {
       const pending = await takePending(ctripTabId)
       if (!pending) return
@@ -128,8 +126,6 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
         nonce: pending.nonce,
         capture: tagged.capture as CtripCapture,
       })
-      // Read what we came for — take the tab away again so the operator never had to see it.
-      await disposeTab(ctripTabId)
       return
     }
 
@@ -137,16 +133,23 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
       const pending = await takePending(ctripTabId)
       if (!pending) return
       const needsPerson = tagged.needsPerson === true
+      // Logged so a failed capture can be diagnosed from the service worker console instead of
+      // by re-running it and hoping. Carries only page-shape numbers — no prices, no identity.
+      console.warn('[ctrip] capture failed', {
+        url: tagged.url,
+        reason: tagged.reason,
+        trace: tagged.trace,
+      })
       await reply(pending.sourceTabId, {
         type: 'capture-failed',
         nonce: pending.nonce,
         url: typeof tagged.url === 'string' ? tagged.url : '',
         reason: typeof tagged.reason === 'string' ? tagged.reason : '读取失败',
       })
-      // Only surface the tab when a human has something to DO there (log in, clear a
-      // challenge). For a parse failure there is nothing to see, so it goes away quietly.
+      // Surface the tab when a person has something to DO there (log in, or look at a page
+      // that would not render behind their back). Otherwise leave it be — the operator asked
+      // that these tabs not vanish, and a closed tab takes the evidence with it.
       if (needsPerson) await revealTab(ctripTabId)
-      else await disposeTab(ctripTabId)
     }
   })()
   // Nothing here answers synchronously; the reply travels back as its own message.
