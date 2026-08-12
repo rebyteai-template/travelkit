@@ -10,6 +10,7 @@
  * `stream_event` deltas — simpler and good enough. API-returned business fields
  * may surface in this internal workbench; credentials and request secrets must not.
  */
+import { isCtripFlightListUrl } from '@travelkit/contract'
 import type { Attachment, PromptContent } from './api.ts'
 import { CHANGE_FIELD_LABELS } from './booking.ts'
 import { recognizeOperatorAction } from './operator-actions.ts'
@@ -732,7 +733,7 @@ function parseRecommendationPlan(raw: unknown): RecommendationPlan | null {
     ...(explanation ? { explanation } : {}),
     copyText,
     // Display-only link; an absent or non-Ctrip URL just drops the field, never the plan.
-    ...(str(raw.ctripUrl).startsWith('https://flights.ctrip.com/') ? { ctripUrl: str(raw.ctripUrl) } : {}),
+    ...(isCtripFlightListUrl(str(raw.ctripUrl)) ? { ctripUrl: str(raw.ctripUrl) } : {}),
     capabilities,
   }
 }

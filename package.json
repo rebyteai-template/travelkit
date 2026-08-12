@@ -24,7 +24,7 @@
     "test:rebyte:remove": "node --env-file=.env.local --import tsx server/rebyte/removeprobe.ts",
     "ext:dev": "pnpm --filter extension dev",
     "ext:build": "pnpm --filter extension build",
-    "typecheck:all": "pnpm -r --if-present typecheck && tsc --noEmit"
+    "typecheck:all": "tsc --noEmit && pnpm --filter extension typecheck"
   },
   "dependencies": {
     "@tanstack/query-async-storage-persister": "^5.101.0",

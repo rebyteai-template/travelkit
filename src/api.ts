@@ -1,3 +1,5 @@
+import type { ReferencePriceSource } from '@travelkit/contract'
+
 const BASE = '/api/app'
 
 // Embed identity: the host frames us as `…/#uid=<uid>&token=<travelkitToken>`. We read the
@@ -169,7 +171,7 @@ export interface ReferencePrice {
   planId: string
   amount: number
   currency: string
-  source: 'manual' | 'ctrip-extension'
+  source: ReferencePriceSource
   sourceUrl: string | null
   capturedAt: string
   updatedAt: string
@@ -188,7 +190,7 @@ export const saveReferencePrice = (
   price: {
     amount: number
     currency: string
-    source: 'manual' | 'ctrip-extension'
+    source: ReferencePriceSource
     sourceUrl?: string | null
     capturedAt?: string
     raw?: unknown

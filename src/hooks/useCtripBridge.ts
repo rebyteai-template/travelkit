@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { BRIDGE_CHANNEL, CTRIP_CURRENCY, type BridgeMessage, type CtripCapture } from '@travelkit/contract'
+import type { CompactPrice } from '../frames.ts'
 
 /**
  * Talks to the Ctrip-price browser extension, if the operator installed one.
@@ -32,8 +33,9 @@ export interface CtripBridge {
   version: string | null
 }
 
-/** A scrape opens a real tab and waits for a lazily rendered list; the extension gives up at 20s,
- *  so this has to outlast that or we would report a timeout the extension is about to answer. */
+/** A scrape opens a real page and waits for a lazily rendered list. The extension gives up at
+ *  DEADLINE_MS (25s, extension/src/ctrip-content.ts); this must outlast that or we would report
+ *  a timeout for a capture the extension is about to answer. */
 const CAPTURE_TIMEOUT_MS = 30_000
 
 export function useCtripBridge(): CtripBridge {
@@ -59,8 +61,6 @@ export function useCtripBridge(): CtripBridge {
         return
       }
       if (data.type === 'capture' || data.type === 'capture-failed') {
-        // An extension that answers is installed, whatever the answer was.
-        setInstalled(true)
         const nonce = 'nonce' in data ? String(data.nonce) : ''
         const resolve = waiting.current.get(nonce)
         if (!resolve) return
@@ -94,15 +94,19 @@ export function useCtripBridge(): CtripBridge {
   const capture = useCallback((url: string) => {
     return new Promise<CtripCapture | null>((resolve) => {
       const nonce = crypto.randomUUID()
-      waiting.current.set(nonce, resolve)
-      window.postMessage({ channel: BRIDGE_CHANNEL, type: 'capture-request', nonce, url }, window.location.origin)
       // Never leave a caller hanging: if no extension is listening, nothing will ever reply.
-      window.setTimeout(() => {
-        if (!waiting.current.has(nonce)) return
+      // Cleared on the answering path, so a finished capture does not keep a timer (and the
+      // closure over `resolve`) alive for another half minute.
+      const timer = window.setTimeout(() => {
         waiting.current.delete(nonce)
         setLastError('携程读取超时，请手动填写')
         resolve(null)
       }, CAPTURE_TIMEOUT_MS)
+      waiting.current.set(nonce, (result) => {
+        window.clearTimeout(timer)
+        resolve(result)
+      })
+      window.postMessage({ channel: BRIDGE_CHANNEL, type: 'capture-request', nonce, url }, window.location.origin)
     })
   }, [])
 
@@ -115,7 +119,10 @@ export function useCtripBridge(): CtripBridge {
  *  price the operator quotes against, so "I could not read it" has to stay distinguishable from
  *  "it is cheap". Note the basis: Ctrip lists fares PRE-TAX while our plan totals include tax;
  *  the UI labels the gap as un-normalized rather than pretending they are comparable. */
-export function captureToPrice(capture: CtripCapture): { amount: number; currency: string } | null {
-  if (capture.blocked || capture.lowest === null || capture.lowest <= 0) return null
-  return { amount: capture.lowest, currency: CTRIP_CURRENCY }
+export function captureToPrice(capture: CtripCapture): CompactPrice | null {
+  // `Number.isFinite` first: `NaN <= 0` is false, so without it a NaN fare would pass every
+  // other guard here and become a number the operator quotes against.
+  if (capture.blocked || !Number.isFinite(capture.lowest)) return null
+  const amount = capture.lowest as number
+  return amount > 0 ? { amount, currency: CTRIP_CURRENCY } : null
 }

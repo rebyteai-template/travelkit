@@ -69,8 +69,10 @@ export interface AttachmentMeta {
 /** How a plan's Ctrip comparison figure got here. `manual` = OP typed it after looking;
  *  `ctrip-extension` = the browser extension read it off the page OP opened. Kept apart
  *  because they fail differently — a typo versus a stale selector — and the UI has to be
- *  able to say which one produced the number on screen. */
-export type ReferencePriceSource = 'manual' | 'ctrip-extension'
+ *  able to say which one produced the number on screen. Declared in the shared contract so the
+ *  SPA, the Worker and the extension cannot drift on it. */
+export type { ReferencePriceSource } from '@travelkit/contract'
+import type { ReferencePriceSource } from '@travelkit/contract'
 
 /** One plan's recorded Ctrip comparison (see migrations/0014). Never part of the
  *  flight-recommendations contract: this is a number off someone else's page, not a

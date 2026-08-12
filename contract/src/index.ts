@@ -1,9 +1,10 @@
 /**
  * The wire contract between the Ctrip-price browser extension and the TravelKit app.
  *
- * Types only, and the package it lives in has no dependencies — that is what keeps React and
- * workers-types out of the extension bundle, and `chrome` types out of the Worker. Both sides
- * import it with `import type`, so it contributes zero runtime bytes to either.
+ * Mostly types, plus the few constants and the one predicate that both sides must agree on.
+ * The package has NO dependencies, which is what keeps React and workers-types out of the
+ * extension bundle and `chrome` types out of the Worker — that, not the absence of runtime
+ * code, is the property worth preserving here.
  *
  * Nothing here is a booking fact. Everything in this file was read off a third party's web page
  * and is only ever an operator hint (see migrations/0014).
@@ -34,12 +35,6 @@ export interface CtripFlightRow {
   isTransfer: boolean
 }
 
-/** The ±1 week low-fare strip Ctrip renders above the list. Free to collect while we are there. */
-export interface CtripCalendarEntry {
-  date: string
-  lowest: number | null
-}
-
 /** One scrape of one Ctrip list page.
  *
  *  `blocked` and a `fallback-scan` strategy with `count: 0` are the fail-closed signals: the
@@ -53,12 +48,25 @@ export interface CtripCapture {
   count: number
   /** Cheapest listed fare, or null when nothing parsed. */
   lowest: number | null
-  calendar: CtripCalendarEntry[]
   flights: CtripFlightRow[]
 }
 
 /** Ctrip quotes CNY on the mainland site; the field exists so the app never has to assume. */
 export const CTRIP_CURRENCY = 'CNY'
+
+/** How a plan's comparison figure got here. Typed once: the SPA, the Worker and the extension
+ *  all name these two, and a third source must be impossible to add in only one of them. */
+export type ReferencePriceSource = 'manual' | 'ctrip-extension'
+
+/** Upper bound on a comparison figure, shared so the input cannot accept what the endpoint
+ *  refuses. It rejected values above this while the UI happily submitted them, and with no
+ *  error path on the mutation the 400 was invisible: the field cleared and the operator
+ *  believed the number had saved. */
+export const MAX_REFERENCE_AMOUNT = 10_000_000
+
+/** The one place "is this a usable comparison figure" is decided. */
+export const isUsableReferenceAmount = (amount: unknown): amount is number =>
+  typeof amount === 'number' && Number.isFinite(amount) && amount > 0 && amount <= MAX_REFERENCE_AMOUNT
 
 /** Messages the extension puts on the page bridge, addressed to the TravelKit SPA.
  *
@@ -85,6 +93,31 @@ export type PageMessage =
    *  Making the app able to ask removes the ordering from the equation entirely. */
   | { channel: typeof BRIDGE_CHANNEL; type: 'ping' }
 
+/** Ctrip's flight-list origin. The extension derives its `content_scripts` match from it and
+ *  the recognizer below checks against it, so widening to another OTA is a one-line change. */
+export const CTRIP_ORIGIN = 'https://flights.ctrip.com' as const
+
+/** Is this a Ctrip flight-list URL?
+ *
+ *  One rule, three gates: what the extension will OPEN, what the server will STORE, and what the
+ *  app will RENDER as a link. Those were three separate spellings — two `startsWith` checks and
+ *  one parsed-hostname check — which already disagreed: an uppercase host passed the extension
+ *  and failed the server, so the tab opened, the scrape worked, and the stored row silently lost
+ *  its "where did this number come from" link. Parsing is the correct form; `startsWith` on a
+ *  raw string is fooled by case and by anything before the first `/`.
+ *
+ *  Length is capped because the value is echoed back into the UI. */
+export function isCtripFlightListUrl(raw: unknown): raw is string {
+  if (typeof raw !== 'string' || raw.length > 2048) return false
+  try {
+    const url = new URL(raw)
+    return `${url.protocol}//${url.hostname}`.toLowerCase() === CTRIP_ORIGIN
+  } catch {
+    return false
+  }
+}
+
 /** Namespace tag on every bridge message. Both sides check it (plus the window origin) before
  *  looking at anything else, so unrelated postMessage traffic on the same window is ignored. */
 export const BRIDGE_CHANNEL = 'travelkit-ctrip-bridge' as const
+

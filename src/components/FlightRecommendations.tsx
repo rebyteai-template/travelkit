@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import type {
+  CompactPrice,
   FareSource,
   FlightRecommendations,
   RecommendationJourney,
@@ -8,6 +9,8 @@ import type {
   RecommendationStatus,
   SearchResult,
 } from '../frames.ts'
+import { isUsableReferenceAmount } from '@travelkit/contract'
+
 import type { ReferencePrice } from '../api.ts'
 import { paxSummary, planTotal } from '../booking.ts'
 import { buildRecommendationContinuationPrompt, buildRecommendationRetryPrompt } from '../operator-actions.ts'
@@ -144,7 +147,7 @@ function SegmentFactLines({ plan, journeyIndex, segmentIndex, field }: {
  *  no "cheaper elsewhere" warning (CLAUDE.md 推荐边界) — it shows the numbers and stops. */
 function ReferencePriceCell({ plan, total, price, onSave, onCapture, captureError, captureVersion }: {
   plan: RecommendationPlan
-  total: { amount: number; currency: string }
+  total: CompactPrice
   price?: ReferencePrice
   onSave: (planId: string, amount: number, currency: string) => void
   onCapture?: (planId: string, url: string) => Promise<void>
@@ -157,7 +160,9 @@ function ReferencePriceCell({ plan, total, price, onSave, onCapture, captureErro
 
   function commit() {
     const amount = Number(draft.trim())
-    if (!Number.isFinite(amount) || amount <= 0) return
+    // Same predicate the endpoint uses. Without it the field accepted figures the server then
+    // refused with a 400 nothing surfaced — the input cleared and the operator believed it saved.
+    if (!isUsableReferenceAmount(amount)) return
     onSave(plan.planId, amount, total.currency)
     setDraft('')
     setEditing(false)

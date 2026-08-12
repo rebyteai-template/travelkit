@@ -14,7 +14,8 @@ export const queryKeys = {
 }
 
 /** Enable conditions for queries whose params may be absent. */
+const hasTask = (taskId: string | null | undefined) => !!taskId
 export const queryEnabled = {
-  taskContent: (taskId: string | null | undefined) => !!taskId,
-  referencePrices: (taskId: string | null | undefined) => !!taskId,
+  taskContent: hasTask,
+  referencePrices: hasTask,
 }

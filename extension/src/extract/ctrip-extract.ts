@@ -1,4 +1,4 @@
-import type { CtripCapture, CtripCalendarEntry, CtripFlightRow, ExtractStrategy } from '@travelkit/contract'
+import type { CtripCapture, CtripFlightRow, ExtractStrategy } from '@travelkit/contract'
 
 /**
  * Reads the fare list off a rendered flights.ctrip.com page.
@@ -11,6 +11,11 @@ import type { CtripCapture, CtripCalendarEntry, CtripFlightRow, ExtractStrategy 
  * It fails CLOSED. When the anchors are gone it says so via `strategy`/`count` instead of
  * returning a plausible number: the figure feeds a price the operator is about to quote, and a
  * wrong one is worse than none. The UI's answer to an empty capture is "type it in yourself".
+ *
+ * Split into a cheap probe and a full parse on purpose. The caller polls for up to 25s while the
+ * list lazily renders, and the expensive work — reading `innerText` off every div — is exactly
+ * what would run on the ticks where nothing has rendered yet. `probe()` answers "is it there"
+ * for the price of one `querySelectorAll`; `extractCtripPrices()` runs once, at the end.
  */
 
 const clean = (value: string | null | undefined): string => (value || '').replace(/\s+/g, ' ').trim()
@@ -21,6 +26,18 @@ function money(text: string | null | undefined): number | null {
   if (!match?.[1]) return null
   const amount = Number(match[1].replace(/,/g, ''))
   return Number.isFinite(amount) ? amount : null
+}
+
+/** `textContent`, not `innerText`: the latter is layout-dependent and forces a synchronous
+ *  reflow of the whole page, which is not something to do on a 500ms poll. */
+const isBlocked = (): boolean => /whaleguard|安全验证|请输入验证码/.test(document.body?.textContent || '')
+
+/** How many fare rows are on the page right now, and whether we are reading Ctrip's own
+ *  container or guessing. Cheap enough to call twice a second. */
+export function probe(): { count: number; strategy: ExtractStrategy; blocked: boolean } {
+  const items = document.querySelectorAll('.flight-item').length
+  if (items > 0) return { count: items, strategy: 'flight-item', blocked: false }
+  return { count: 0, strategy: 'fallback-scan', blocked: isBlocked() }
 }
 
 function parseCard(node: Element): CtripFlightRow {
@@ -52,38 +69,27 @@ function parseCard(node: Element): CtripFlightRow {
 }
 
 /** Last resort when `.flight-item` is gone: find the smallest container per flight number.
- *  Reported as `fallback-scan` so a redesign is visible in the data rather than silent. */
+ *  Reported as `fallback-scan` so a redesign is visible in the data rather than silent.
+ *  Deliberately NOT called while polling — it reads `innerText` (whole rendered subtree) off
+ *  every div on the page, so it only runs once, after the wait is over. */
 function fallbackNodes(): Element[] {
-  const smallest = new Map<string, HTMLElement>()
+  const smallest = new Map<string, { node: HTMLElement; length: number }>()
   for (const node of document.querySelectorAll<HTMLElement>('div')) {
-    const text = node.innerText || ''
-    if (text.length > 600 || !/¥\d/.test(text)) continue
-    const key = /\b([A-Z0-9]{2}\d{3,4})\b/.exec(text)?.[1]
+    // Cheap rejects first — `innerText` is the expensive part, so do not touch it until the
+    // node has at least passed a textContent-based sniff.
+    const raw = node.textContent || ''
+    if (raw.length > 600 || !/¥\d/.test(raw)) continue
+    const key = /\b([A-Z0-9]{2}\d{3,4})\b/.exec(raw)?.[1]
     if (!key) continue
+    const text = node.innerText || ''
     const previous = smallest.get(key)
-    if (!previous || text.length < (previous.innerText || '').length) smallest.set(key, node)
+    if (!previous || text.length < previous.length) smallest.set(key, { node, length: text.length })
   }
-  return [...smallest.values()]
+  return [...smallest.values()].map((entry) => entry.node)
 }
 
-/** The ±1 week low-fare strip above the list — useful for date haggling, free to collect. */
-function parseCalendar(): CtripCalendarEntry[] {
-  const seen = new Set<string>()
-  const entries: CtripCalendarEntry[] = []
-  for (const node of document.querySelectorAll<HTMLElement>('*')) {
-    if (node.children.length) continue
-    const date = clean(node.textContent)
-    if (!/^\d{2}-\d{2}周[一二三四五六日]$/.test(date) || seen.has(date)) continue
-    const lowest = money(node.parentElement?.innerText)
-    if (lowest === null) continue
-    seen.add(date)
-    entries.push({ date, lowest })
-  }
-  return entries
-}
-
+/** The full parse. Run once, when the list has settled or the wait has run out. */
 export function extractCtripPrices(): CtripCapture {
-  const bodyText = document.body?.innerText || ''
   let strategy: ExtractStrategy = 'flight-item'
   let nodes = [...document.querySelectorAll('.flight-item')]
   if (!nodes.length) {
@@ -98,10 +104,9 @@ export function extractCtripPrices(): CtripCapture {
     url: location.href,
     capturedAt: new Date().toISOString(),
     strategy,
-    blocked: /whaleguard|安全验证|请输入验证码/.test(bodyText),
+    blocked: isBlocked(),
     count: flights.length,
     lowest: fares.length ? Math.min(...fares) : null,
-    calendar: parseCalendar(),
     flights,
   }
 }

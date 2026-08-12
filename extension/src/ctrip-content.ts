@@ -1,6 +1,6 @@
 import type { CtripCapture } from '@travelkit/contract'
 
-import { extractCtripPrices } from './extract/ctrip-extract.ts'
+import { extractCtripPrices, probe } from './extract/ctrip-extract.ts'
 
 /**
  * Waits for Ctrip's fare list to render, reads it, and reports back.
@@ -11,13 +11,15 @@ import { extractCtripPrices } from './extract/ctrip-extract.ts'
  * stays purely event-driven and is woken by the message this file eventually sends.
  *
  * Patience is not optional: the list is lazily rendered and measurably needs more than six
- * seconds (a 6s wait came back empty on one route and twelve was reliable). Polling until the
- * count stops changing beats a fixed sleep — it returns early when the page is quick and still
- * covers a slow one.
+ * seconds (a 6s wait came back empty on one route and twelve was reliable). The loop polls the
+ * cheap `probe()` and parses exactly once, at the end — parsing on every tick meant reading
+ * `innerText` off every div on the page ~30 times per capture, all but one of them discarded,
+ * and doing it inside the very wait that exists to let the page render.
  */
 
 /** Give up here. Past this the page is broken, blocked, or asking for a login — all cases where
- *  the honest answer is "I could not read it", not a half-rendered list. */
+ *  the honest answer is "I could not read it", not a half-rendered list.
+ *  `useCtripBridge`'s CAPTURE_TIMEOUT_MS must stay comfortably above this. */
 const DEADLINE_MS = 25_000
 const POLL_MS = 500
 /** Two identical non-zero counts in a row means the list settled; stop early rather than
@@ -42,48 +44,44 @@ interface Trace {
 
 async function captureWhenReady(): Promise<{ capture: CtripCapture; trace: Trace }> {
   const started = Date.now()
-  const deadline = started + DEADLINE_MS
   const counts: number[] = []
-  let previousCount = -1
-  let stable = 0
-  let everHidden = document.visibilityState === 'hidden'
+  let everHidden = false
   let revealed = false
-  let latest = extractCtripPrices()
 
-  const trace = (): Trace => ({
-    elapsedMs: Date.now() - started,
-    visibility: document.visibilityState,
-    everHidden,
-    revealed,
-    counts: counts.slice(-12),
-  })
-
-  while (Date.now() < deadline) {
-    latest = extractCtripPrices()
-    counts.push(latest.count)
+  while (Date.now() - started < DEADLINE_MS) {
+    const { count, blocked } = probe()
+    counts.push(count)
     if (document.visibilityState === 'hidden') everHidden = true
-    // A block page will never fill in; reporting it immediately is more useful than waiting.
-    if (latest.blocked) return { capture: latest, trace: trace() }
-    if (latest.count > 0 && latest.count === previousCount) {
-      stable += 1
-      if (stable >= STABLE_POLLS) return { capture: latest, trace: trace() }
-    } else {
-      stable = 0
-    }
+
+    // A block page will never fill in; reporting it beats waiting out the deadline.
+    if (blocked) break
+    // `counts` is the only record of the sequence — the previous tick is the entry before this
+    // one, so there is no separate counter to keep in step with it.
+    const settled = count > 0 && counts.slice(-STABLE_POLLS).every((n) => n === count)
+    if (settled && counts.length >= STABLE_POLLS) break
 
     // Nothing at all after a generous wait, and we are hidden: Chrome may be withholding the
     // work this page needs. Ask to be brought forward and keep going rather than failing —
     // an interruption the operator can see beats a capture that silently gave up.
-    if (!revealed && latest.count === 0 && document.visibilityState === 'hidden'
+    if (!revealed && count === 0 && document.visibilityState === 'hidden'
         && Date.now() - started > REVEAL_AFTER_MS) {
       revealed = true
       void chrome.runtime.sendMessage({ type: 'reveal-tab' })
     }
 
-    previousCount = latest.count
     await sleep(POLL_MS)
   }
-  return { capture: latest, trace: trace() }
+
+  return {
+    capture: extractCtripPrices(),
+    trace: {
+      elapsedMs: Date.now() - started,
+      visibility: document.visibilityState,
+      everHidden,
+      revealed,
+      counts: counts.slice(-12),
+    },
+  }
 }
 
 async function run() {
@@ -98,13 +96,11 @@ async function run() {
 
   // Distinguish "the page never rendered while we were hidden" from "we read the page and it
   // did not parse" — same empty result, opposite fixes, and only the trace tells them apart.
-  const neverRendered = trace.counts.every((n) => n === 0)
-  const looksThrottled = neverRendered && trace.everHidden
+  const looksThrottled = trace.counts.every((n) => n === 0) && trace.everHidden
 
   // `blocked` in practice means Ctrip refused a browser with no session — measured: a signed-in
   // profile renders the list from the same IP, a cookie-less one gets `whaleguard block`, and so
-  // does a brand-new profile. So say what actually fixes it instead of "please retry", and ask
-  // the background to bring this tab forward: logging in is something only a person can do here.
+  // does a brand-new profile. So say what actually fixes it instead of "please retry".
   await chrome.runtime.sendMessage({
     type: 'ctrip-capture-failed',
     url: location.href,

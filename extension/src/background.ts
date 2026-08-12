@@ -1,4 +1,4 @@
-import type { CtripCapture } from '@travelkit/contract'
+import { isCtripFlightListUrl, type CtripCapture } from '@travelkit/contract'
 
 /**
  * Relay between the two content scripts. It opens the Ctrip tab, remembers which TravelKit tab
@@ -49,17 +49,6 @@ async function takePending(tabId: number): Promise<Pending | undefined> {
     await writePending(map)
   }
   return entry
-}
-
-/** Only ever open Ctrip. The URL arrives over the page bridge, so it is treated as untrusted
- *  input: anything but a Ctrip flight-list URL is refused rather than opened. */
-function isCtripListUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    return parsed.protocol === 'https:' && parsed.hostname === 'flights.ctrip.com'
-  } catch {
-    return false
-  }
 }
 
 /**
@@ -118,7 +107,20 @@ async function spawnCaptureWindow(url: string): Promise<{ tabId: number; windowI
   }
 }
 
+/** Drop pending entries whose tab is gone. Done here, on the rare path, rather than from a
+ *  `chrome.tabs.onRemoved` listener — that woke the service worker on every tab close in the
+ *  browser, forever, to check a map that is empty almost all of the time. */
+async function reapPending(): Promise<void> {
+  const map = await readPending()
+  const alive = await Promise.all(
+    Object.keys(map).map(async (id) => (await chrome.tabs.get(Number(id)).then(() => true, () => false)) && id),
+  )
+  const survivors = Object.fromEntries(alive.filter((id): id is string => Boolean(id)).map((id) => [id, map[id]!]))
+  if (Object.keys(survivors).length !== Object.keys(map).length) await writePending(survivors)
+}
+
 async function openCapture(url: string, nonce: string, sourceTabId: number): Promise<void> {
+  await reapPending()
   // Reuse the window we already have, if it is still around. Navigating it re-injects the
   // content script, which is what re-runs the capture.
   let target = await reuseCaptureWindow(url)
@@ -172,7 +174,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
       const nonce = typeof tagged.nonce === 'string' ? tagged.nonce : ''
       const sourceTabId = sender.tab?.id
       if (!nonce || sourceTabId === undefined) return
-      if (!isCtripListUrl(url)) {
+      if (!isCtripFlightListUrl(url)) {
         await reply(sourceTabId, { type: 'capture-failed', nonce, url, reason: '不是携程航班列表地址' })
         return
       }
@@ -232,7 +234,3 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
   return false
 })
 
-/** A tab closed before it reported leaves a dangling entry; drop it so the map cannot grow. */
-chrome.tabs.onRemoved.addListener((tabId) => {
-  void takePending(tabId)
-})

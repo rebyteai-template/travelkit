@@ -10,10 +10,21 @@ import pkg from './package.json' with { type: 'json' }
  *
  *  `pnpm --filter extension build` (mode=production) therefore ships a manifest that knows
  *  about tripdesk and nothing else; the localhost entry cannot leak into a release. */
-const DEV = process.env.NODE_ENV !== 'production'
+const PROD_ORIGIN = 'https://tripdesk.impo.ai/*'
+/** Opt IN to the dev variant. The earlier `!== 'production'` was backwards: it made the
+ *  localhost-bearing manifest the default, so any invocation that simply left NODE_ENV unset
+ *  produced it — the exact leak the comment claimed was impossible. Widening the allowlist is
+ *  the dangerous direction, so it now has to be asked for explicitly. */
+const DEV = process.env.NODE_ENV === 'development'
 const APP_ORIGINS = DEV
-  ? ['https://tripdesk.impo.ai/*', 'http://localhost:4000/*', 'http://127.0.0.1:4000/*']
-  : ['https://tripdesk.impo.ai/*']
+  ? [PROD_ORIGIN, 'http://localhost:4000/*', 'http://127.0.0.1:4000/*']
+  : [PROD_ORIGIN]
+
+// Fail the build rather than ship a manifest that talks to more than it should. Defaulting to
+// production is not enough on its own: this is the assertion that makes the guarantee real.
+if (!DEV && APP_ORIGINS.join() !== PROD_ORIGIN) {
+  throw new Error(`production manifest must allow only ${PROD_ORIGIN}, got ${APP_ORIGINS.join()}`)
+}
 
 /** A build stamp, so "did my reload actually take?" is answerable at a glance.
  *

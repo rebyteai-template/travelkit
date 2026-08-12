@@ -24,6 +24,7 @@ import { normalizeRouteMode } from './store.ts'
 import { MAX_UPLOAD_BYTES, attachmentPromptSuffix } from './attachments.ts'
 import type { FileRef } from './rebyte/client.ts'
 import { isUserQuestionAnswer, type UserQuestionAnswer } from '../src/user-question.ts'
+import { isCtripFlightListUrl, isUsableReferenceAmount } from '@travelkit/contract'
 // Built-in defaults surfaced to the debug panel (placeholder / "填入默认") and used as the fallback
 // when the global config field is empty. Single source of truth stays in these two modules.
 import { SKILL_REF as DEFAULT_SKILL_REF } from '../worker/skill-ref.ts'
@@ -283,19 +284,11 @@ app.get('/prompts/:id/stream', async (c) => {
 // credential of its own — it hands what it scraped to the SPA over a page bridge and the SPA
 // writes it with the embed session it already has — so this route needs no second auth path.
 
-/** Ctrip list URLs only. Same whitelist idea as the `ctripUrl` check in src/frames.ts: the
- *  value is echoed back to the UI, so anything that is not plainly a Ctrip page is dropped
- *  rather than stored. Absent is fine; wrong is not. */
-function cleanSourceUrl(raw: unknown): string | null {
-  return typeof raw === 'string' && raw.startsWith('https://flights.ctrip.com/') && raw.length <= 2048
-    ? raw
-    : null
-}
+/** Ctrip list URLs only — the value is echoed back to the UI, so anything that is not plainly a
+ *  Ctrip page is dropped rather than stored. Absent is fine; wrong is not. Shares one recognizer
+ *  with the extension and the frame parser: three spellings of this rule had already diverged. */
+const cleanSourceUrl = (raw: unknown): string | null => (isCtripFlightListUrl(raw) ? raw : null)
 
-/** Guard against a scrape that produced something unusable. A price OP will quote against has
- *  to be a real, finite, positive amount — NaN/Infinity/negative/absurd all mean the extractor
- *  (or the typist) got it wrong, and a wrong number here is worse than no number at all. */
-const MAX_REFERENCE_AMOUNT = 10_000_000
 /** The extractor payload is evidence, not display data; cap it so a runaway page cannot bloat a row. */
 const MAX_RAW_BYTES = 64 * 1024
 
@@ -324,10 +317,11 @@ app.post('/tasks/:id/plans/:planId/reference-price', async (c) => {
     raw?: unknown
   }>()
 
-  const amount = typeof body.amount === 'number' ? body.amount : NaN
-  if (!Number.isFinite(amount) || amount <= 0 || amount > MAX_REFERENCE_AMOUNT) {
-    return c.json({ error: 'invalid amount' }, 400)
-  }
+  // Guard against a scrape (or a typist) that produced something unusable: a wrong number here
+  // is worse than no number, because the operator quotes against it. Same predicate the input
+  // uses, so the UI cannot accept a value this rejects.
+  const amount = body.amount
+  if (!isUsableReferenceAmount(amount)) return c.json({ error: 'invalid amount' }, 400)
   const currency = typeof body.currency === 'string' && /^[A-Z]{3}$/.test(body.currency) ? body.currency : ''
   if (!currency) return c.json({ error: 'invalid currency' }, 400)
   const source: ReferencePriceSource | null =

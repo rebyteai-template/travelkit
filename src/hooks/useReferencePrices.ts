@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
+import type { ReferencePriceSource } from '@travelkit/contract'
+
 import { listReferencePrices, saveReferencePrice, type ReferencePrice } from '../api.ts'
 import { queryKeys, queryEnabled } from '../lib/queryKeys.ts'
 
@@ -14,7 +16,7 @@ export function useReferencePrices(taskId: string | null) {
 
   const byPlan: Record<string, ReferencePrice> = {}
   for (const price of query.data ?? []) byPlan[price.planId] = price
-  return { byPlan, isLoading: query.isLoading }
+  return { byPlan }
 }
 
 /** Record one plan's Ctrip figure. Refetches the task's list on success rather than patching the
@@ -27,7 +29,7 @@ export function useSaveReferencePrice(taskId: string | null) {
       planId: string
       amount: number
       currency: string
-      source: 'manual' | 'ctrip-extension'
+      source: ReferencePriceSource
       sourceUrl?: string | null
       capturedAt?: string
       raw?: unknown
