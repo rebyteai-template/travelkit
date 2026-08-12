@@ -142,13 +142,14 @@ function SegmentFactLines({ plan, journeyIndex, segmentIndex, field }: {
  *  un-normalized rather than presented as a clean saving — OP gets the comparison without being
  *  handed a falsely precise one. Second, it never judges the plan: no reordering, no dropping,
  *  no "cheaper elsewhere" warning (CLAUDE.md 推荐边界) — it shows the numbers and stops. */
-function ReferencePriceCell({ plan, total, price, onSave, onCapture, captureError }: {
+function ReferencePriceCell({ plan, total, price, onSave, onCapture, captureError, captureVersion }: {
   plan: RecommendationPlan
   total: { amount: number; currency: string }
   price?: ReferencePrice
   onSave: (planId: string, amount: number, currency: string) => void
   onCapture?: (planId: string, url: string) => Promise<void>
   captureError?: string | null
+  captureVersion?: string | null
 }) {
   const [draft, setDraft] = useState('')
   const [editing, setEditing] = useState(false)
@@ -213,7 +214,13 @@ function ReferencePriceCell({ plan, total, price, onSave, onCapture, captureErro
         onBlur={commit}
       />
       {canCapture ? (
-        <button type="button" className="recommend-reference-capture" disabled={capturing} onClick={() => void runCapture()}>
+        <button
+          type="button"
+          className="recommend-reference-capture"
+          disabled={capturing}
+          title={captureVersion ? `携程比价插件 ${captureVersion}` : undefined}
+          onClick={() => void runCapture()}
+        >
           {capturing ? '读取中…' : '自动读取'}
         </button>
       ) : null}
@@ -223,7 +230,7 @@ function ReferencePriceCell({ plan, total, price, onSave, onCapture, captureErro
   )
 }
 
-function PlanSummary({ plan, busy, onAction, onStartBooking, referencePrice, onSaveReferencePrice, onCaptureReferencePrice, captureError }: {
+function PlanSummary({ plan, busy, onAction, onStartBooking, referencePrice, onSaveReferencePrice, onCaptureReferencePrice, captureError, captureVersion }: {
   plan: RecommendationPlan
   busy: boolean
   onAction: (prompt: string) => void
@@ -233,6 +240,7 @@ function PlanSummary({ plan, busy, onAction, onStartBooking, referencePrice, onS
    *  tab and types the figure, which is the baseline flow. */
   onCaptureReferencePrice?: (planId: string, url: string) => Promise<void>
   captureError?: string | null
+  captureVersion?: string | null
   /** Grants the Ctrip-comparison cell, the way `onStartBooking` grants the booking entry.
    *  Withheld by default so a caller that forgets renders no input rather than one whose
    *  writes silently go nowhere. */
@@ -270,6 +278,7 @@ function PlanSummary({ plan, busy, onAction, onStartBooking, referencePrice, onS
           onSave={onSaveReferencePrice}
           onCapture={onCaptureReferencePrice}
           captureError={captureError}
+          captureVersion={captureVersion}
         />
       ) : null}
       <ul className="recommend-plan-journeys">
@@ -351,7 +360,7 @@ function recommendationRows(plan: RecommendationPlan) {
   )
 }
 
-function RecommendationTable({ plans, busy, onAction, onStartBooking, referencePrices, onSaveReferencePrice, onCaptureReferencePrice, captureError }: {
+function RecommendationTable({ plans, busy, onAction, onStartBooking, referencePrices, onSaveReferencePrice, onCaptureReferencePrice, captureError, captureVersion }: {
   plans: RecommendationPlan[]
   busy: boolean
   onAction: (prompt: string) => void
@@ -360,6 +369,7 @@ function RecommendationTable({ plans, busy, onAction, onStartBooking, referenceP
   onSaveReferencePrice?: (planId: string, amount: number, currency: string) => void
   onCaptureReferencePrice?: (planId: string, url: string) => Promise<void>
   captureError?: string | null
+  captureVersion?: string | null
 }) {
   return (
     <div className="table-scroll recommend-table-scroll">
@@ -399,6 +409,7 @@ function RecommendationTable({ plans, busy, onAction, onStartBooking, referenceP
                       onSaveReferencePrice={onSaveReferencePrice}
                       onCaptureReferencePrice={onCaptureReferencePrice}
                       captureError={captureError}
+                      captureVersion={captureVersion}
                     />
                   </th>
                 ) : null}
@@ -446,7 +457,7 @@ function RecommendationTable({ plans, busy, onAction, onStartBooking, referenceP
   )
 }
 
-export function FlightRecommendationsView({ result, evidence = [], busy, onAction, isLatest = false, onStartBooking, staleNotice, referencePrices, onSaveReferencePrice, onCaptureReferencePrice, captureError }: {
+export function FlightRecommendationsView({ result, evidence = [], busy, onAction, isLatest = false, onStartBooking, staleNotice, referencePrices, onSaveReferencePrice, onCaptureReferencePrice, captureError, captureVersion }: {
   result: FlightRecommendations
   evidence?: SearchResult[]
   busy: boolean
@@ -459,6 +470,7 @@ export function FlightRecommendationsView({ result, evidence = [], busy, onActio
   /** Grants in-place capture via the optional browser extension. See PlanSummary. */
   onCaptureReferencePrice?: (planId: string, url: string) => Promise<void>
   captureError?: string | null
+  captureVersion?: string | null
   /** Grants the "load more" capability, the way `onContinue` grants the fare CTA. Only the
    *  task's newest recommendation may continue: the skill consumes a continuation token per
    *  page and mints a new one, so an older page's token is already dead. Withheld by default
@@ -528,6 +540,7 @@ export function FlightRecommendationsView({ result, evidence = [], busy, onActio
           onSaveReferencePrice={onSaveReferencePrice}
           onCaptureReferencePrice={onCaptureReferencePrice}
           captureError={captureError}
+          captureVersion={captureVersion}
         />
       ) : null}
 

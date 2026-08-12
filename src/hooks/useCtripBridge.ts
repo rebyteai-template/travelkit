@@ -28,6 +28,8 @@ export interface CtripBridge {
   capture: (url: string) => Promise<CtripCapture | null>
   /** The last failure's operator-facing reason, for a hint beside the manual input. */
   lastError: string | null
+  /** Build stamp of the extension that answered, so a stale reload is visible from the app. */
+  version: string | null
 }
 
 /** A scrape opens a real tab and waits for a lazily rendered list; the extension gives up at 20s,
@@ -37,6 +39,7 @@ const CAPTURE_TIMEOUT_MS = 30_000
 export function useCtripBridge(): CtripBridge {
   const [installed, setInstalled] = useState<boolean | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
+  const [version, setVersion] = useState<string | null>(null)
   /** nonce → the promise waiting on it. */
   const waiting = useRef(new Map<string, (capture: CtripCapture | null) => void>())
 
@@ -52,6 +55,7 @@ export function useCtripBridge(): CtripBridge {
 
       if (data.type === 'extension-ready') {
         setInstalled(true)
+        setVersion(typeof data.version === 'string' ? data.version : null)
         return
       }
       if (data.type === 'capture' || data.type === 'capture-failed') {
@@ -102,7 +106,7 @@ export function useCtripBridge(): CtripBridge {
     })
   }, [])
 
-  return { installed, capture, lastError }
+  return { installed, capture, lastError, version }
 }
 
 /** Pull the figure we want out of a capture: the cheapest listed fare.

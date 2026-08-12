@@ -77,9 +77,12 @@ function post(message: BridgeMessage): void {
   window.postMessage(message, location.origin)
 }
 
-/** Tell the app we exist. Carries only a version string. */
+/** Tell the app we exist. Carries only a version string — the build stamp when there is one,
+ *  so the page can show which build it is actually talking to and a stale reload is visible
+ *  from inside the app, not just on chrome://extensions. */
 function announce(): void {
-  post({ channel: BRIDGE_CHANNEL, type: 'extension-ready', version: chrome.runtime.getManifest().version })
+  const manifest = chrome.runtime.getManifest()
+  post({ channel: BRIDGE_CHANNEL, type: 'extension-ready', version: manifest.version_name || manifest.version })
 }
 
 // Fire once on injection for the case where the app is already listening. This alone is NOT

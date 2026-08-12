@@ -211,6 +211,7 @@ export function ChatPanel({
                         onSaveReferencePrice={onSaveReferencePrice}
                         onCaptureReferencePrice={onCaptureReferencePrice}
                         captureError={bridge.lastError}
+                        captureVersion={bridge.version}
                       />
                     )
                     : b.cards

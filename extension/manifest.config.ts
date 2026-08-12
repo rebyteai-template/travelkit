@@ -1,3 +1,5 @@
+import { execSync } from 'node:child_process'
+
 import { defineManifest } from '@crxjs/vite-plugin'
 
 import pkg from './package.json' with { type: 'json' }
@@ -12,6 +14,24 @@ const DEV = process.env.NODE_ENV !== 'production'
 const APP_ORIGINS = DEV
   ? ['https://tripdesk.impo.ai/*', 'http://localhost:4000/*', 'http://127.0.0.1:4000/*']
   : ['https://tripdesk.impo.ai/*']
+
+/** A build stamp, so "did my reload actually take?" is answerable at a glance.
+ *
+ *  `version` must be dot-separated numbers, which cannot say anything useful about a local
+ *  rebuild. `version_name` is free text and is what chrome://extensions displays when present,
+ *  so the commit and build time go there. It changes on every build even when the code did not,
+ *  which is exactly the property needed: if the extensions page still shows the old stamp, the
+ *  reload did not happen. */
+function buildStamp(): string {
+  let sha = 'nogit'
+  try {
+    sha = execSync('git rev-parse --short HEAD', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch { /* not a repo / git unavailable — the timestamp alone still moves */ }
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const when = `${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
+  return `${pkg.version} · ${sha} · ${when}${DEV ? ' · dev' : ''}`
+}
 
 /**
  * Least privilege, deliberately.
@@ -33,6 +53,7 @@ export default defineManifest({
   name: 'TravelKit 携程比价',
   description: '在你自己的浏览器里读取携程价格，回填到 TravelKit 推荐表，省去来回切换标签页。',
   version: pkg.version,
+  version_name: buildStamp(),
   minimum_chrome_version: '116',
 
   host_permissions: ['https://flights.ctrip.com/*', ...APP_ORIGINS],
