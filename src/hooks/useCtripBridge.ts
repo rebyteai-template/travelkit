@@ -96,7 +96,7 @@ export function useCtripBridge(): CtripBridge {
       window.setTimeout(() => {
         if (!waiting.current.has(nonce)) return
         waiting.current.delete(nonce)
-        setLastError('读取超时，请手动填写')
+        setLastError('携程读取超时，请手动填写')
         resolve(null)
       }, CAPTURE_TIMEOUT_MS)
     })

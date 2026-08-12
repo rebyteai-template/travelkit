@@ -53,19 +53,25 @@ async function run() {
   // Report the failure explicitly rather than sending an empty capture that reads like a
   // successful zero-flight day. The SPA turns this into "未识别，请手填".
   const failed = capture.blocked || capture.count === 0 || capture.lowest === null
-  await chrome.runtime.sendMessage(
-    failed
-      ? {
-          type: 'ctrip-capture-failed',
-          url: location.href,
-          reason: capture.blocked
-            ? '携程要求验证，请在该标签页完成后重试'
-            : capture.strategy === 'fallback-scan'
-              ? '页面结构无法识别（携程可能已改版）'
-              : '未读到航班价格',
-        }
-      : { type: 'ctrip-capture', capture },
-  )
+  if (!failed) {
+    await chrome.runtime.sendMessage({ type: 'ctrip-capture', capture })
+    return
+  }
+
+  // `blocked` in practice means Ctrip refused a browser with no session — measured: a signed-in
+  // profile renders the list from the same IP, a cookie-less one gets `whaleguard block`, and so
+  // does a brand-new profile. So say what actually fixes it instead of "please retry", and ask
+  // the background to bring this tab forward: logging in is something only a person can do here.
+  await chrome.runtime.sendMessage({
+    type: 'ctrip-capture-failed',
+    url: location.href,
+    needsPerson: capture.blocked,
+    reason: capture.blocked
+      ? '携程未登录（或要求验证）。已为你打开该标签页，登录后重试'
+      : capture.strategy === 'fallback-scan'
+        ? '页面结构无法识别（携程可能已改版）'
+        : '未读到航班价格',
+  })
 }
 
 void run().catch((error: unknown) => {

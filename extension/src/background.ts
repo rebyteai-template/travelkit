@@ -56,10 +56,12 @@ function isCtripListUrl(url: string): boolean {
 }
 
 async function openCapture(url: string, nonce: string, sourceTabId: number): Promise<void> {
-  // Foreground on purpose. Chrome throttles rendering in background tabs, and Ctrip's lazily
-  // rendered list may then never appear — the capture would time out for no good reason. It also
-  // keeps the flow honest: the operator asked for this and can see it happen.
-  const tab = await chrome.tabs.create({ url, active: true })
+  // Background, so the operator is never yanked out of the workbench — the whole point is that
+  // nobody has to go and look at this page. A hidden tab still loads, runs JS and builds DOM;
+  // what Chrome withholds is painting and requestAnimationFrame, and the extractor only counts
+  // DOM nodes. If a future Ctrip redesign ever does need a visible viewport, the symptom is a
+  // capture that reports zero flights, and `revealTab` below is the escape hatch.
+  const tab = await chrome.tabs.create({ url, active: false })
   if (tab.id === undefined) return
   const map = await readPending()
   map[String(tab.id)] = { nonce, sourceTabId }
@@ -72,6 +74,27 @@ async function reply(tabId: number, message: unknown): Promise<void> {
     await chrome.tabs.sendMessage(tabId, message)
   } catch {
     /* the asking tab is gone — drop the result */
+  }
+}
+
+/** We opened this tab and we read what we needed, so we clean it up. Leaving a pile of Ctrip
+ *  tabs behind would be its own annoyance, and the operator never had to see this one. */
+async function disposeTab(tabId: number): Promise<void> {
+  try {
+    await chrome.tabs.remove(tabId)
+  } catch {
+    /* already closed */
+  }
+}
+
+/** Bring the tab forward instead of closing it, for the failures a person has to resolve —
+ *  chiefly Ctrip refusing a browser with no session, where the fix is to log in on that page.
+ *  Closing it would hide the one thing the operator needs to act on. */
+async function revealTab(tabId: number): Promise<void> {
+  try {
+    await chrome.tabs.update(tabId, { active: true })
+  } catch {
+    /* gone */
   }
 }
 
@@ -105,18 +128,25 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
         nonce: pending.nonce,
         capture: tagged.capture as CtripCapture,
       })
+      // Read what we came for — take the tab away again so the operator never had to see it.
+      await disposeTab(ctripTabId)
       return
     }
 
     if (tagged.type === 'ctrip-capture-failed') {
       const pending = await takePending(ctripTabId)
       if (!pending) return
+      const needsPerson = tagged.needsPerson === true
       await reply(pending.sourceTabId, {
         type: 'capture-failed',
         nonce: pending.nonce,
         url: typeof tagged.url === 'string' ? tagged.url : '',
         reason: typeof tagged.reason === 'string' ? tagged.reason : '读取失败',
       })
+      // Only surface the tab when a human has something to DO there (log in, clear a
+      // challenge). For a parse failure there is nothing to see, so it goes away quietly.
+      if (needsPerson) await revealTab(ctripTabId)
+      else await disposeTab(ctripTabId)
     }
   })()
   // Nothing here answers synchronously; the reply travels back as its own message.
