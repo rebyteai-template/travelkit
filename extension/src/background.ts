@@ -21,6 +21,9 @@ interface Pending {
   nonce: string
   /** The TravelKit tab to answer. */
   sourceTabId: number
+  /** Set when we spawned a popup window for this capture, so it can be cleaned up again.
+   *  Absent for the plain-tab fallback, whose tab we leave alone. */
+  windowId?: number
 }
 
 type PendingMap = Record<string, Pending>
@@ -55,16 +58,50 @@ function isCtripListUrl(url: string): boolean {
   }
 }
 
+/**
+ * Open the page somewhere it will actually render, without stealing the operator's focus.
+ *
+ * A background tab does not work: measured, a foreground tab captures and a background one
+ * comes back with zero flights every time. Chrome withholds painting and rAF from hidden tabs
+ * and Ctrip's list needs them, so `active: false` produces a page that never fills in.
+ *
+ * An unfocused popup window threads the needle. Its tab is the active tab OF THAT WINDOW, so
+ * `document.visibilityState` is `visible` and the list renders — while `focused: false` leaves
+ * keyboard focus in TravelKit, which is the part the operator actually cared about. It is
+ * offset rather than stacked exactly behind, because a fully occluded window can be marked
+ * hidden by Chrome and we would be back to the throttled case.
+ */
 async function openCapture(url: string, nonce: string, sourceTabId: number): Promise<void> {
-  // Background, so the operator is never yanked out of the workbench — the whole point is that
-  // nobody has to go and look at this page. A hidden tab still loads, runs JS and builds DOM;
-  // what Chrome withholds is painting and requestAnimationFrame, and the extractor only counts
-  // DOM nodes. If a future Ctrip redesign ever does need a visible viewport, the symptom is a
-  // capture that reports zero flights, and `revealTab` below is the escape hatch.
-  const tab = await chrome.tabs.create({ url, active: false })
-  if (tab.id === undefined) return
+  let tabId: number | undefined
+  let windowId: number | undefined
+
+  try {
+    const win = await chrome.windows.create({
+      url,
+      focused: false,
+      type: 'popup',
+      width: 1100,
+      height: 780,
+      top: 60,
+      left: 60,
+    })
+    windowId = win?.id
+    tabId = win?.tabs?.[0]?.id
+  } catch {
+    /* popup blocked or unsupported — fall through to a plain tab */
+  }
+
+  // Last resort. It renders poorly in the background, but a capture that reports zero flights
+  // is a reported failure, not a wrong price, and the content script will ask to be revealed.
+  if (tabId === undefined) {
+    const tab = await chrome.tabs.create({ url, active: false })
+    tabId = tab.id
+    windowId = undefined
+  }
+  if (tabId === undefined) return
+
   const map = await readPending()
-  map[String(tab.id)] = { nonce, sourceTabId }
+  map[String(tabId)] = { nonce, sourceTabId, windowId }
   await writePending(map)
 }
 
@@ -77,12 +114,25 @@ async function reply(tabId: number, message: unknown): Promise<void> {
   }
 }
 
+/** Close a popup window we created for a capture. Never touches a window we did not spawn. */
+async function disposePopup(windowId: number | undefined): Promise<void> {
+  if (windowId === undefined) return
+  try {
+    await chrome.windows.remove(windowId)
+  } catch {
+    /* already gone */
+  }
+}
+
 /** Bring the tab forward instead of closing it, for the failures a person has to resolve —
  *  chiefly Ctrip refusing a browser with no session, where the fix is to log in on that page.
  *  Closing it would hide the one thing the operator needs to act on. */
-async function revealTab(tabId: number): Promise<void> {
+async function revealTab(tabId: number, windowId?: number): Promise<void> {
   try {
     await chrome.tabs.update(tabId, { active: true })
+    // The capture window is deliberately unfocused; activating a tab inside it is not enough to
+    // put it where the operator can see it, so raise the window as well.
+    if (windowId !== undefined) await chrome.windows.update(windowId, { focused: true })
   } catch {
     /* gone */
   }
@@ -114,7 +164,8 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     // rAF from background tabs, and if Ctrip's list turns out to need either, being visible is
     // the only way through — better a visible tab than a capture that quietly failed.
     if (tagged.type === 'reveal-tab') {
-      await revealTab(ctripTabId)
+      const map = await readPending()
+      await revealTab(ctripTabId, map[String(ctripTabId)]?.windowId)
       return
     }
 
@@ -126,6 +177,9 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
         nonce: pending.nonce,
         capture: tagged.capture as CtripCapture,
       })
+      // Dispose of the popup WE spawned — one per capture would litter the desktop. This is not
+      // the tab-closing the operator asked us to drop: that was a tab in their own window.
+      await disposePopup(pending.windowId)
       return
     }
 
@@ -149,7 +203,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
       // Surface the tab when a person has something to DO there (log in, or look at a page
       // that would not render behind their back). Otherwise leave it be — the operator asked
       // that these tabs not vanish, and a closed tab takes the evidence with it.
-      if (needsPerson) await revealTab(ctripTabId)
+      if (needsPerson) await revealTab(ctripTabId, pending.windowId)
     }
   })()
   // Nothing here answers synchronously; the reply travels back as its own message.
