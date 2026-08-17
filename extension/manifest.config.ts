@@ -67,6 +67,15 @@ export default defineManifest({
   version_name: buildStamp(),
   minimum_chrome_version: '116',
 
+  // Served from extension/public/ (vite copies it into dist as-is). The Web Store requires a
+  // 128px icon; the smaller ones keep the toolbar and the extensions page from upscaling it.
+  icons: {
+    16: 'icons/icon-16.png',
+    32: 'icons/icon-32.png',
+    48: 'icons/icon-48.png',
+    128: 'icons/icon-128.png',
+  },
+
   host_permissions: ['https://flights.ctrip.com/*', ...APP_ORIGINS],
   // `storage`: the service worker is recycled freely, so the pending tabId→nonce map has to
   // survive in chrome.storage.session rather than in a module-level variable.
