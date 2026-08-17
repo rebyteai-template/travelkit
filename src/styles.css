@@ -496,11 +496,9 @@ tr.cheapest td { background: var(--good-soft); }
 .recommend-reference { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px; margin: 0 0 2px; }
 .recommend-reference-label { color: var(--muted); font-size: 11px; font-weight: 600; }
 .recommend-reference-amount { color: var(--text); font-size: 13px; white-space: nowrap; }
-.recommend-reference-input {
-  width: 78px; padding: 2px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--panel-2); color: var(--text); font: inherit; font-size: 12px;
-}
-.recommend-reference-input:focus { outline: none; border-color: var(--accent); }
+/* Ctrip's figure is one adult, pre-tax. Saying so beside the number is what keeps it from being
+   read as a total — the two sides used to differ by the passenger count as well as the tax. */
+.recommend-reference-basis { color: var(--muted); font-size: 10px; }
 .recommend-reference-gap { display: inline-flex; align-items: baseline; gap: 4px; font-size: 11px; font-weight: 600; }
 .recommend-reference-gap.is-cheaper { color: var(--good); }
 .recommend-reference-gap.is-dearer { color: var(--warn); }
@@ -510,19 +508,14 @@ tr.cheapest td { background: var(--good-soft); }
   color: var(--muted); font-size: 10px; font-weight: 500;
   border-bottom: 1px dotted var(--border-strong); cursor: help;
 }
-.recommend-reference-edit {
-  padding: 1px 4px; border: 0; border-radius: 5px; background: transparent; color: var(--muted);
-  font: inherit; font-size: 11px; cursor: pointer;
-}
-.recommend-reference-edit:hover { background: var(--panel-2); color: var(--text); }
-/* Shown only when a browser extension answered — everyone else reads Ctrip in a tab and types. */
+/* Shown only when a browser extension answered; the only way a figure enters this cell. */
 .recommend-reference-capture {
   padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--accent);
   font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap;
 }
 .recommend-reference-capture:hover:not(:disabled) { background: var(--accent-soft); }
 .recommend-reference-capture:disabled { opacity: .55; cursor: wait; }
-/* A hint beside a still-usable input, never a blocker: manual entry always remains available. */
+/* A hint beside the button, never a blocker: a failed read leaves the button ready to retry. */
 .recommend-reference-error { color: var(--warn); font-size: 10px; }
 .recommend-plan-journeys { margin: 1px 0 2px; padding-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .recommend-plan-journeys li { padding-left: 1px; }

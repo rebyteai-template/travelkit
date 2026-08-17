@@ -317,9 +317,9 @@ app.post('/tasks/:id/plans/:planId/reference-price', async (c) => {
     raw?: unknown
   }>()
 
-  // Guard against a scrape (or a typist) that produced something unusable: a wrong number here
-  // is worse than no number, because the operator quotes against it. Same predicate the input
-  // uses, so the UI cannot accept a value this rejects.
+  // Guard against a scrape that produced something unusable: a wrong number here is worse than
+  // no number, because the operator quotes against it. This is the write gate — the UI no longer
+  // has a manual input, so every figure that reaches here came off a Ctrip payload.
   const amount = body.amount
   if (!isUsableReferenceAmount(amount)) return c.json({ error: 'invalid amount' }, 400)
   const currency = typeof body.currency === 'string' && /^[A-Z]{3}$/.test(body.currency) ? body.currency : ''

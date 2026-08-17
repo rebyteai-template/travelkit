@@ -1,0 +1,78 @@
+{
+  "itineraryId": "CA1359_1787439600000",
+  "flightSegments": [
+    {
+      "segmentNo": 1,
+      "transferCount": 0,
+      "stopCount": 0,
+      "duration": 205,
+      "flightList": [
+        {
+          "flightNo": "CA1359",
+          "marketAirlineCode": "CA",
+          "marketAirlineName": "中国国航",
+          "departureCityCode": "BJS",
+          "departureAirportCode": "PEK",
+          "departureAirportShortName": "首都",
+          "departureTerminal": "T3",
+          "arrivalCityCode": "CAN",
+          "arrivalAirportCode": "CAN",
+          "arrivalAirportShortName": "白云",
+          "arrivalTerminal": "T3",
+          "aircraftName": "波音787(大)",
+          "departureDateTime": "2026-08-23 07:00:00",
+          "arrivalDateTime": "2026-08-23 10:25:00"
+        }
+      ]
+    }
+  ],
+  "priceList": [
+    {
+      "adultPrice": 670, "childPrice": 720, "cabin": "Y", "sortPrice": 670,
+      "freeOilFeeAndTax": false, "restrictionList": [],
+      "priceUnitList": [{ "flightSeatList": [{ "seatClass": "K", "discountRate": 0.2 }] }],
+      "priceTags": [{ "label": "3选X", "data": { "relatedPrices": [
+        { "xDetail": { "price": 50, "productType": "CouponProduct", "title": "订接送机立减¥70" } },
+        { "xDetail": { "price": 40, "productType": "InsuranceProduct", "title": "航意航延组合险" } }
+      ] } }],
+      "tagAttrList": [{ "tagKey": "TOTAL_PRICE", "value": 670 }]
+    },
+    {
+      "adultPrice": 720, "childPrice": 720, "infantPrice": 340, "cabin": "Y", "sortPrice": 720,
+      "freeOilFeeAndTax": false, "restrictionList": [],
+      "priceUnitList": [{ "flightSeatList": [{ "seatClass": "K", "discountRate": 0.22 }] }],
+      "tagAttrList": [{ "tagKey": "TOTAL_PRICE", "value": 720 }]
+    },
+    {
+      "adultPrice": 1510, "childPrice": 1510, "infantPrice": 340, "cabin": "Y", "sortPrice": 1510,
+      "freeOilFeeAndTax": false, "restrictionList": [],
+      "priceUnitList": [{ "flightSeatList": [{ "seatClass": "E", "specialClassName": "超级经济舱", "discountRate": 0.45 }] }],
+      "tagAttrList": [{ "tagKey": "TOTAL_PRICE", "value": 1510 }]
+    },
+    {
+      "adultPrice": 3360, "childPrice": 1680, "infantPrice": 340, "cabin": "Y", "sortPrice": 3360,
+      "freeOilFeeAndTax": false, "restrictionList": [],
+      "priceUnitList": [{ "flightSeatList": [{ "seatClass": "Y", "discountRate": 1 }] }],
+      "tagAttrList": [{ "tagKey": "TOTAL_PRICE", "value": 3360 }]
+    },
+    {
+      "adultPrice": 1580, "childPrice": 4870, "cabin": "C", "sortPrice": 1580,
+      "freeOilFeeAndTax": false,
+      "restrictionList": [{ "type": "MultiPerson", "label": "4-5人", "description": "仅限4-5位成人" }],
+      "priceUnitList": [{ "flightSeatList": [{ "seatClass": "R", "discountRate": 0.17 }] }],
+      "tagAttrList": [{ "tagKey": "TOTAL_PRICE", "value": 1580 }]
+    },
+    {
+      "adultPrice": 2020, "childPrice": 2020, "infantPrice": 970, "cabin": "C", "sortPrice": 2020,
+      "freeOilFeeAndTax": false, "restrictionList": [],
+      "priceUnitList": [{ "flightSeatList": [{ "seatClass": "R", "discountRate": 0.21 }] }],
+      "tagAttrList": [{ "tagKey": "TOTAL_PRICE", "value": 2020 }]
+    },
+    {
+      "adultPrice": 5040, "childPrice": 4870, "infantPrice": 970, "cabin": "C", "sortPrice": 5040,
+      "freeOilFeeAndTax": false, "restrictionList": [],
+      "priceUnitList": [{ "flightSeatList": [{ "seatClass": "C", "discountRate": 0.52 }] }],
+      "tagAttrList": [{ "tagKey": "TOTAL_PRICE", "value": 5040 }]
+    }
+  ]
+}

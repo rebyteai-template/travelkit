@@ -1,4 +1,4 @@
-import type { CtripCapture, CtripFlightRow, ExtractStrategy } from '@travelkit/contract'
+import { FLIGHT_NO_PATTERN, type CtripCapture, type CtripFlightRow, type ExtractStrategy } from '@travelkit/contract'
 
 /**
  * Reads the fare list off a rendered flights.ctrip.com page.
@@ -20,6 +20,13 @@ import type { CtripCapture, CtripFlightRow, ExtractStrategy } from '@travelkit/c
 
 const clean = (value: string | null | undefined): string => (value || '').replace(/\s+/g, ' ').trim()
 
+/** Ctrip's own semantic container for one fare row. Owned here — the card locator in
+ *  ctrip-content.ts uses this too, so a Ctrip class rename is one edit, seen by both. */
+export const FLIGHT_CARD_SELECTOR = '.flight-item'
+
+/** One flight-number token, composed from the shared pattern. */
+const FLIGHT_NO_TOKEN = new RegExp(`\\b(${FLIGHT_NO_PATTERN})\\b`)
+
 /** Ctrip writes fares as `¥479起` / `¥1,286`. Keep the number, drop the decoration. */
 function money(text: string | null | undefined): number | null {
   const match = /¥\s?([\d,]+)/.exec(text || '')
@@ -35,7 +42,7 @@ const isBlocked = (): boolean => /whaleguard|安全验证|请输入验证码/.te
 /** How many fare rows are on the page right now, and whether we are reading Ctrip's own
  *  container or guessing. Cheap enough to call twice a second. */
 export function probe(): { count: number; strategy: ExtractStrategy; blocked: boolean } {
-  const items = document.querySelectorAll('.flight-item').length
+  const items = document.querySelectorAll(FLIGHT_CARD_SELECTOR).length
   if (items > 0) return { count: items, strategy: 'flight-item', blocked: false }
   return { count: 0, strategy: 'fallback-scan', blocked: isBlocked() }
 }
@@ -53,7 +60,7 @@ function parseCard(node: Element): CtripFlightRow {
   const firstLine = lines[0]
 
   return {
-    flightNo: /\b([A-Z0-9]{2}\d{3,4})\b/.exec(text)?.[1] ?? null,
+    flightNo: FLIGHT_NO_TOKEN.exec(text)?.[1] ?? null,
     airline: firstLine && !/^\d/.test(firstLine) ? firstLine : null,
     aircraft: /(?:波音|空客)[^\s|]*/.exec(text)?.[0] ?? null,
     depTime: times[0] ?? null,
@@ -79,7 +86,7 @@ function fallbackNodes(): Element[] {
     // node has at least passed a textContent-based sniff.
     const raw = node.textContent || ''
     if (raw.length > 600 || !/¥\d/.test(raw)) continue
-    const key = /\b([A-Z0-9]{2}\d{3,4})\b/.exec(raw)?.[1]
+    const key = FLIGHT_NO_TOKEN.exec(raw)?.[1]
     if (!key) continue
     const text = node.innerText || ''
     const previous = smallest.get(key)
@@ -91,7 +98,7 @@ function fallbackNodes(): Element[] {
 /** The full parse. Run once, when the list has settled or the wait has run out. */
 export function extractCtripPrices(): CtripCapture {
   let strategy: ExtractStrategy = 'flight-item'
-  let nodes = [...document.querySelectorAll('.flight-item')]
+  let nodes = [...document.querySelectorAll(FLIGHT_CARD_SELECTOR)]
   if (!nodes.length) {
     strategy = 'fallback-scan'
     nodes = fallbackNodes()

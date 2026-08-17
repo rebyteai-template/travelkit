@@ -44,8 +44,14 @@ window.addEventListener('message', (event: MessageEvent) => {
   if (typeof data.url !== 'string' || typeof data.nonce !== 'string') return
 
   // The URL is validated again in the service worker before any tab is opened — this side is
-  // untrusted input even though it comes from our own app.
-  void chrome.runtime.sendMessage({ type: 'request-capture', url: data.url, nonce: data.nonce })
+  // untrusted input even though it comes from our own app. `target` (which flight to quote) is
+  // likewise passed through opaquely and validated there; it steers what gets READ, never a write.
+  void chrome.runtime.sendMessage({
+    type: 'request-capture',
+    url: data.url,
+    nonce: data.nonce,
+    ...(typeof data.target === 'object' && data.target !== null ? { target: data.target } : {}),
+  })
 })
 
 /** Results come back from the service worker; hand them to the page. */
@@ -53,13 +59,15 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
   if (typeof message !== 'object' || message === null || !('type' in message)) return
   const tagged = message as { type: string; [key: string]: unknown }
 
-  if (tagged.type === 'capture') {
+  // Success replies share one shape — `{type, nonce, <payload under the type's own name>}` —
+  // so they forward as one allowlisted branch instead of a copied one per kind.
+  if (tagged.type === 'capture' || tagged.type === 'quote') {
     post({
       channel: BRIDGE_CHANNEL,
-      type: 'capture',
+      type: tagged.type,
       nonce: String(tagged.nonce),
-      capture: tagged.capture as BridgeMessage extends { capture: infer C } ? C : never,
-    } as BridgeMessage)
+      [tagged.type]: tagged[tagged.type],
+    } as unknown as BridgeMessage)
   } else if (tagged.type === 'capture-failed') {
     post({
       channel: BRIDGE_CHANNEL,

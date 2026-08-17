@@ -211,32 +211,6 @@ test('an unparseable capturedAt falls back to now instead of rejecting a good pr
   assert.ok(row && !Number.isNaN(Date.parse(row.capturedAt)))
 })
 
-// ── the fail-closed gate between a scrape and a stored price ──────────────────
-
-test('A DEGRADED CAPTURE YIELDS NO PRICE: the extension must never invent one', async () => {
-  // The DOM parser itself is exercised against live Ctrip pages (four routes, see
-  // ctrip-price-probe). What is checked here is the decision that follows it: anything short of
-  // a clean read has to produce null, so the UI asks the operator to type the figure instead of
-  // writing a number nobody verified.
-  const { captureToPrice } = await import('../src/hooks/useCtripBridge.ts')
-  const base = {
-    url: 'https://flights.ctrip.com/online/list/oneway-sha-bjs?depdate=2026-08-16',
-    capturedAt: '2026-08-09T03:30:00.000Z',
-    strategy: 'flight-item' as const,
-    blocked: false,
-    count: 3,
-    lowest: 397,
-    calendar: [],
-    flights: [],
-  }
-
-  assert.deepEqual(captureToPrice(base), { amount: 397, currency: 'CNY' }, 'a clean read yields the fare')
-  assert.equal(captureToPrice({ ...base, blocked: true }), null, 'a challenge page yields nothing')
-  assert.equal(captureToPrice({ ...base, lowest: null }), null, 'nothing parsed yields nothing')
-  assert.equal(captureToPrice({ ...base, lowest: 0 }), null, 'a zero fare is a parse failure, not a bargain')
-  assert.equal(captureToPrice({ ...base, lowest: -5 }), null, 'a negative fare is a parse failure')
-})
-
 test('the list endpoint is tenant-gated too', async () => {
   const { store } = ownedStore()
   await post(harness(store), GOOD)

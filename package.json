@@ -17,7 +17,7 @@
     "bootstrap:rebyte": "node --env-file=.env.local --import tsx scripts/bootstrap-rebyte.ts",
     "oauth:key": "node scripts/gen-oauth-key.mjs",
     "smoke:oauth": "node scripts/dev-oauth-smoke.mjs",
-    "test": "node --import tsx --test worker/*.test.ts server/*.test.ts",
+    "test": "node --import tsx --test worker/*.test.ts server/*.test.ts server/rebyte/*.test.ts contract/src/*.test.ts src/lib/*.test.ts",
     "test:rebyte": "node --env-file=.env.local --import tsx server/rebyte/smoke.ts",
     "test:rebyte:multiturn": "node --env-file=.env.local --import tsx server/rebyte/multiturn.ts",
     "test:rebyte:config": "node --env-file=.env.local --import tsx server/rebyte/configprobe.ts",

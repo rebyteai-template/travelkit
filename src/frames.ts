@@ -1457,8 +1457,22 @@ export function derive(prompts: PromptContent[]): DerivedView {
   return { chat: deduped, stage, search, fare, recommendations, planBooking, notice, pendingQuestion }
 }
 
+/** The executor hands a completed command's output over wrapped as `<stdout>…</stdout>`.
+ *
+ *  Unwrapping is required, not cosmetic: a wrapped payload fails the `{` boundary test below, so
+ *  a whole verified `flight.recommendations` was being discarded and the chat fell back to the
+ *  agent's Markdown retelling of it — the table simply vanished, with no error anywhere.
+ *
+ *  Only a COMPLETE, well-formed wrapper is unwrapped, and the boundary test still runs on what
+ *  comes out. That is what keeps this from widening the rule: the same executor wraps `cat` of a
+ *  skill's reference docs the same way, and those must still be refused as data. */
+function unwrapStdout(raw: string): string {
+  const match = /^\s*<stdout>\r?\n?([\s\S]*?)\r?\n?<\/stdout>\s*$/.exec(raw)
+  return match ? match[1]! : raw
+}
+
 function parseToolJson(raw: string): Record<string, unknown> | null {
-  const envelope = raw.trimStart()
+  const envelope = unwrapStdout(raw).trimStart()
   // Tool results are data only when stdout STARTS with the JSON envelope.
   // Never mine arbitrary prose, Skill docs, source code or logs for an object.
   if (!envelope.startsWith('{')) return null

@@ -1,4 +1,4 @@
-import { isCtripFlightListUrl, type CtripCapture } from '@travelkit/contract'
+import { asQuoteTarget, isCtripFlightListUrl, type CtripQuoteTarget } from '@travelkit/contract'
 
 /**
  * Relay between the two content scripts. It opens the Ctrip tab, remembers which TravelKit tab
@@ -28,6 +28,9 @@ interface Pending {
   /** Set when we spawned a popup window for this capture, so it can be cleaned up again.
    *  Absent for the plain-tab fallback, whose tab we leave alone. */
   windowId?: number
+  /** Present when this job is a per-flight quote: the content script asks for it on startup
+   *  (`ctrip-job`) and reads Ctrip's own JSON instead of the DOM. */
+  target?: CtripQuoteTarget
 }
 
 type PendingMap = Record<string, Pending>
@@ -119,25 +122,25 @@ async function reapPending(): Promise<void> {
   if (Object.keys(survivors).length !== Object.keys(map).length) await writePending(survivors)
 }
 
-async function openCapture(url: string, nonce: string, sourceTabId: number): Promise<void> {
+async function openCapture(url: string, nonce: string, sourceTabId: number, target?: CtripQuoteTarget): Promise<void> {
   await reapPending()
   // Reuse the window we already have, if it is still around. Navigating it re-injects the
   // content script, which is what re-runs the capture.
-  let target = await reuseCaptureWindow(url)
+  let spot = await reuseCaptureWindow(url)
 
-  if (!target) target = await spawnCaptureWindow(url)
+  if (!spot) spot = await spawnCaptureWindow(url)
 
   // Last resort when a popup cannot be created at all. A background tab renders poorly, but the
   // content script reports zero flights honestly and asks to be revealed rather than guessing.
-  if (!target) {
+  if (!spot) {
     const tab = await chrome.tabs.create({ url, active: false })
     if (tab.id === undefined) return
-    target = { tabId: tab.id, windowId: undefined }
+    spot = { tabId: tab.id, windowId: undefined }
   }
 
-  const { tabId, windowId } = target
+  const { tabId, windowId } = spot
   const map = await readPending()
-  map[String(tabId)] = { nonce, sourceTabId, windowId }
+  map[String(tabId)] = { nonce, sourceTabId, windowId, ...(target ? { target } : {}) }
   await writePending(map)
 }
 
@@ -147,6 +150,41 @@ async function reply(tabId: number, message: unknown): Promise<void> {
     await chrome.tabs.sendMessage(tabId, message)
   } catch {
     /* the asking tab is gone — drop the result */
+  }
+}
+
+/**
+ * Dispatch ONE real mouse click at viewport coordinates in `tabId`.
+ *
+ * This exists because `element.click()` produces an event with `isTrusted: false`, and Ctrip's
+ * outbound-selection handler does not reliably act on it — leaving a round trip stuck on step one
+ * with no return fares to read. A debugger-dispatched event is indistinguishable from a real one
+ * because it goes through the same input pipeline.
+ *
+ * Chrome shows a conspicuous "…is debugging this browser" bar while attached. That is the correct
+ * disclosure — an extension really is driving the page — and it is why the attach is scoped as
+ * tightly as possible: attach, click, detach, every time. Nothing else is ever dispatched, and
+ * this is only reached after the plain click has already been tried and ignored.
+ */
+async function trustedClick(tabId: number, x: number, y: number): Promise<boolean> {
+  const target = { tabId }
+  try {
+    await chrome.debugger.attach(target, '1.3')
+  } catch {
+    return false // DevTools already attached, or the user declined — caller falls back to a person
+  }
+  try {
+    const base = { x, y, button: 'left' as const, clickCount: 1 }
+    // Move first: some handlers only arm themselves once the pointer is over the element.
+    await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { ...base, type: 'mouseMoved', clickCount: 0 })
+    await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { ...base, type: 'mousePressed' })
+    await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', { ...base, type: 'mouseReleased' })
+    return true
+  } catch {
+    return false
+  } finally {
+    // Detach even when the dispatch throws, so the warning bar never outlives the click.
+    try { await chrome.debugger.detach(target) } catch { /* already gone */ }
   }
 }
 
@@ -165,9 +203,23 @@ async function revealTab(tabId: number, windowId?: number): Promise<void> {
 }
 
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+  const tagged = typeof message === 'object' && message !== null && 'type' in message
+    ? (message as { type: string; [key: string]: unknown })
+    : null
+
+  // The one request that needs a synchronous-channel answer: the ctrip content script asking
+  // what job its tab is running. `return true` keeps the port open across the storage read.
+  if (tagged?.type === 'ctrip-job') {
+    const tabId = sender.tab?.id
+    void (async () => {
+      const map = await readPending()
+      sendResponse({ target: (tabId !== undefined && map[String(tabId)]?.target) || null })
+    })()
+    return true
+  }
+
   void (async () => {
-    if (typeof message !== 'object' || message === null || !('type' in message)) return
-    const tagged = message as { type: string; [key: string]: unknown }
+    if (!tagged) return
 
     if (tagged.type === 'request-capture') {
       const url = typeof tagged.url === 'string' ? tagged.url : ''
@@ -178,7 +230,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
         await reply(sourceTabId, { type: 'capture-failed', nonce, url, reason: '不是携程航班列表地址' })
         return
       }
-      await openCapture(url, nonce, sourceTabId)
+      await openCapture(url, nonce, sourceTabId, asQuoteTarget(tagged.target))
       return
     }
 
@@ -195,13 +247,33 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
       return
     }
 
-    if (tagged.type === 'ctrip-capture') {
+    // The escalation: the content script found the outbound's button, its plain click was
+    // ignored, and it is asking for a real one at these coordinates. Only ever the one click.
+    if (tagged.type === 'trusted-click') {
+      const x = typeof tagged.x === 'number' ? tagged.x : NaN
+      const y = typeof tagged.y === 'number' ? tagged.y : NaN
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return
+      const ok = await trustedClick(ctripTabId, x, y)
+      if (!ok) {
+        // Could not attach — a person is the remaining path, so put the page where they can act.
+        const map = await readPending()
+        await revealTab(ctripTabId, map[String(ctripTabId)]?.windowId)
+      }
+      return
+    }
+
+    // The two success shapes relay identically: `{type, nonce, <payload>}` with the payload
+    // under the reply type's own name. One keyed handler, so result kind N+1 is a table entry
+    // (plus its contract union member), not a copied branch.
+    const RESULT_PAYLOAD_KEY = { 'ctrip-capture': 'capture', 'ctrip-quote': 'quote' } as const
+    const payloadKey = RESULT_PAYLOAD_KEY[tagged.type as keyof typeof RESULT_PAYLOAD_KEY]
+    if (payloadKey) {
       const pending = await takePending(ctripTabId)
       if (!pending) return
       await reply(pending.sourceTabId, {
-        type: 'capture',
+        type: payloadKey,
         nonce: pending.nonce,
-        capture: tagged.capture as CtripCapture,
+        [payloadKey]: tagged[payloadKey],
       })
       return
     }

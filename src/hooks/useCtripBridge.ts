@@ -1,15 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { BRIDGE_CHANNEL, CTRIP_CURRENCY, type BridgeMessage, type CtripCapture } from '@travelkit/contract'
-import type { CompactPrice } from '../frames.ts'
+import {
+  BRIDGE_CHANNEL,
+  type BridgeMessage,
+  type CtripCapture,
+  type CtripFlightQuote,
+  type CtripQuoteTarget,
+} from '@travelkit/contract'
 
 /**
  * Talks to the Ctrip-price browser extension, if the operator installed one.
  *
  * The extension is OPTIONAL and always will be: the operator is a customer's employee on a
- * customer-managed machine, so we cannot install anything. Typing the price in by hand is the
- * baseline flow; this hook is the shortcut for people who chose to add the extension. Everything
- * degrades to the manual input, including a scrape that fails.
+ * customer-managed machine, so we cannot install anything. Without one there is no Ctrip figure
+ * in the plan cell at all — by design. A price typed by hand looks identical to one read off
+ * Ctrip yet carries none of its evidence (which flight matched, out of how many, when), and an
+ * operator's recollection of a fare is not a comparison we want to store or quote against.
  *
  * No credential crosses this bridge in either direction. We send a URL, we get public prices
  * back, and the write to our own API happens here — in the app, with the session it already has.
@@ -25,9 +31,13 @@ export interface CtripBridge {
    *  should show neither the shortcut nor the install hint during that window. */
   installed: boolean | null
   /** Ask the extension to read a Ctrip page. Resolves with the capture, or null if it could not
-   *  be read (blocked, redesigned, timed out) — the caller falls back to asking for manual entry. */
+   *  be read (blocked, redesigned, timed out) — the caller shows `lastError` and leaves the
+   *  button ready to try again. */
   capture: (url: string) => Promise<CtripCapture | null>
-  /** The last failure's operator-facing reason, for a hint beside the manual input. */
+  /** Ask for ONE flight's quote, filtered inside the extension out of Ctrip's own search JSON.
+   *  Same window plumbing as `capture`; resolves null on failure with `lastError` explaining. */
+  quote: (url: string, target: CtripQuoteTarget) => Promise<CtripFlightQuote | null>
+  /** The last failure's operator-facing reason, for a hint beside the read button. */
   lastError: string | null
   /** Build stamp of the extension that answered, so a stale reload is visible from the app. */
   version: string | null
@@ -37,13 +47,18 @@ export interface CtripBridge {
  *  DEADLINE_MS (25s, extension/src/ctrip-content.ts); this must outlast that or we would report
  *  a timeout for a capture the extension is about to answer. */
 const CAPTURE_TIMEOUT_MS = 30_000
+/** A quote can legitimately take much longer: on a round trip the return payload only exists
+ *  after 「选为去程」, and when Ctrip ignores the extension's synthetic click the fallback is a
+ *  HUMAN clicking in the revealed window. The extension side gives up at 100s. */
+const QUOTE_TIMEOUT_MS = 110_000
 
 export function useCtripBridge(): CtripBridge {
   const [installed, setInstalled] = useState<boolean | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
   const [version, setVersion] = useState<string | null>(null)
-  /** nonce → the promise waiting on it. */
-  const waiting = useRef(new Map<string, (capture: CtripCapture | null) => void>())
+  /** nonce → the promise waiting on it. The value is whatever the caller asked for — capture or
+   *  quote — and each wrapper narrows its own result, so a crossed wire resolves null, not lies. */
+  const waiting = useRef(new Map<string, (result: CtripCapture | CtripFlightQuote | null) => void>())
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
@@ -60,7 +75,7 @@ export function useCtripBridge(): CtripBridge {
         setVersion(typeof data.version === 'string' ? data.version : null)
         return
       }
-      if (data.type === 'capture' || data.type === 'capture-failed') {
+      if (data.type === 'capture' || data.type === 'quote' || data.type === 'capture-failed') {
         const nonce = 'nonce' in data ? String(data.nonce) : ''
         const resolve = waiting.current.get(nonce)
         if (!resolve) return
@@ -68,6 +83,9 @@ export function useCtripBridge(): CtripBridge {
         if (data.type === 'capture') {
           setLastError(null)
           resolve((data as Extract<BridgeMessage, { type: 'capture' }>).capture)
+        } else if (data.type === 'quote') {
+          setLastError(null)
+          resolve((data as Extract<BridgeMessage, { type: 'quote' }>).quote)
         } else {
           setLastError((data as Extract<BridgeMessage, { type: 'capture-failed' }>).reason || '读取失败')
           resolve(null)
@@ -91,38 +109,38 @@ export function useCtripBridge(): CtripBridge {
     }
   }, [])
 
-  const capture = useCallback((url: string) => {
-    return new Promise<CtripCapture | null>((resolve) => {
-      const nonce = crypto.randomUUID()
-      // Never leave a caller hanging: if no extension is listening, nothing will ever reply.
-      // Cleared on the answering path, so a finished capture does not keep a timer (and the
-      // closure over `resolve`) alive for another half minute.
-      const timer = window.setTimeout(() => {
-        waiting.current.delete(nonce)
-        setLastError('携程读取超时，请手动填写')
-        resolve(null)
-      }, CAPTURE_TIMEOUT_MS)
-      waiting.current.set(nonce, (result) => {
-        window.clearTimeout(timer)
-        resolve(result)
+  /** One request machine for both shapes: register the nonce, arm the give-up timer, post. */
+  const ask = useCallback(
+    <T extends CtripCapture | CtripFlightQuote>(url: string, timeoutMs: number, target?: CtripQuoteTarget) => {
+      return new Promise<T | null>((resolve) => {
+        const nonce = crypto.randomUUID()
+        // Never leave a caller hanging: if no extension is listening, nothing will ever reply.
+        // Cleared on the answering path, so a finished capture does not keep a timer (and the
+        // closure over `resolve`) alive for another half minute.
+        const timer = window.setTimeout(() => {
+          waiting.current.delete(nonce)
+          setLastError('携程读取超时，可重试')
+          resolve(null)
+        }, timeoutMs)
+        waiting.current.set(nonce, (result) => {
+          window.clearTimeout(timer)
+          resolve(result as T | null)
+        })
+        window.postMessage(
+          { channel: BRIDGE_CHANNEL, type: 'capture-request', nonce, url, ...(target ? { target } : {}) },
+          window.location.origin,
+        )
       })
-      window.postMessage({ channel: BRIDGE_CHANNEL, type: 'capture-request', nonce, url }, window.location.origin)
-    })
-  }, [])
+    },
+    [],
+  )
 
-  return { installed, capture, lastError, version }
+  const capture = useCallback((url: string) => ask<CtripCapture>(url, CAPTURE_TIMEOUT_MS), [ask])
+  const quote = useCallback(
+    (url: string, target: CtripQuoteTarget) => ask<CtripFlightQuote>(url, QUOTE_TIMEOUT_MS, target),
+    [ask],
+  )
+
+  return { installed, capture, quote, lastError, version }
 }
 
-/** Pull the figure we want out of a capture: the cheapest listed fare.
- *
- *  Returns null rather than a guess when the page yielded nothing usable — this number becomes a
- *  price the operator quotes against, so "I could not read it" has to stay distinguishable from
- *  "it is cheap". Note the basis: Ctrip lists fares PRE-TAX while our plan totals include tax;
- *  the UI labels the gap as un-normalized rather than pretending they are comparable. */
-export function captureToPrice(capture: CtripCapture): CompactPrice | null {
-  // `Number.isFinite` first: `NaN <= 0` is false, so without it a NaN fare would pass every
-  // other guard here and become a number the operator quotes against.
-  if (capture.blocked || !Number.isFinite(capture.lowest)) return null
-  const amount = capture.lowest as number
-  return amount > 0 ? { amount, currency: CTRIP_CURRENCY } : null
-}

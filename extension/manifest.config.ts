@@ -68,9 +68,17 @@ export default defineManifest({
   minimum_chrome_version: '116',
 
   host_permissions: ['https://flights.ctrip.com/*', ...APP_ORIGINS],
-  // `storage` only — the service worker is recycled freely, so the pending tabId→nonce map has
-  // to survive in chrome.storage.session rather than in a module-level variable.
-  permissions: ['storage'],
+  // `storage`: the service worker is recycled freely, so the pending tabId→nonce map has to
+  // survive in chrome.storage.session rather than in a module-level variable.
+  //
+  // `debugger`: ONE use, and only as an escalation. A round trip's return fares do not exist
+  // until an outbound is selected, and a plain `element.click()` carries `isTrusted: false`,
+  // which Ctrip's handler sometimes ignores. Attaching the debugger lets that single click be
+  // dispatched as a real mouse event. Chrome shows a prominent yellow "is debugging this
+  // browser" bar for as long as it is attached — which is the honest outcome here, since an
+  // extension IS driving the page; we attach for the click and detach immediately after.
+  // It is never used to bypass a captcha, a login, or any check on who the operator is.
+  permissions: ['storage', 'debugger'],
 
   background: {
     service_worker: 'src/background.ts',
@@ -78,6 +86,19 @@ export default defineManifest({
   },
 
   content_scripts: [
+    {
+      // Observes the JSON the page fetches for itself. `MAIN` world because the hook has to
+      // replace the PAGE's `fetch`/`XHR`, which an isolated world cannot reach, and
+      // `document_start` because the search fires before `document_idle`.
+      //
+      // It reads what already arrived — it never issues a request or signs one. The DOM is a
+      // partial projection of this JSON (4 rendered rows off a 25-flight response in an
+      // unfocused window); this is the same data before it gets dropped.
+      matches: ['https://flights.ctrip.com/*'],
+      js: ['src/ctrip-net-probe.ts'],
+      run_at: 'document_start',
+      world: 'MAIN',
+    },
     {
       // Reads the fare list. `document_idle` is only the starting gun — the list is lazily
       // rendered and the script waits for it itself (see ctrip-content.ts).

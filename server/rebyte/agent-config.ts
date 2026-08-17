@@ -26,6 +26,37 @@ import { rebyteJSON, type RebyteConfig } from './client.ts'
  *  Matches cctools WEB_SEARCH_BROWSE_SERVER_NAME. */
 export const WEB_SEARCH_VIEW = 'web_search_&_browse' as const
 
+/** The three internal tools that give the manager its OWN way into the sandbox. Disabled on the
+ *  MCP route, where the flight work is supposed to happen entirely through the `flight_*` tools.
+ *
+ *  This is a capability cut, not a request. The MCP workspace's instructions already say "不进沙箱、
+ *  不派 coding agent" and it was ignored: cctools mounts `skills` on every workspace by default
+ *  (GLOBAL_AGENT_INTERNAL_MCP_NAMES, backfilled onto live workspaces 2026-08-11), so the manager
+ *  found `simplifly-flyai-skill` sitting in ~/.skills, read its reference docs, and drove
+ *  `sandbox__bash` itself. A prompt cannot beat a tool that is present and obviously fits the task;
+ *  removing the tool can. Measured consequence of NOT cutting it: the run produced a valid
+ *  flight.recommendations, but through `sandbox__bash`, whose output arrives wrapped in
+ *  `<stdout>…</stdout>` — a shape the frame parser refused, so the recommendation table silently
+ *  disappeared and the chat fell back to the agent's Markdown retelling.
+ *
+ *  Left alone on the VM route: that route's whole design is to delegate into the sandbox. */
+export const SANDBOX_ROUTE_VIEWS = ['skills', 'sandbox', 'coding_agent'] as const
+
+/**
+ * Whether the MCP route actually cuts the sandbox tools.
+ *
+ * ON since 2026-08-17, when the flight MCP chain was verified end to end (rebyte
+ * remote_mcp_servers → simplifly-mcp-staging → Simplifly, real recommendations rendered).
+ * With the primary path healthy, keeping the sandbox trio would only let an MCP outage
+ * degrade SILENTLY into the skills route — whose `<stdout>`-wrapped output the frame parser
+ * cannot render. Cut, an MCP failure is a loud "没有可用的 flight_* 工具" instead of a table
+ * that quietly never appears.
+ *
+ * Only flip back to false if the flight MCP registration is broken and the sandbox route is
+ * temporarily the only way to answer at all.
+ */
+export const CUT_SANDBOX_ON_MCP_ROUTE = true
+
 /** The manager's domain system prompt, APPENDED after cctools' base router prompt. Kept thin:
  *  domain identity + hard routing + anti-fabrication + faithful summary + language. Anything the
  *  base prompt already covers (router identity, "delegate skill work", "pass intent not procedure",
@@ -72,12 +103,20 @@ interface AgentComputerConfig {
  * config is optional: the Worker/DO passes its env-derived {apiUrl, apiKey}; CLI scripts omit it and
  * fall back to process.env (rebyteJSON's fallbackConfig).
  */
-export async function ensureAgentConfig(computerId: string, config?: RebyteConfig, agentInstructions?: string): Promise<string[]> {
+export async function ensureAgentConfig(
+  computerId: string,
+  config?: RebyteConfig,
+  agentInstructions?: string,
+  /** Which route this workspace serves. `mcp` additionally cuts the sandbox-reaching tools;
+   *  `vm` (the default, and what the CLI provisioner passes) leaves them, since delegating into
+   *  the sandbox IS that route. */
+  route: 'mcp' | 'vm' = 'vm',
+): Promise<string[]> {
   const cur = await rebyteJSON<AgentComputerConfig>(`/agent-computers/${computerId}`, { config })
   // Debug override from the SPA's config panel wins; empty/undefined → the built-in Kitty default.
   // Because this runs on every first turn (GET→diff→PATCH), a changed override auto-applies to the
   // next new session with no extra machinery — no redeploy needed to iterate on the manager prompt.
-  const desiredInstructions = agentInstructions?.trim() || AGENT_INSTRUCTIONS
+  const desiredInstructions = agentInstructions?.trim() || (route === 'mcp' ? MCP_AGENT_INSTRUCTIONS : AGENT_INSTRUCTIONS)
 
   const patch: { agent_instructions?: string; views?: Record<string, boolean> } = {}
   const changed: string[] = []
@@ -86,12 +125,21 @@ export async function ensureAgentConfig(computerId: string, config?: RebyteConfi
     patch.agent_instructions = desiredInstructions
     changed.push('agent_instructions')
   }
+
+  // Views we want off, by the internal tool backing them. web_search on both routes (the manager
+  // must never source a flight fact itself); the sandbox trio only on the MCP route.
+  const offNames: readonly string[] = route === 'mcp' && CUT_SANDBOX_ON_MCP_ROUTE
+    ? [WEB_SEARCH_VIEW, ...SANDBOX_ROUTE_VIEWS]
+    : [WEB_SEARCH_VIEW]
   // Toggle by the view's stable id (the canonical PATCH key); find it by the tool it's backed by.
-  const webView = cur.views?.find((v) => v.server?.internalName === WEB_SEARCH_VIEW)
-  if (webView?.enabled) {
-    patch.views = { [webView.id]: false }
-    changed.push('web_search:off')
+  const views: Record<string, boolean> = {}
+  for (const view of cur.views ?? []) {
+    const internalName = view.server?.internalName
+    if (!internalName || !offNames.includes(internalName) || !view.enabled) continue
+    views[view.id] = false
+    changed.push(`${internalName}:off`)
   }
+  if (Object.keys(views).length > 0) patch.views = views
 
   if (changed.length === 0) return []
   await rebyteJSON(`/agent-computers/${computerId}`, {
