@@ -1,0 +1,10 @@
+# The repo root stays the deployable app (SPA + Worker); these are leaf packages beside it.
+#
+#   contract  — types shared by the app and the extension. Zero dependencies on purpose: it is
+#               the only thing both sides import, so it must not be able to drag React or
+#               workers-types into the extension, or chrome types into the Worker.
+#   extension — the Chrome MV3 extension. Built separately (`pnpm --filter extension build`)
+#               and never by `pnpm build`, so it can never end up in a wrangler deploy.
+packages:
+  - 'contract'
+  - 'extension'

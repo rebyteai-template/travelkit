@@ -66,6 +66,27 @@ export interface AttachmentMeta {
   contentType: string
 }
 
+/** How a plan's Ctrip comparison figure got here. `manual` = OP typed it after looking;
+ *  `ctrip-extension` = the browser extension read it off the page OP opened. Kept apart
+ *  because they fail differently — a typo versus a stale selector — and the UI has to be
+ *  able to say which one produced the number on screen. Declared in the shared contract so the
+ *  SPA, the Worker and the extension cannot drift on it. */
+export type { ReferencePriceSource } from '@travelkit/contract'
+import type { ReferencePriceSource } from '@travelkit/contract'
+
+/** One plan's recorded Ctrip comparison (see migrations/0014). Never part of the
+ *  flight-recommendations contract: this is a number off someone else's page, not a
+ *  verified fare, and downstream code must never confuse the two. */
+export interface ReferencePrice {
+  planId: string
+  amount: number
+  currency: string
+  source: ReferencePriceSource
+  sourceUrl: string | null
+  capturedAt: string
+  updatedAt: string
+}
+
 /** routeMode 的唯一归一化：除 'mcp' 外一律折叠为 ''（VM 路径）。写入（debug config）
  *  与读取打戳（POST /tasks）共用，存储值不可能漂移出这两种。 */
 export function normalizeRouteMode(raw: string | undefined): '' | 'mcp' {
@@ -178,4 +199,19 @@ export interface Store {
   linkPromptFiles(promptId: string, fileIds: string[]): Promise<void>
   /** A prompt's attachments (metadata only), ordered as sent. */
   listPromptAttachments(promptId: string): Promise<AttachmentMeta[]>
+
+  // ── Ctrip comparison figures (see migrations/0014) ────────────────────────
+  /** Record what Ctrip is asking for one plan. Overwrites any earlier figure for the
+   *  same (tenant, task, plan) — OTA prices move, and only the latest look informs the
+   *  decision OP is about to make. `raw` is the extension's full extraction payload,
+   *  kept as evidence for why a number appeared; nothing reads it back for display. */
+  saveReferencePrice(
+    userEmail: string,
+    taskId: string,
+    planId: string,
+    price: { amount: number; currency: string; source: ReferencePriceSource; sourceUrl: string | null; capturedAt: string },
+    raw: string | null,
+  ): Promise<void>
+  /** Every recorded comparison for one task, to hydrate the recommendation table on load. */
+  listReferencePrices(userEmail: string, taskId: string): Promise<ReferencePrice[]>
 }

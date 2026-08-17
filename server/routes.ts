@@ -11,17 +11,20 @@
  *   GET  /tasks/:id/content     → prompts + their frames (for reload)
  *   GET  /prompts/:id/stream    → SSE of frames until the turn ends
  *   POST /prompts/:id/cancel    → cancel the running turn
+ *   GET  /tasks/:id/reference-prices          → this task's recorded Ctrip comparisons
+ *   POST /tasks/:id/plans/:planId/reference-price → record one (manual or extension)
  *
  * The store + turn runner come from Hono context vars (set by worker/index.ts), so these
  * handlers don't know whether the store is D1 or the runner is a Durable Object.
  */
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
-import type { Store, Task } from './store.ts'
+import type { Store, Task, ReferencePriceSource } from './store.ts'
 import { normalizeRouteMode } from './store.ts'
 import { MAX_UPLOAD_BYTES, attachmentPromptSuffix } from './attachments.ts'
 import type { FileRef } from './rebyte/client.ts'
 import { isUserQuestionAnswer, type UserQuestionAnswer } from '../src/user-question.ts'
+import { isCtripFlightListUrl, isUsableReferenceAmount } from '@travelkit/contract'
 // Built-in defaults surfaced to the debug panel (placeholder / "填入默认") and used as the fallback
 // when the global config field is empty. Single source of truth stays in these two modules.
 import { SKILL_REF as DEFAULT_SKILL_REF } from '../worker/skill-ref.ts'
@@ -269,6 +272,81 @@ app.get('/prompts/:id/stream', async (c) => {
       await sleep(150)
     }
   })
+})
+
+// ── Ctrip comparison figures ──────────────────────────────────────────────────────────
+// What OP saw on Ctrip for a plan, so the workbench can show it beside our own total. This
+// is NOT part of flight-recommendations: our totals are verified with the supplier, this is
+// read off another company's web page. It is stored separately, joined only at the view
+// layer, and per CLAUDE.md 推荐边界 it may never reorder, merge, drop or warn about a plan.
+//
+// Both the manual entry and the browser extension land here. The extension never holds a
+// credential of its own — it hands what it scraped to the SPA over a page bridge and the SPA
+// writes it with the embed session it already has — so this route needs no second auth path.
+
+/** Ctrip list URLs only — the value is echoed back to the UI, so anything that is not plainly a
+ *  Ctrip page is dropped rather than stored. Absent is fine; wrong is not. Shares one recognizer
+ *  with the extension and the frame parser: three spellings of this rule had already diverged. */
+const cleanSourceUrl = (raw: unknown): string | null => (isCtripFlightListUrl(raw) ? raw : null)
+
+/** The extractor payload is evidence, not display data; cap it so a runaway page cannot bloat a row. */
+const MAX_RAW_BYTES = 64 * 1024
+
+app.get('/tasks/:id/reference-prices', async (c) => {
+  const { store, userEmail } = c.var
+  const taskId = c.req.param('id')
+  if (!(await ownedTask(store, taskId, userEmail))) return c.json({ error: 'task not found' }, 404)
+  return c.json({ referencePrices: await store.listReferencePrices(userEmail, taskId) })
+})
+
+app.post('/tasks/:id/plans/:planId/reference-price', async (c) => {
+  const { store, userEmail } = c.var
+  const taskId = c.req.param('id')
+  const planId = c.req.param('planId')
+  // Tenant, task and plan come from the authenticated session and the path — never from the
+  // body — so a caller cannot retag a price onto someone else's task by editing the payload.
+  if (!(await ownedTask(store, taskId, userEmail))) return c.json({ error: 'task not found' }, 404)
+  if (!planId || planId.length > 200) return c.json({ error: 'invalid planId' }, 400)
+
+  const body = await c.req.json<{
+    amount?: unknown
+    currency?: unknown
+    source?: unknown
+    sourceUrl?: unknown
+    capturedAt?: unknown
+    raw?: unknown
+  }>()
+
+  // Guard against a scrape that produced something unusable: a wrong number here is worse than
+  // no number, because the operator quotes against it. This is the write gate — the UI no longer
+  // has a manual input, so every figure that reaches here came off a Ctrip payload.
+  const amount = body.amount
+  if (!isUsableReferenceAmount(amount)) return c.json({ error: 'invalid amount' }, 400)
+  const currency = typeof body.currency === 'string' && /^[A-Z]{3}$/.test(body.currency) ? body.currency : ''
+  if (!currency) return c.json({ error: 'invalid currency' }, 400)
+  const source: ReferencePriceSource | null =
+    body.source === 'manual' || body.source === 'ctrip-extension' ? body.source : null
+  if (!source) return c.json({ error: 'invalid source' }, 400)
+
+  // A caller-supplied timestamp is a hint about when the page was read, not an authority;
+  // anything unparseable falls back to now rather than rejecting an otherwise good price.
+  const capturedAtRaw = typeof body.capturedAt === 'string' ? Date.parse(body.capturedAt) : NaN
+  const capturedAt = Number.isFinite(capturedAtRaw) ? new Date(capturedAtRaw).toISOString() : new Date().toISOString()
+
+  let raw: string | null = null
+  if (body.raw !== undefined && body.raw !== null) {
+    const encoded = JSON.stringify(body.raw)
+    raw = encoded.length <= MAX_RAW_BYTES ? encoded : null
+  }
+
+  await store.saveReferencePrice(
+    userEmail,
+    taskId,
+    planId,
+    { amount, currency, source, sourceUrl: cleanSourceUrl(body.sourceUrl), capturedAt },
+    raw,
+  )
+  return c.json({ ok: true })
 })
 
 // Debug-only: spin a fresh VM for the caller (hidden behind a 10-click UI easter egg). Behind the

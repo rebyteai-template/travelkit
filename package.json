@@ -17,11 +17,14 @@
     "bootstrap:rebyte": "node --env-file=.env.local --import tsx scripts/bootstrap-rebyte.ts",
     "oauth:key": "node scripts/gen-oauth-key.mjs",
     "smoke:oauth": "node scripts/dev-oauth-smoke.mjs",
-    "test": "node --import tsx --test worker/*.test.ts server/*.test.ts",
+    "test": "node --import tsx --test worker/*.test.ts server/*.test.ts server/rebyte/*.test.ts contract/src/*.test.ts src/lib/*.test.ts",
     "test:rebyte": "node --env-file=.env.local --import tsx server/rebyte/smoke.ts",
     "test:rebyte:multiturn": "node --env-file=.env.local --import tsx server/rebyte/multiturn.ts",
     "test:rebyte:config": "node --env-file=.env.local --import tsx server/rebyte/configprobe.ts",
-    "test:rebyte:remove": "node --env-file=.env.local --import tsx server/rebyte/removeprobe.ts"
+    "test:rebyte:remove": "node --env-file=.env.local --import tsx server/rebyte/removeprobe.ts",
+    "ext:dev": "pnpm --filter extension dev",
+    "ext:build": "pnpm --filter extension build",
+    "typecheck:all": "tsc --noEmit && pnpm --filter extension typecheck"
   },
   "dependencies": {
     "@tanstack/query-async-storage-persister": "^5.101.0",
@@ -35,7 +38,8 @@
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
     "rebyte-sandbox": "github:ReByteAI/sandbox-sdk#84b68495e0e958e75835336a59aa9f125dcca0d8",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "@travelkit/contract": "workspace:*"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

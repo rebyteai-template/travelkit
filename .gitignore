@@ -37,3 +37,7 @@ whitelist.json
 worker/seed-assets.generated.ts
 .dev.vars.*
 travelkit-dev/
+
+# MV3 extension build output (never part of a wrangler deploy)
+extension/dist/
+extension/*.zip

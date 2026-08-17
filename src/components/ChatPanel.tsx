@@ -13,6 +13,10 @@ import { Lightbox } from './Lightbox.tsx'
 import { UserQuestion } from './UserQuestion.tsx'
 import { AgentStatus } from './AgentStatus.tsx'
 import type { UserQuestionAnswer } from '../user-question.ts'
+import { useReferencePrices, useSaveReferencePrice } from '../hooks/useReferencePrices.ts'
+import { useCtripBridge } from '../hooks/useCtripBridge.ts'
+import { quoteTargetFor } from '../lib/ctrip-target.ts'
+import { CTRIP_CURRENCY } from '@travelkit/contract'
 
 /** Local-timezone send time shown under a bubble (HH:MM today, M月D日 HH:MM otherwise); the full
  *  date + timezone is on hover. Renders nothing when the bubble carries no timestamp. */
@@ -85,6 +89,76 @@ export function ChatPanel({
 }) {
   const chatRef = useRef<HTMLDivElement>(null)
   const [lightbox, setLightbox] = useState<string | null>(null)
+  // The Ctrip comparison figures for this session. taskId is captured here rather than
+  // threaded down through the table — the recommendation components stay task-agnostic and
+  // take a plain callback, the same shape as onStartBooking.
+  const { byPlan: referencePrices } = useReferencePrices(sessionKey)
+  const saveReferencePrice = useSaveReferencePrice(sessionKey)
+  const bridge = useCtripBridge()
+  // Only offered once an extension has actually answered. Without one the cell says so and the
+  // plan's own 携程比价 link is what remains — every figure stored here is read from Ctrip's
+  // payload, never typed, so there is no hand-entry path to fall back to.
+  //
+  // Asks about THIS PLAN'S FLIGHT, not for the page. The extension filters Ctrip's own search
+  // JSON down to the matching itinerary and returns that one node — which is why the figure
+  // stored here is the fare for the flight being quoted, and not, as it was, whatever the page
+  // happened to be cheapest on (routinely a different, often connecting, itinerary).
+  //
+  // With manual entry gone every quiet exit here would leave a button that flashes and does
+  // nothing, so each one states its reason. `captureIssue` covers the domain outcomes decided
+  // HERE; transport failures (blocked, timed out) already surface through bridge.lastError.
+  const [captureIssue, setCaptureIssue] = useState<string | null>(null)
+  const onCaptureReferencePrice = sessionKey && bridge.installed
+    ? async (plan: RecommendationPlan) => {
+        setCaptureIssue(null)
+        const quotable = quoteTargetFor(plan)
+        // Normally unreachable — the cell hides the button behind the same ladder — but stated
+        // rather than swallowed, in case the two ever render from different plan snapshots.
+        if ('reason' in quotable) {
+          setCaptureIssue(quotable.reason)
+          return
+        }
+        const quote = await bridge.quote(quotable.url, quotable.target)
+        if (!quote) return
+        // Ctrip prices ONE ADULT and excludes tax. Storing the economy figure keeps the stored
+        // number on a single, stated basis; a null one means the flight sold no unrestricted
+        // economy fare, and writing a business-cabin or restricted price instead would be a
+        // silent basis change on a number the operator quotes against.
+        const amount = quote.extract?.economyLowestAdult
+        if (!amount) {
+          setCaptureIssue(`已在携程定位 ${quote.flightNo}，但它未售可比的经济舱票价`)
+          return
+        }
+        saveReferencePrice.mutate({
+          planId: plan.planId,
+          amount,
+          currency: CTRIP_CURRENCY,
+          source: 'ctrip-extension',
+          sourceUrl: quote.url,
+          capturedAt: quote.capturedAt,
+          // Evidence for "why this number": which flight matched, out of how many, and every
+          // fare band read. The node's raw text never reaches production quotes at all (it is a
+          // debug-target field), and the row has a 64KB cap regardless.
+          raw: {
+            flightNo: quote.flightNo,
+            matchedBy: quote.matchedBy,
+            flightNos: quote.flightNos,
+            payloadFlightCount: quote.payloadFlightCount,
+            extract: quote.extract,
+          },
+        })
+      }
+    : undefined
+  // The whole Ctrip-comparison capability as ONE prop: granted by session presence, it rides the
+  // component chain under a single name, so a shape change here is not a four-signature ripple.
+  const ctripCompare = sessionKey
+    ? {
+        prices: referencePrices,
+        onCapture: onCaptureReferencePrice,
+        error: captureIssue ?? bridge.lastError,
+        version: bridge.version,
+      }
+    : undefined
   const latestActivity = [...chat].reverse().find((bubble) => bubble.activity)?.activity
   const hasLiveActivity = latestActivity?.state === 'active'
   useLayoutEffect(() => {
@@ -175,6 +249,7 @@ export function ChatPanel({
                         isLatest={b.recommendations === recommendationsLatest}
                         onStartBooking={onStartBooking}
                         staleNotice={staleNotice}
+                        ctripCompare={ctripCompare}
                       />
                     )
                     : b.cards

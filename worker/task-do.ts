@@ -32,7 +32,7 @@ import { isObj, parseSSE } from '../server/rebyte/sse.ts'
 import { rebyteJSON, rebyteFetch, RebyteError, type RebyteConfig, type FileRef } from '../server/rebyte/client.ts'
 import { provisionComputer, seedSandbox, writeClaudeMd, removeStaleArtifacts, applyCredential, SEED_VERSION, type ProvisionedComputer } from './seed.ts'
 import { SKILL_REF, toSkillRef } from './skill-ref.ts'
-import { ensureAgentConfig, MCP_AGENT_INSTRUCTIONS } from '../server/rebyte/agent-config.ts'
+import { ensureAgentConfig } from '../server/rebyte/agent-config.ts'
 import { shouldDrainTerminal, shouldRetryWindowError, turnExpired, TERMINAL_STATUSES } from './turn-finalize.ts'
 import { framesHaveAnswerText, unrenderedResultTexts, normText } from '../server/frame-text.ts'
 import { sha256Hex } from '../server/digest.ts'
@@ -395,7 +395,7 @@ export class TaskDO extends DurableObject<Env> {
    *  travelkit into it (both pure fetch), persists it, and returns it. Concurrent first
    *  turns race on INSERT OR IGNORE — the loser's VM is orphaned (minor), both then use the
    *  winner's row. */
-  private async agentComputerFor(email: string, travelkitToken: string, systemPrompt?: string): Promise<CachedAgentComputer> {
+  private async agentComputerFor(email: string, travelkitToken: string, systemPrompt?: string, route: 'mcp' | 'vm' = 'vm'): Promise<CachedAgentComputer> {
     const tokenHash = travelkitToken ? await sha256Hex(travelkitToken) : ''
     const existing = await this.store.getAgentComputer(email)
     let result: CachedAgentComputer
@@ -443,7 +443,7 @@ export class TaskDO extends DurableObject<Env> {
     // drift) and best-effort: on failure the manager falls back to its generic base prompt (soft
     // degradation), so we log and continue rather than failing the turn.
     try {
-      const changed = await ensureAgentConfig(result.id, this.rebyteConfig(), systemPrompt)
+      const changed = await ensureAgentConfig(result.id, this.rebyteConfig(), systemPrompt, route)
       if (changed.length) console.log(`[task-do] manager config → ${result.id}: ${changed.join(', ')}`)
     } catch (e) { console.log(`[task-do] ensureAgentConfig failed (non-fatal): ${(e as Error).message}`) }
     return result
@@ -742,37 +742,38 @@ export class TaskDO extends DurableObject<Env> {
           // flipped between intake and this first alarm — the stamp cannot lie, and it
           // is the same value /content reports to the client.
           const routeMode = (await this.store.getTask(t.taskId))?.route_mode ?? ''
-          let task: { id: string }
-          if (routeMode === 'mcp') {
-            // MCP-direct mode (task route_mode='mcp'): the SAME per-user agent computer as the
-            // VM route — one provisioning path (seeding .simplifly.env into the VM is harmless
-            // here). `workspaceId: ac.id` is the identity anchor: the relay stamps it onto every
-            // remote MCP call as X-Rebyte-Workspace-Id, and the flight MCP keys its per-employee
-            // credential lookup on it (travelkit /internal resolves ac_id → tenant). No `skills`
-            // on this route — the flight tools come from the org profile's connector set. The
-            // workspace carries route-specific manager instructions: MCP sessions get the minimal
-            // MCP_AGENT_INSTRUCTIONS (tool procedure lives in the tools' own descriptions), not
-            // the VM route's delegate-to-sandbox text; the prompt itself rides bare.
-            const ac = await this.agentComputerFor(t.userEmail, t.travelkitToken, cfg.systemPrompt.trim() ? cfg.systemPrompt : MCP_AGENT_INSTRUCTIONS)
-            task = await rebyteJSON<{ id: string }>('/tasks', {
-              method: 'POST',
-              body: JSON.stringify({ prompt: t.prompt, workspaceId: ac.id, actor: t.userEmail, ...(t.files?.length ? { files: t.files } : {}) }),
-              config,
-            })
-          } else {
-            const ac = await this.agentComputerFor(t.userEmail, t.travelkitToken, cfg.systemPrompt)
-            task = await rebyteJSON<{ id: string }>('/tasks', {
-              method: 'POST',
-              // `files` (if any) ride here so the relay stages them into the sandbox /code/<filename>
-              // before the first turn runs; the wire prompt's attachment suffix points the manager at them.
-              // `actor` names the END USER behind this task (t.userEmail IS `<org>:<uid>`). The relay
-              // treats it as an opaque identifier and hands it back to our /oauth/token when the agent
-              // reaches for an MCP tool — that is how the tool call gets THIS employee's credential
-              // instead of an org-wide one. Relay keys are org-scoped, so nothing else carries a person.
-              body: JSON.stringify({ prompt: t.prompt, workspaceId: ac.id, actor: t.userEmail, skills: [toSkillRef(cfg.skillRef.trim() || SKILL_REF)], ...(t.files?.length ? { files: t.files } : {}) }),
-              config,
-            })
-          }
+          // Both routes share ONE provisioning path and one POST; the route is data, not a code
+          // branch, so a third route is an enum value here rather than a copied block.
+          //
+          // `workspaceId: ac.id` is the identity anchor: the relay stamps it onto every remote
+          // MCP call as X-Rebyte-Workspace-Id, and the flight MCP keys its per-employee
+          // credential lookup on it (travelkit /internal resolves ac_id → tenant). `actor` names
+          // the END USER behind this task (t.userEmail IS `<org>:<uid>`); the relay treats it as
+          // opaque and hands it back to our /oauth/token when the agent reaches for an MCP tool —
+          // that is how the tool call gets THIS employee's credential instead of an org-wide one.
+          // `files` (if any) stage into the sandbox /code/<filename> before the first turn runs.
+          //
+          // Per route: 'mcp' cuts the sandbox-reaching tools (skills / sandbox / coding_agent)
+          // and sends NO `skills` ref — the flight tools come from the org profile's connector
+          // set, and the route-specific default instructions are ensureAgentConfig's to pick.
+          // Without the cut those instructions are advisory only: cctools mounts `skills` on
+          // every workspace by default, and a manager that finds the flight skill in ~/.skills
+          // will use it — producing a valid recommendation through a transport this app cannot
+          // parse. 'vm' keeps the sandbox tools and passes the skill ref: delegating into the
+          // sandbox is that route's entire design.
+          const route = routeMode === 'mcp' ? ('mcp' as const) : ('vm' as const)
+          const ac = await this.agentComputerFor(t.userEmail, t.travelkitToken, cfg.systemPrompt, route)
+          const task = await rebyteJSON<{ id: string }>('/tasks', {
+            method: 'POST',
+            body: JSON.stringify({
+              prompt: t.prompt,
+              workspaceId: ac.id,
+              actor: t.userEmail,
+              ...(route === 'vm' ? { skills: [toSkillRef(cfg.skillRef.trim() || SKILL_REF)] } : {}),
+              ...(t.files?.length ? { files: t.files } : {}),
+            }),
+            config,
+          })
           relayTaskId = task.id
           await this.ctx.storage.put('relayTaskId', relayTaskId)
           await this.store.setTaskRelayId(t.taskId, relayTaskId)

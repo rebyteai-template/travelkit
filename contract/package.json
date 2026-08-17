@@ -1,0 +1,10 @@
+{
+  "name": "@travelkit/contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Types, constants and the URL recognizer shared by the TravelKit app and the Ctrip-price extension. Zero dependencies — that is what keeps React and workers-types out of the extension and chrome types out of the Worker.",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

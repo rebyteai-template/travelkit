@@ -1,0 +1,18 @@
+// Config for editors only. The package installs no toolchain (zero dependencies is the
+// point), so it has no typecheck script — the root app and the extension both import
+// these sources directly, and their `tsc --noEmit` checks this file with them.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "include": ["src"]
+}
