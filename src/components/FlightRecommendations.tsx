@@ -138,6 +138,10 @@ function SegmentFactLines({ plan, journeyIndex, segmentIndex, field }: {
   )
 }
 
+/** The Chrome Web Store listing. UNLISTED: it never appears in store search, so this link is the
+ *  one and only distribution channel — the cell offers it wherever a read button would sit. */
+const EXTENSION_STORE_URL = 'https://chromewebstore.google.com/detail/dgggiiccaeaihlkpdabinmiighgdgkhc'
+
 /** The whole Ctrip-comparison capability as one prop. Granting the object grants the cell, the
  *  way `onStartBooking` grants the booking entry; a caller with nowhere to store a reading passes
  *  nothing and renders no cell. Grouped so a shape change is one name in each signature instead
@@ -148,6 +152,10 @@ export interface CtripCompare {
   /** Present only when a browser extension answered. Absent = no Ctrip figure can be obtained
    *  here at all; the plan's 携程比价 link is what remains. */
   onCapture?: (plan: RecommendationPlan) => Promise<void>
+  /** Whether an extension answered the bridge ping. `false` puts the install link where the read
+   *  button would be; `null` (the announce window is still open) renders neither, so a slow
+   *  handshake does not flash an install hint at an operator who has the extension. */
+  installed?: boolean | null
   /** One message for the table (the capture flow is one-at-a-time): the last failure's reason. */
   error?: string | null
   /** Build stamp of the answering extension, surfaced as the button's tooltip. */
@@ -167,10 +175,11 @@ export interface CtripCompare {
  * It never judges the plan: no reordering, no dropping, no "cheaper elsewhere" warning
  * (CLAUDE.md 推荐边界) — it shows the numbers and stops.
  */
-function ReferencePriceCell({ plan, price, onCapture, captureError, captureVersion }: {
+function ReferencePriceCell({ plan, price, onCapture, installed, captureError, captureVersion }: {
   plan: RecommendationPlan
   price?: ReferencePrice
   onCapture?: (plan: RecommendationPlan) => Promise<void>
+  installed?: boolean | null
   captureError?: string | null
   captureVersion?: string | null
 }) {
@@ -252,11 +261,25 @@ function ReferencePriceCell({ plan, price, onCapture, captureError, captureVersi
         >
           {capturing ? '读取中…' : '自动读取'}
         </button>
-      ) : (
+      ) : blocked ? (
         /* Why there is no button, so its absence does not read as a broken extension. The plan's
            own 携程比价 link is still right there for anyone who wants to look. */
-        <span className="recommend-reference-caveat">{blocked ?? '需携程比价插件'}</span>
-      )}
+        <span className="recommend-reference-caveat">{blocked}</span>
+      ) : installed === false ? (
+        /* No extension answered: the read entry becomes the install entry. Chrome does not
+           inject content scripts into already-open tabs on install, hence the reload note.
+           `installed === null` (the announce window is still open) deliberately renders
+           NOTHING here — see CtripCompare.installed. */
+        <a
+          className="recommend-reference-install"
+          href={EXTENSION_STORE_URL}
+          target="_blank"
+          rel="noreferrer noopener"
+          title="从 Chrome 应用商店安装比价插件（凭此链接安装，商店内搜索不到）；装好后刷新本页即可使用"
+        >
+          安装比价插件
+        </a>
+      ) : null}
       {captureError ? <span className="recommend-reference-error">{captureError}</span> : null}
     </div>
   )
@@ -298,6 +321,7 @@ function PlanSummary({ plan, busy, onAction, onStartBooking, ctripCompare }: {
           plan={plan}
           price={ctripCompare.prices?.[plan.planId]}
           onCapture={ctripCompare.onCapture}
+          installed={ctripCompare.installed}
           captureError={ctripCompare.error}
           captureVersion={ctripCompare.version}
         />

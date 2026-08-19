@@ -155,6 +155,7 @@ export function ChatPanel({
     ? {
         prices: referencePrices,
         onCapture: onCaptureReferencePrice,
+        installed: bridge.installed,
         error: captureIssue ?? bridge.lastError,
         version: bridge.version,
       }
