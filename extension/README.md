@@ -3,8 +3,14 @@
 OP 在推荐表里选定方案后，原本要跳到携程人肉比价再切回来。这个扩展在 **OP 自己的浏览器**里
 把携程价读出来，直接回填到对应 plan 那一行。
 
-**它是可选的。** OP 是客户员工、用客户的电脑，我们装不了任何东西。**手填才是基线流程**——
-表格里的「携程价」输入框对所有人都在。装了扩展只是多一个「自动读取」按钮。
+**它靠自愿安装，但比价只有这一条路。** OP 是客户员工、用客户的电脑，我们装不了任何东西，
+只能引导：没装扩展时，推荐表的「携程价」格会显示商店安装链接（Unlisted，凭链接安装，
+商店内搜索不到）：
+
+<https://chromewebstore.google.com/detail/dgggiiccaeaihlkpdabinmiighgdgkhc>
+
+装好后刷新页面即出现「自动读取」。没有手填入口——手填的数字与读取的长得一样，却没有任何
+证据（匹配到哪班、多少班里挑的、何时读的），所以不入库（capture-only，主仓 PR #13）。
 
 ## 为什么必须跑在浏览器里
 
@@ -21,6 +27,20 @@ pnpm --filter extension build     # 或 pnpm ext:build（仓库根）
 
 产物在 `extension/dist/`。Chrome → `chrome://extensions` → 打开开发者模式 →
 「加载已解压的扩展程序」→ 选 `extension/dist`。
+
+## 发布（Chrome Web Store）
+
+商店版 = **不带** `NODE_ENV=development` 的构建：manifest 只认 `tripdesk.impo.ai` 与
+`flights.ctrip.com`（manifest.config.ts 里有断言，配宽了直接构建失败）。发新版：
+
+1. bump `extension/package.json` 的 `version`（商店要求严格递增）
+2. `pnpm ext:build`，然后把 `extension/dist/` 打成 zip
+3. Developer Dashboard（publisher 是 wfllike@gmail.com）→ 该 item → Package → 上传新 zip
+   → Submit for review
+4. 过审后商店自动推送给已装用户；Unlisted 安装链接不变
+
+开发机继续用 `NODE_ENV=development pnpm ext:build` 的解压版（多出 localhost 匹配），
+与商店版互不影响。
 
 `pnpm build` / `pnpm deploy`（仓库根）**不会**构建或上传它：SPA 产物在 `../build`，
 wrangler 只上传那个目录，两条构建链互不相交。

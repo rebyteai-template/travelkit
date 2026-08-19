@@ -515,6 +515,14 @@ tr.cheapest td { background: var(--good-soft); }
 }
 .recommend-reference-capture:hover:not(:disabled) { background: var(--accent-soft); }
 .recommend-reference-capture:disabled { opacity: .55; cursor: wait; }
+/* The install entry, shown only when NO extension answered the bridge ping. Sits in the exact
+   seat the read button occupies once installed. A link, not a button — it opens the store page
+   and performs nothing itself. */
+.recommend-reference-install {
+  padding: 2px 6px; border-radius: 6px; color: var(--accent);
+  font-size: 11px; font-weight: 700; text-decoration: none; white-space: nowrap;
+}
+.recommend-reference-install:hover { background: var(--accent-soft); }
 /* A hint beside the button, never a blocker: a failed read leaves the button ready to retry. */
 .recommend-reference-error { color: var(--warn); font-size: 10px; }
 .recommend-plan-journeys { margin: 1px 0 2px; padding-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.55; }
