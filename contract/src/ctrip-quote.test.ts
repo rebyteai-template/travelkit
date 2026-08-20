@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { extractCtripQuote, isItineraryNode } from './index.ts'
+import { extractCtripQuote, isItineraryNode, marketingFlightNosOf } from './index.ts'
 
 const node = JSON.parse(readFileSync(new URL('../../test/fixtures/ctrip-node-CA1359.json', import.meta.url), 'utf8'))
 
@@ -127,4 +127,15 @@ test('a mixed-cabin pairing is not an economy fare', () => {
   assert.equal(quote.fares[0]?.cabin, 'Y|C')
   assert.equal(quote.economyLowestAdult, null)
   assert.equal(quote.overallLowestAdult, 2400)
+})
+
+test('marketingFlightNosOf reads only what the node is SOLD under', () => {
+  assert.deepEqual(marketingFlightNosOf(node), ['CA1359'])
+  // A codeshare listing: sold as ZH4841, operated by CA8341. The operating number lives in
+  // other fields and must NOT surface here — that is the whole point of the function.
+  const codeshare = {
+    flightSegments: [{ flightList: [{ flightNo: 'ZH4841', sharedFlightNo: 'CA8341' }] }],
+    priceList: [{ adultPrice: 930, cabin: 'Y', restrictionList: [] }],
+  }
+  assert.deepEqual(marketingFlightNosOf(codeshare), ['ZH4841'])
 })

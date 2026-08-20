@@ -133,6 +133,38 @@ export function matchQuoteNode(
   return hit
 }
 
+/** One buffered payload node, reduced to the two number sets matching needs. */
+export interface QuoteNodeNos {
+  /** The numbers the node is SOLD under (legs' `flightNo`) — see `marketingFlightNosOf`. */
+  marketing: string[]
+  /** Every number found anywhere in the node, operating/codeshare fields included. */
+  all: string[]
+}
+
+/** Which node is OUR flight, out of every buffered node, in two passes.
+ *
+ *  Pass 1 matches against the numbers each node is SOLD under. Only if no node in the whole
+ *  list sells under our numbers does pass 2 rerun the match against contains-anywhere. The
+ *  fallback exists for plans whose number Ctrip lists only as the operating side of someone
+ *  else's codeshare — then that listing is the only comparable thing on the page, and the
+ *  stored evidence (`flightNos`) shows which listing answered.
+ *
+ *  Why not first-hit like before: on PKX-PVG the ZH4841 codeshare node (operating CA8341,
+ *  two Y fares at ¥930) sat ahead of CA8341's own listing (¥630 起) and won a contains-based
+ *  match — a ¥300 overstatement on the number the operator quotes against. */
+export function pickQuoteNode(
+  entries: readonly QuoteNodeNos[],
+  target: QuoteNodeTarget,
+): { index: number; hit: { no: string; by: 'flightNo' | 'opFlightNo' } } | null {
+  for (const key of ['marketing', 'all'] as const) {
+    for (let index = 0; index < entries.length; index++) {
+      const hit = matchQuoteNode(entries[index]![key], target)
+      if (hit) return { index, hit }
+    }
+  }
+  return null
+}
+
 export function matchCtripFlight(journey: PlanJourneyRef, capture: CtripCapture): CtripMatch {
   if (capture.blocked) return { status: 'unmatched', reason: 'blocked' }
   if (capture.strategy === 'fallback-scan') return { status: 'unmatched', reason: 'degraded-parse' }

@@ -156,8 +156,9 @@ export interface CtripCompare {
    *  button would be; `null` (the announce window is still open) renders neither, so a slow
    *  handshake does not flash an install hint at an operator who has the extension. */
   installed?: boolean | null
-  /** One message for the table (the capture flow is one-at-a-time): the last failure's reason. */
-  error?: string | null
+  /** planId → that plan's last failure reason. Per plan on purpose: one shared string painted
+   *  every priceless cell with whichever plan failed last. */
+  errors?: Record<string, string>
   /** Build stamp of the answering extension, surfaced as the button's tooltip. */
   version?: string | null
 }
@@ -322,7 +323,7 @@ function PlanSummary({ plan, busy, onAction, onStartBooking, ctripCompare }: {
           price={ctripCompare.prices?.[plan.planId]}
           onCapture={ctripCompare.onCapture}
           installed={ctripCompare.installed}
-          captureError={ctripCompare.error}
+          captureError={ctripCompare.errors?.[plan.planId]}
           captureVersion={ctripCompare.version}
         />
       ) : null}

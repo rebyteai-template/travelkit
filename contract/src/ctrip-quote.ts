@@ -118,7 +118,7 @@ export function isItineraryNode(node: unknown): boolean {
   return Array.isArray(record.priceList) && Array.isArray(record.flightSegments)
 }
 
-export function extractCtripQuote(node: unknown): CtripQuoteExtract {
+function legsOf(node: unknown): Array<Record<string, unknown>> {
   const record = (node && typeof node === 'object' ? node : {}) as Record<string, unknown>
   const segments = Array.isArray(record.flightSegments) ? record.flightSegments : []
   const legs: Array<Record<string, unknown>> = []
@@ -126,8 +126,26 @@ export function extractCtripQuote(node: unknown): CtripQuoteExtract {
     const list = (segment as Record<string, unknown>)?.flightList
     if (Array.isArray(list)) legs.push(...(list as Array<Record<string, unknown>>))
   }
+  return legs
+}
 
-  const flightNos = [...new Set(legs.map((leg) => normalizeFlightNo(String(leg.flightNo ?? ''))).filter((no) => no.length > 0))]
+/** The numbers this node is SOLD under: each leg's `flightNo`, nothing else.
+ *
+ *  Distinct from "every flight number found anywhere in the node", and the distinction is the
+ *  price. A codeshare listing (ZH4841 marketed, CA8341 operating) carries the operating number
+ *  in its own fields, so a contains-anywhere match on CA8341 can land on the ZH listing —
+ *  measured on PKX-PVG: the ZH4841 node sold two Y fares at ¥930 while CA8341's own listing
+ *  started at ¥630. Same metal, different product, different price. Matching prefers these
+ *  marketing numbers; see `pickQuoteNode`. */
+export function marketingFlightNosOf(node: unknown): string[] {
+  return [...new Set(legsOf(node).map((leg) => normalizeFlightNo(String(leg.flightNo ?? ''))).filter((no) => no.length > 0))]
+}
+
+export function extractCtripQuote(node: unknown): CtripQuoteExtract {
+  const record = (node && typeof node === 'object' ? node : {}) as Record<string, unknown>
+  const legs = legsOf(node)
+
+  const flightNos = marketingFlightNosOf(node)
   const first = legs[0]
   const last = legs[legs.length - 1]
 

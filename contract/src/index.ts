@@ -271,6 +271,7 @@ export const BRIDGE_CHANNEL = 'travelkit-ctrip-bridge' as const
 export {
   matchCtripFlight,
   matchQuoteNode,
+  pickQuoteNode,
   normalizeFlightNo,
   FLIGHT_NO_PATTERN,
   isRoundTripCapture,
@@ -278,11 +279,12 @@ export {
   type CtripMatchFailure,
   type PlanJourneyRef,
   type PlanSegmentRef,
+  type QuoteNodeNos,
   type QuoteNodeTarget,
 } from './ctrip-match.ts'
 
 /** The production reader for a single itinerary node pulled from Ctrip's own search JSON:
  *  per-passenger pre-tax fares by cabin, with the restricted/business traps filtered out. */
-export { extractCtripQuote, isItineraryNode, type CtripFare } from './ctrip-quote.ts'
+export { extractCtripQuote, isItineraryNode, marketingFlightNosOf, type CtripFare } from './ctrip-quote.ts'
 export type { CtripQuoteExtract }
 

@@ -39,6 +39,9 @@ export interface CtripBridge {
   quote: (url: string, target: CtripQuoteTarget) => Promise<CtripFlightQuote | null>
   /** The last failure's operator-facing reason, for a hint beside the read button. */
   lastError: string | null
+  /** The same reason, readable synchronously right after an awaited `quote()`/`capture()`
+   *  resolves null — React state is a render behind at that moment, a ref is not. */
+  readLastError: () => string | null
   /** Build stamp of the extension that answered, so a stale reload is visible from the app. */
   version: string | null
 }
@@ -54,7 +57,12 @@ const QUOTE_TIMEOUT_MS = 110_000
 
 export function useCtripBridge(): CtripBridge {
   const [installed, setInstalled] = useState<boolean | null>(null)
-  const [lastError, setLastError] = useState<string | null>(null)
+  const [lastError, setLastErrorState] = useState<string | null>(null)
+  const lastErrorRef = useRef<string | null>(null)
+  const setLastError = (reason: string | null) => {
+    lastErrorRef.current = reason
+    setLastErrorState(reason)
+  }
   const [version, setVersion] = useState<string | null>(null)
   /** nonce → the promise waiting on it. The value is whatever the caller asked for — capture or
    *  quote — and each wrapper narrows its own result, so a crossed wire resolves null, not lies. */
@@ -141,6 +149,7 @@ export function useCtripBridge(): CtripBridge {
     [ask],
   )
 
-  return { installed, capture, quote, lastError, version }
+  const readLastError = useCallback(() => lastErrorRef.current, [])
+  return { installed, capture, quote, lastError, readLastError, version }
 }
 

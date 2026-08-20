@@ -14,7 +14,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { matchCtripFlight, matchQuoteNode, normalizeFlightNo, type CtripCapture } from './index.ts'
+import { matchCtripFlight, matchQuoteNode, pickQuoteNode, normalizeFlightNo, type CtripCapture } from './index.ts'
 
 const fixture = (name: string): CtripCapture =>
   JSON.parse(readFileSync(new URL(`../../test/fixtures/${name}`, import.meta.url), 'utf8')) as CtripCapture
@@ -142,4 +142,37 @@ test('zero-padded forms normalize on both sides before comparing', () => {
     matchQuoteNode(['CA0841', 'CA4537'], { flightNo: 'CA4537', outbound: { flightNo: 'CA841' } }),
     { no: 'CA4537', by: 'flightNo' },
   )
+})
+
+/* -------------------------------- pickQuoteNode ------------------------------- */
+
+test('regression: a codeshare listing must not outrank the flight sold under its own number', () => {
+  // Measured on PKX-PVG 08-20: the ZH4841 node (operating CA8341, two Y fares at ¥930) sat
+  // AHEAD of CA8341's own listing (¥630 起) and won the old contains-anywhere match — a ¥300
+  // overstatement on the number the operator quotes against.
+  const entries = [
+    { marketing: ['ZH4841'], all: ['ZH4841', 'CA8341'] },
+    { marketing: ['CA8341'], all: ['CA8341'] },
+  ]
+  const picked = pickQuoteNode(entries, { flightNo: 'CA8341' })
+  assert.equal(picked?.index, 1)
+  assert.deepEqual(picked?.hit, { no: 'CA8341', by: 'flightNo' })
+  // Asking for the ZH marketing number still lands on the ZH listing.
+  assert.equal(pickQuoteNode(entries, { flightNo: 'ZH4841' })?.index, 0)
+})
+
+test('a number Ctrip lists only as the operating side still matches, as the fallback', () => {
+  const entries = [{ marketing: ['MF4693'], all: ['MF4693', 'CZ5693'] }]
+  const picked = pickQuoteNode(entries, { flightNo: 'CZ5693' })
+  assert.equal(picked?.index, 0)
+  assert.deepEqual(picked?.hit, { no: 'CZ5693', by: 'flightNo' })
+})
+
+test('round trips pin BOTH legs through pickQuoteNode too', () => {
+  const entries = [
+    { marketing: ['CA8541', 'CA4537'], all: ['CA8541', 'CA4537'] },
+    { marketing: ['HO1039', 'CA4537'], all: ['HO1039', 'CA4537'] },
+  ]
+  const picked = pickQuoteNode(entries, { flightNo: 'CA4537', outbound: { flightNo: 'HO1039' } })
+  assert.equal(picked?.index, 1)
 })
