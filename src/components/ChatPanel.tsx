@@ -105,28 +105,39 @@ export function ChatPanel({
   // happened to be cheapest on (routinely a different, often connecting, itinerary).
   //
   // With manual entry gone every quiet exit here would leave a button that flashes and does
-  // nothing, so each one states its reason. `captureIssue` covers the domain outcomes decided
-  // HERE; transport failures (blocked, timed out) already surface through bridge.lastError.
-  const [captureIssue, setCaptureIssue] = useState<string | null>(null)
+  // nothing, so each one states its reason — ON ITS OWN PLAN. Keyed by planId because one shared
+  // string painted plan A's failure onto every priceless cell in the table (measured: a CA4496
+  // miss rendered under plan 1, whose outbound is CA4502).
+  const [captureIssues, setCaptureIssues] = useState<Record<string, string>>({})
+  const setPlanIssue = (planId: string, reason: string | null) =>
+    setCaptureIssues((prev) => {
+      const next = { ...prev }
+      if (reason === null) delete next[planId]
+      else next[planId] = reason
+      return next
+    })
   const onCaptureReferencePrice = sessionKey && bridge.installed
     ? async (plan: RecommendationPlan) => {
-        setCaptureIssue(null)
+        setPlanIssue(plan.planId, null)
         const quotable = quoteTargetFor(plan)
         // Normally unreachable — the cell hides the button behind the same ladder — but stated
         // rather than swallowed, in case the two ever render from different plan snapshots.
         if ('reason' in quotable) {
-          setCaptureIssue(quotable.reason)
+          setPlanIssue(plan.planId, quotable.reason)
           return
         }
         const quote = await bridge.quote(quotable.url, quotable.target)
-        if (!quote) return
+        if (!quote) {
+          setPlanIssue(plan.planId, bridge.readLastError() ?? '读取失败')
+          return
+        }
         // Ctrip prices ONE ADULT and excludes tax. Storing the economy figure keeps the stored
         // number on a single, stated basis; a null one means the flight sold no unrestricted
         // economy fare, and writing a business-cabin or restricted price instead would be a
         // silent basis change on a number the operator quotes against.
         const amount = quote.extract?.economyLowestAdult
         if (!amount) {
-          setCaptureIssue(`已在携程定位 ${quote.flightNo}，但它未售可比的经济舱票价`)
+          setPlanIssue(plan.planId, `已在携程定位 ${quote.flightNo}，但它未售可比的经济舱票价`)
           return
         }
         saveReferencePrice.mutate({
@@ -156,7 +167,7 @@ export function ChatPanel({
         prices: referencePrices,
         onCapture: onCaptureReferencePrice,
         installed: bridge.installed,
-        error: captureIssue ?? bridge.lastError,
+        errors: captureIssues,
         version: bridge.version,
       }
     : undefined

@@ -159,17 +159,23 @@ function findInPayloads(target: CtripQuoteTarget): Promise<Pick<ProbeFindAnswer,
 
 /** Find the target outbound's 「选为去程」 button, scrolled into view, with the viewport centre
  *  point a real mouse event would need. Returns null while the list is still rendering. */
-function locateOutbound(outbound: { flightNo: string; departureTime?: string }):
+function locateOutbound(outbound: { flightNo: string; opFlightNo?: string | null; departureTime?: string }):
   { button: HTMLElement; x: number; y: number } | null {
-  const wanted = normalizeFlightNo(outbound.flightNo)
+  // Both numbers: Ctrip's card prints whichever side of a codeshare IT sells under.
+  const wanted = [outbound.flightNo, outbound.opFlightNo]
+    .filter((no): no is string => Boolean(no))
+    .map((no) => normalizeFlightNo(no))
   for (const card of document.querySelectorAll<HTMLElement>(FLIGHT_CARD_SELECTOR)) {
     const text = card.innerText || ''
     const nos = [...text.matchAll(new RegExp(`\\b(${FLIGHT_NO_PATTERN})\\b`, 'g'))].map((match) => normalizeFlightNo(match[1]!))
-    if (!nos.includes(wanted)) continue
+    if (!wanted.some((no) => nos.includes(no))) continue
     if (outbound.departureTime && !text.includes(outbound.departureTime)) continue
+    // The INNERMOST element containing the label, not a childless one — measured: some cards
+    // nest the text so no leaf node carries it whole, and the leaf test skipped a real button.
     const label = [...card.querySelectorAll<HTMLElement>('*')]
-      .find((el) => !el.children.length && /选为去程/.test(el.textContent || ''))
-    if (!label) return null
+      .filter((el) => /选为去程/.test(el.textContent || ''))
+      .sort((a, b) => (a.textContent || '').length - (b.textContent || '').length)[0]
+    if (!label) continue
     const button = label.closest<HTMLElement>('.btn') ?? label
     // A real mouse event is delivered to whatever is at those coordinates, so the button has to
     // actually be on screen — off-viewport coordinates would land on nothing.
@@ -195,6 +201,8 @@ async function runQuote(target: CtripQuoteTarget): Promise<void> {
    *  ignored, and a person only after BOTH have been. */
   let stage: 'none' | 'synthetic' | 'trusted' | 'person' = 'none'
   let stageAt = 0
+  /** Polls spent parked at the list's bottom with nothing new appended. */
+  let bottomPolls = 0
   const SYNTHETIC_GRACE_MS = 6_000
   const TRUSTED_GRACE_MS = 15_000
 
@@ -228,6 +236,36 @@ async function runQuote(target: CtripQuoteTarget): Promise<void> {
           spot.button.click()
           stage = 'synthetic'
           stageAt = now
+        } else {
+          // The card may simply not EXIST yet: the list is price-sorted and lazily rendered,
+          // and it only APPENDS more when a scroll settles near its end. So scroll down in
+          // steps, and at the bottom WAIT for the append instead of wrapping to the top —
+          // wrapping restarts the hunt before the tail ever loads (measured: the full list
+          // is 185 cards; the wrap loop never saw past ~14). A bottom that stays quiet for
+          // several polls means the list is complete and our flight is not on it — that is
+          // an answer, reported as one, not a silent timeout.
+          const page = document.scrollingElement ?? document.documentElement
+          const atBottom = page.scrollTop + window.innerHeight >= page.scrollHeight - 40
+          if (!atBottom) {
+            bottomPolls = 0
+            window.scrollBy(0, Math.round(window.innerHeight * 1.2))
+          } else if (++bottomPolls >= 6) {
+            await chrome.runtime.sendMessage({
+              type: 'ctrip-capture-failed',
+              url: location.href,
+              needsPerson: false,
+              reason: `携程去程列表（${document.querySelectorAll(FLIGHT_CARD_SELECTOR).length} 班）中未找到 ${target.outbound.flightNo}，无法比价`,
+            })
+            return
+          } else {
+            // At the bottom the tail should be loading. Put the lazy-load SENTINEL (the empty
+            // nodes after the last card) squarely into view — measured as the reliable trigger,
+            // where a blind pixel-jiggle was not — then drift down so it stays intersected.
+            const lastCard = [...document.querySelectorAll<HTMLElement>(FLIGHT_CARD_SELECTOR)].pop()
+            lastCard?.scrollIntoView({ block: 'start' })
+            await sleep(200)
+            window.scrollBy(0, Math.round(window.innerHeight * 0.6))
+          }
         }
       } else if (stage === 'synthetic' && waited > SYNTHETIC_GRACE_MS) {
         // `isTrusted: false` was ignored. Ask the worker for a real mouse event at the button.

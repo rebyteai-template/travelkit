@@ -22,7 +22,8 @@ import {
   FLIGHT_NO_PATTERN,
   extractCtripQuote,
   isItineraryNode,
-  matchQuoteNode,
+  marketingFlightNosOf,
+  pickQuoteNode,
   normalizeFlightNo,
   type CtripQuoteResult,
   type ProbeFindRequest,
@@ -42,11 +43,11 @@ const MAX_RAW_CHARS = 200_000
 
 interface BufferedPayload {
   url: string
-  /** One entry per itinerary node, with its flight numbers computed ONCE at buffer time. The
-   *  find handler used to re-walk every node on every poll — a depth-8 recursive walk across
-   *  ~200 nodes × 4 payloads, repeated every 1.5s for up to 100s, inside Ctrip's own page. The
-   *  nodes never change after parse, so neither does this. */
-  entries: Array<{ node: unknown; nos: string[] }>
+  /** One entry per itinerary node, with its flight numbers computed ONCE at buffer time (the
+   *  nodes never change after parse; the find handler used to re-walk them every 1.5s poll).
+   *  `marketing` = the numbers the node is SOLD under; `all` additionally catches operating/
+   *  codeshare spellings anywhere in the node — see pickQuoteNode for why both exist. */
+  entries: Array<{ node: unknown; marketing: string[]; all: string[] }>
 }
 
 const payloads: BufferedPayload[] = []
@@ -172,7 +173,10 @@ function summarize(url: string, body: string): void {
   // numbers are computed per node HERE, once — every later find poll only scans these arrays.
   const list = parsed ? findItineraryList(parsed) : null
   if (list) {
-    payloads.unshift({ url, entries: list.map((node) => ({ node, nos: flightNosOf(node) })) })
+    payloads.unshift({
+      url,
+      entries: list.map((node) => ({ node, marketing: marketingFlightNosOf(node), all: flightNosOf(node) })),
+    })
     payloads.length = Math.min(payloads.length, MAX_PAYLOADS)
   }
 
@@ -182,7 +186,7 @@ function summarize(url: string, body: string): void {
   // them all — because bodies run to megabytes and this runs on the operator's ordinary browsing.
   const buffered = list ? payloads[0]!.entries : null
   const flightNos = buffered
-    ? [...new Set(buffered.flatMap((entry) => entry.nos))]
+    ? [...new Set(buffered.flatMap((entry) => entry.all))]
     : [...new Set(body.match(FLIGHT_NO) ?? [])]
   const priceKeys = [...new Set(
     (body.slice(0, 100_000).match(/"([a-zA-Z]*(?:price|Price|fare|Fare|tax|Tax|amount|Amount|total|Total)[a-zA-Z]*)"\s*:/g) ?? [])
@@ -221,39 +225,41 @@ window.addEventListener('message', (event: MessageEvent) => {
     outbound: data.outbound && typeof data.outbound === 'object' ? data.outbound : null,
   }
 
+  // Two-pass across EVERY buffered node (pickQuoteNode): a node SOLD under our number beats
+  // any node that merely mentions it as the operating side of a codeshare, wherever each sits
+  // in the buffer order.
+  const flat = payloads.flatMap((payload) =>
+    payload.entries.map((entry) => ({ payload, ...entry })))
+  const picked = pickQuoteNode(flat, target)
+
   let result: CtripQuoteResult | null = null
-  for (const payload of payloads) {
-    for (const { node, nos } of payload.entries) {
-      const hit = matchQuoteNode(nos, target)
-      if (!hit) continue
-      result = {
-        flightNo: hit.no,
-        matchedBy: hit.by,
-        flightNos: nos,
-        payloadUrl: payload.url.slice(0, 200),
-        payloadFlightCount: payload.entries.length,
-        // The structured reading. Present when the matched node is a real itinerary; a summary
-        // node would extract to empty fares, which is itself the signal we grabbed the wrong array.
-        extract: extractCtripQuote(node),
-        // Archaeology only on request: the raw node alone runs to 200KB and would cross four
-        // message hops nobody reads it at on a production quote.
-        ...(data.debug === true
-          ? (() => {
-              const raw = JSON.stringify(node)
-              const { dates, times } = datesTimesOf(node)
-              return {
-                prices: moneyOf(node),
-                dates,
-                times,
-                raw: raw.slice(0, MAX_RAW_CHARS),
-                rawTruncated: raw.length > MAX_RAW_CHARS,
-              }
-            })()
-          : {}),
-      }
-      break
+  if (picked) {
+    const { payload, node, all } = flat[picked.index]!
+    result = {
+      flightNo: picked.hit.no,
+      matchedBy: picked.hit.by,
+      flightNos: all,
+      payloadUrl: payload.url.slice(0, 200),
+      payloadFlightCount: payload.entries.length,
+      // The structured reading. Present when the matched node is a real itinerary; a summary
+      // node would extract to empty fares, which is itself the signal we grabbed the wrong array.
+      extract: extractCtripQuote(node),
+      // Archaeology only on request: the raw node alone runs to 200KB and would cross four
+      // message hops nobody reads it at on a production quote.
+      ...(data.debug === true
+        ? (() => {
+            const raw = JSON.stringify(node)
+            const { dates, times } = datesTimesOf(node)
+            return {
+              prices: moneyOf(node),
+              dates,
+              times,
+              raw: raw.slice(0, MAX_RAW_CHARS),
+              rawTruncated: raw.length > MAX_RAW_CHARS,
+            }
+          })()
+        : {}),
     }
-    if (result) break
   }
 
   window.postMessage({

@@ -55,17 +55,18 @@ async function takePending(tabId: number): Promise<Pending | undefined> {
 }
 
 /**
- * Open the page somewhere it will actually render, without stealing the operator's focus.
+ * Open the page where the operator can SEE it working, and give their focus back afterwards.
  *
  * A background tab does not work: measured, a foreground tab captures and a background one
  * comes back with zero flights every time. Chrome withholds painting and rAF from hidden tabs
  * and Ctrip's list needs them, so `active: false` produces a page that never fills in.
  *
- * An unfocused popup window threads the needle. Its tab is the active tab OF THAT WINDOW, so
- * `document.visibilityState` is `visible` and the list renders — while `focused: false` leaves
- * keyboard focus in TravelKit, which is the part the operator actually cared about. It is
- * offset rather than stacked exactly behind, because a fully occluded window can be marked
- * hidden by Chrome and we would be back to the throttled case.
+ * The window is deliberately FOREGROUND (决定 2026-08-19): an unfocused popup rendered fine but
+ * stacked behind the workbench on macOS, so the read looked like a black box — the operator
+ * could not see what was being queried or clicked. Now the window comes to the front for the
+ * duration of the read, and when the result lands, focus RETURNS to the workbench — but only
+ * if the operator has not focused something else themselves in the meantime (their click wins
+ * over our courtesy). Escalations that need a person keep the window front, obviously.
  */
 /** Point the existing capture window at `url` and return its tab, or undefined if we do not
  *  have one any more (first run, or the operator closed it). Re-navigating re-injects the
@@ -81,23 +82,27 @@ async function reuseCaptureWindow(url: string): Promise<{ tabId: number; windowI
     // Same URL would not reload on its own, and a reload is how the content script runs again.
     if (tab.url === url) await chrome.tabs.reload(tab.id)
     else await chrome.tabs.update(tab.id, { url })
+    // Reuse fronts the window too — every read should be watchable, not just the first.
+    await chrome.windows.update(stored.windowId, { focused: true }).catch(() => {})
     return stored
   } catch {
     return undefined // window/tab is gone — caller makes a new one
   }
 }
 
-/** Make the capture window. `focused: false` is the whole point: the page has to be visible to
- *  render, but the operator's keyboard focus must stay in TravelKit. */
+/** Make the capture window, front and center of attention — see the header note. */
 async function spawnCaptureWindow(url: string): Promise<{ tabId: number; windowId: number } | undefined> {
   try {
     const win = await chrome.windows.create({
       url,
-      focused: false,
+      focused: true,
       type: 'popup',
-      width: 1100,
-      height: 780,
-      top: 60,
+      // Tall on purpose: Ctrip's list appends as its lazy-load sentinel scrolls into view, and
+      // a short viewport gave it measurably less room to trigger (a 780px window stalled at the
+      // first 12 cards where a full-height one paged through 180+). Chrome clamps to the screen.
+      width: 1280,
+      height: 1400,
+      top: 20,
       left: 60,
     })
     const tabId = win?.tabs?.[0]?.id
@@ -194,11 +199,30 @@ async function trustedClick(tabId: number, x: number, y: number): Promise<boolea
 async function revealTab(tabId: number, windowId?: number): Promise<void> {
   try {
     await chrome.tabs.update(tabId, { active: true })
-    // The capture window is deliberately unfocused; activating a tab inside it is not enough to
-    // put it where the operator can see it, so raise the window as well.
+    // Activating a tab inside a window is not enough to put it where the operator can see it;
+    // raise the window as well.
     if (windowId !== undefined) await chrome.windows.update(windowId, { focused: true })
   } catch {
     /* gone */
+  }
+}
+
+/** Give keyboard focus back to the workbench once the read is over — the capture window took it
+ *  so the operator could watch. Polite on purpose: it only returns focus if the capture window
+ *  STILL holds it. If the operator focused anything else mid-read, their choice stands. */
+async function returnFocus(sourceTabId: number): Promise<void> {
+  try {
+    const focused = await chrome.windows.getLastFocused()
+    const stored = (await chrome.storage.session.get(CAPTURE_WINDOW_KEY))[CAPTURE_WINDOW_KEY] as
+      | { tabId: number; windowId: number }
+      | undefined
+    if (!stored || focused.id !== stored.windowId) return
+    const source = await chrome.tabs.get(sourceTabId)
+    if (source.windowId === undefined) return
+    await chrome.tabs.update(sourceTabId, { active: true })
+    await chrome.windows.update(source.windowId, { focused: true })
+  } catch {
+    /* source tab or window gone — nothing to hand focus back to */
   }
 }
 
@@ -275,6 +299,9 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
         nonce: pending.nonce,
         [payloadKey]: tagged[payloadKey],
       })
+      // The show is over — hand the keyboard back to the workbench (unless the operator
+      // already took it somewhere else themselves).
+      await returnFocus(pending.sourceTabId)
       return
     }
 
@@ -295,10 +322,11 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
         url: typeof tagged.url === 'string' ? tagged.url : '',
         reason: typeof tagged.reason === 'string' ? tagged.reason : '读取失败',
       })
-      // Surface the tab when a person has something to DO there (log in, or look at a page
-      // that would not render behind their back). Otherwise leave it be — the operator asked
-      // that these tabs not vanish, and a closed tab takes the evidence with it.
+      // A failure a person must resolve keeps the Ctrip window front (log in, click the step
+      // the page ignored). Any other failure hands focus back like a success does — the reason
+      // is already on the cell, and the window stays open as the evidence.
       if (needsPerson) await revealTab(ctripTabId, pending.windowId)
+      else await returnFocus(pending.sourceTabId)
     }
   })()
   // Nothing here answers synchronously; the reply travels back as its own message.
