@@ -155,6 +155,41 @@ test('waiting activity yields completely to the question UI', () => {
   assert.equal(html, '')
 })
 
+test('an MCP progress envelope drives the live phase and verify counters', () => {
+  // The MCP route: flight_* are relay-mounted remote tools, no Bash command to sniff.
+  // The non-terminal polling envelope (flight-recommendation-progress/v1) names the
+  // engine's actual stage and counters, and the status line renders them live.
+  const progress = {
+    resultType: 'flight.recommendation.progress',
+    schemaVersion: 'flight-recommendation-progress/v1',
+    recommendationId: 'rec-1',
+    status: 'running',
+    progress: { stage: 'verify', recalledOffers: 32, feasiblePlans: 6, verifiedPlans: 3, verificationAttempts: 4 },
+  }
+  const view = derive([
+    prompt([
+      toolUse(1, 'mcp-1', 'flight_recommendation_get', { recommendationId: 'rec-1' }),
+      toolResult(2, 'mcp-1', JSON.stringify(progress)),
+    ]),
+  ])
+  const run = view.chat.find((bubble) => bubble.activity)?.activity
+  assert.ok(run)
+  assert.equal(run.phase, 'verifying')
+  assert.equal(run.candidateCount, 6)
+  assert.equal(run.verifiedCount, 3)
+
+  const html = renderToStaticMarkup(createElement(AgentStatus, { run }))
+  assert.match(html, /正在核验候选方案的实时价格（3\/6）/)
+})
+
+test('an MCP flight call without a progress envelope still names its phase', () => {
+  const run = deriveAgentActivityRun(prompt([
+    toolUse(1, 'mcp-1', 'flight_recommend', { schemaVersion: 'flight-recommendation-request/v1' }),
+  ]))
+  assert.ok(run)
+  assert.equal(run.phase, 'recommending')
+})
+
 test('a real search envelope advances live status with its factual candidate count', () => {
   const searchResult = {
     resultType: 'flight.search',

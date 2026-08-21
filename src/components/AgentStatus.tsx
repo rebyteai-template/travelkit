@@ -21,7 +21,11 @@ function activeLabel(run: AgentActivityRun): string {
       ? `已找到 ${run.candidateCount} 个候选，正在比较价格和时间…`
       : '正在比较航班价格和时间…'
   }
-  if (run.phase === 'verifying') return '正在核验候选方案的实时价格…'
+  if (run.phase === 'verifying') {
+    return run.verifiedCount !== undefined && run.candidateCount
+      ? `正在核验候选方案的实时价格（${run.verifiedCount}/${run.candidateCount}）…`
+      : '正在核验候选方案的实时价格…'
+  }
   if (run.phase === 'recommending') return '正在整理推荐方案…'
   if (run.phase === 'book-verifying') return '正在下单前重新验价…'
   return '正在确认行程条件…'

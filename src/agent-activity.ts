@@ -18,6 +18,9 @@ export interface AgentActivityEvent {
   kind: AgentActivityKind
   state: AgentActivityState
   phase?: AgentActivityPhase
+  /** Live counters read off an MCP progress envelope this call returned (see progressSignal). */
+  candidateCount?: number
+  verifiedCount?: number
 }
 
 export interface AgentActivityRun {
@@ -112,11 +115,51 @@ function activityKind(name: string): AgentActivityKind {
   return 'tool'
 }
 
+// MCP 路线：flight_* 是 relay 挂载的远程工具（可能带前缀），不再经过 Bash 命令行，
+// 所以 flightPhase 的命令匹配在这条路线上永远打不中——没有这张表时状态会一直停在
+// 「正在确认行程条件…」。名字给一个基线 phase，进度 envelope（progressSignal）再细化。
+const MCP_FLIGHT_PHASES: Array<[RegExp, AgentActivityPhase]> = [
+  [/flight_recommendation_get$|flight_recommend$/, 'recommending'],
+  [/flight_reverify$/, 'book-verifying'],
+]
+
 function activityPhase(call: ToolCall): AgentActivityPhase | undefined {
   if (call.name.startsWith('coding_agent__')) return 'understanding'
   if (call.name === 'Skill') return 'connecting'
   if (call.name === 'Bash') return flightPhase(call.input.command)
-  return undefined
+  return MCP_FLIGHT_PHASES.find(([pattern]) => pattern.test(call.name))?.[1]
+}
+
+/** 推荐生成中的实时信号：MCP 非终态轮询 envelope（flight-recommendation-progress/v1，
+ *  由 flight_recommend / flight_recommendation_get 返回）里的阶段与计数。只读明确声明
+ *  版本的 envelope；计数字段缺失就不显示，不推断。 */
+const PROGRESS_STAGE_PHASES: Record<string, AgentActivityPhase> = {
+  queued: 'connecting',
+  recall: 'searching',
+  compose: 'comparing',
+  verify: 'verifying',
+  publish: 'recommending',
+}
+
+function progressSignal(content: string): Pick<AgentActivityEvent, 'phase' | 'candidateCount' | 'verifiedCount'> | undefined {
+  const trimmed = content.trimStart()
+  if (!trimmed.startsWith('{')) return undefined
+  let json: unknown
+  try {
+    json = JSON.parse(trimmed)
+  } catch {
+    return undefined
+  }
+  if (!isObj(json) || json.schemaVersion !== 'flight-recommendation-progress/v1') return undefined
+  const progress = isObj(json.progress) ? json.progress : {}
+  const stage = typeof progress.stage === 'string' ? progress.stage : 'queued'
+  const count = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+  return {
+    phase: PROGRESS_STAGE_PHASES[stage] ?? 'recommending',
+    candidateCount: count(progress.feasiblePlans),
+    verifiedCount: count(progress.verifiedPlans),
+  }
 }
 
 /** Convert durable tool frames into customer-safe execution signals. Tool names,
@@ -157,13 +200,20 @@ export function deriveAgentActivities(prompt: PromptContent): AgentActivityEvent
   }
 
   return [...calls.values()]
-    .map((call) => ({
-      id: `activity-${prompt.id}-${call.id}`,
-      seq: call.seq,
-      kind: activityKind(call.name),
-      state: callState(prompt, call),
-      ...(activityPhase(call) ? { phase: activityPhase(call) } : {}),
-    }))
+    .map((call) => {
+      const signal = call.result && !call.result.isError ? progressSignal(call.result.content) : undefined
+      return {
+        id: `activity-${prompt.id}-${call.id}`,
+        seq: call.seq,
+        kind: activityKind(call.name),
+        state: callState(prompt, call),
+        // A progress envelope names the engine's ACTUAL stage; the tool-name phase is only
+        // the fallback for calls that returned nothing recognizable (or nothing yet).
+        ...(signal?.phase ?? activityPhase(call) ? { phase: signal?.phase ?? activityPhase(call) } : {}),
+        ...(signal?.candidateCount !== undefined ? { candidateCount: signal.candidateCount } : {}),
+        ...(signal?.verifiedCount !== undefined ? { verifiedCount: signal.verifiedCount } : {}),
+      }
+    })
     .sort((a, b) => a.seq - b.seq)
 }
 
@@ -178,12 +228,16 @@ export function deriveAgentActivityRun(prompt: PromptContent): AgentActivityRun 
         : prompt.status === 'failed' || prompt.status === 'canceled'
           ? 'error'
           : 'success'
+  const reversed = [...events].reverse()
+  const counted = reversed.find((event) => event.candidateCount !== undefined || event.verifiedCount !== undefined)
   return {
     id: `activity-run-${prompt.id}`,
     firstSeq: events[0]!.seq,
     state,
-    phase: [...events].reverse().find((event) => event.phase)?.phase ?? 'understanding',
+    phase: reversed.find((event) => event.phase)?.phase ?? 'understanding',
     startedAt: prompt.created_at,
     completedAt: prompt.completed_at,
+    ...(counted?.candidateCount !== undefined ? { candidateCount: counted.candidateCount } : {}),
+    ...(counted?.verifiedCount !== undefined ? { verifiedCount: counted.verifiedCount } : {}),
   }
 }
