@@ -177,6 +177,24 @@ export interface ReferencePrice {
   updatedAt: string
 }
 
+/** One progress snapshot of the running recommendation (the UI side channel). Shape mirrors
+ *  the MCP endpoint: status + the engine's progress counters; never any plan data. */
+export interface RecommendationProgressSnapshot {
+  recommendationId: string
+  status: string
+  progress?: unknown
+  updatedAt?: string
+}
+
+export async function fetchRecommendationProgress(
+  taskId: string,
+  recommendationId: string,
+): Promise<RecommendationProgressSnapshot> {
+  return json<RecommendationProgressSnapshot>(
+    `/tasks/${taskId}/recommendation-progress?rid=${encodeURIComponent(recommendationId)}`,
+  )
+}
+
 /** Every Ctrip comparison recorded against this task, to hydrate the table on load. */
 export async function listReferencePrices(taskId: string): Promise<ReferencePrice[]> {
   return (await json<{ referencePrices: ReferencePrice[] }>(`/tasks/${taskId}/reference-prices`)).referencePrices

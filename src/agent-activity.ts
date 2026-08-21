@@ -21,6 +21,9 @@ export interface AgentActivityEvent {
   /** Live counters read off an MCP progress envelope this call returned (see progressSignal). */
   candidateCount?: number
   verifiedCount?: number
+  /** The running recommendation's job id, when a progress envelope named one — the handle the
+   *  UI's progress side channel polls with. */
+  recommendationId?: string
 }
 
 export interface AgentActivityRun {
@@ -32,6 +35,8 @@ export interface AgentActivityRun {
   completedAt?: string | null
   candidateCount?: number
   verifiedCount?: number
+  /** See AgentActivityEvent.recommendationId — carried up so the panel can poll the side channel. */
+  recommendationId?: string
 }
 
 interface ToolResult {
@@ -141,7 +146,28 @@ const PROGRESS_STAGE_PHASES: Record<string, AgentActivityPhase> = {
   publish: 'recommending',
 }
 
-function progressSignal(content: string): Pick<AgentActivityEvent, 'phase' | 'candidateCount' | 'verifiedCount'> | undefined {
+export interface RecommendationProgressSignal {
+  phase: AgentActivityPhase
+  candidateCount?: number
+  verifiedCount?: number
+}
+
+/** stage + counters → display signal. Shared by the tool-channel envelope (progressSignal)
+ *  and the side-channel snapshot the panel polls (`/tasks/:id/recommendation-progress`),
+ *  so the two sources can never disagree on what a stage means. */
+export function signalFromProgress(progress: unknown): RecommendationProgressSignal {
+  const record = isObj(progress) ? progress : {}
+  const stage = typeof record.stage === 'string' ? record.stage : 'queued'
+  const count = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+  return {
+    phase: PROGRESS_STAGE_PHASES[stage] ?? 'recommending',
+    candidateCount: count(record.feasiblePlans),
+    verifiedCount: count(record.verifiedPlans),
+  }
+}
+
+function progressSignal(content: string): (RecommendationProgressSignal & { recommendationId?: string }) | undefined {
   const trimmed = content.trimStart()
   if (!trimmed.startsWith('{')) return undefined
   let json: unknown
@@ -151,14 +177,11 @@ function progressSignal(content: string): Pick<AgentActivityEvent, 'phase' | 'ca
     return undefined
   }
   if (!isObj(json) || json.schemaVersion !== 'flight-recommendation-progress/v1') return undefined
-  const progress = isObj(json.progress) ? json.progress : {}
-  const stage = typeof progress.stage === 'string' ? progress.stage : 'queued'
-  const count = (value: unknown): number | undefined =>
-    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
   return {
-    phase: PROGRESS_STAGE_PHASES[stage] ?? 'recommending',
-    candidateCount: count(progress.feasiblePlans),
-    verifiedCount: count(progress.verifiedPlans),
+    ...signalFromProgress(json.progress),
+    ...(typeof json.recommendationId === 'string' && json.recommendationId
+      ? { recommendationId: json.recommendationId }
+      : {}),
   }
 }
 
@@ -212,6 +235,7 @@ export function deriveAgentActivities(prompt: PromptContent): AgentActivityEvent
         ...(signal?.phase ?? activityPhase(call) ? { phase: signal?.phase ?? activityPhase(call) } : {}),
         ...(signal?.candidateCount !== undefined ? { candidateCount: signal.candidateCount } : {}),
         ...(signal?.verifiedCount !== undefined ? { verifiedCount: signal.verifiedCount } : {}),
+        ...(signal?.recommendationId ? { recommendationId: signal.recommendationId } : {}),
       }
     })
     .sort((a, b) => a.seq - b.seq)
@@ -230,6 +254,7 @@ export function deriveAgentActivityRun(prompt: PromptContent): AgentActivityRun 
           : 'success'
   const reversed = [...events].reverse()
   const counted = reversed.find((event) => event.candidateCount !== undefined || event.verifiedCount !== undefined)
+  const withJob = reversed.find((event) => event.recommendationId)
   return {
     id: `activity-run-${prompt.id}`,
     firstSeq: events[0]!.seq,
@@ -239,5 +264,6 @@ export function deriveAgentActivityRun(prompt: PromptContent): AgentActivityRun 
     completedAt: prompt.completed_at,
     ...(counted?.candidateCount !== undefined ? { candidateCount: counted.candidateCount } : {}),
     ...(counted?.verifiedCount !== undefined ? { verifiedCount: counted.verifiedCount } : {}),
+    ...(withJob?.recommendationId ? { recommendationId: withJob.recommendationId } : {}),
   }
 }

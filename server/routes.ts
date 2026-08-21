@@ -54,6 +54,11 @@ export interface RouteVars {
   /** The org's total available rebyte credit (org-wide, behind the Worker's relay key), or
    *  null if the relay couldn't be reached. See GET /credit. */
   getCredit: () => Promise<number | null>
+  /** One progress snapshot of a running recommendation, proxied from the flight MCP's
+   *  side-channel (`GET /jobs/:id/progress`) under the caller's own workspace identity.
+   *  Null when the side channel is unconfigured, the caller has no workspace yet, or the
+   *  MCP answers anything but 200. See GET /tasks/:id/recommendation-progress. */
+  getRecommendationProgress: (recommendationId: string) => Promise<Record<string, unknown> | null>
   /** Is this caller allowed to WRITE the global debug config? (uid ∈ ADMIN_UIDS.) Everyone can read
    *  it; only admins can save, since it applies to ALL users. See POST /debug/config. */
   isAdmin: boolean
@@ -291,6 +296,21 @@ const cleanSourceUrl = (raw: unknown): string | null => (isCtripFlightListUrl(ra
 
 /** The extractor payload is evidence, not display data; cap it so a runaway page cannot bloat a row. */
 const MAX_RAW_BYTES = 64 * 1024
+
+/** The UI progress side channel: while the agent's flight_recommendation_get holds server-side
+ *  (55s, zero new frames on the tool channel), the UI polls THIS to keep the status line moving.
+ *  Read-only, no plan data ever crosses it — the MCP endpoint returns status/stage/counters only. */
+app.get('/tasks/:id/recommendation-progress', async (c) => {
+  const { store, userEmail } = c.var
+  const taskId = c.req.param('id')
+  if (!(await ownedTask(store, taskId, userEmail))) return c.json({ error: 'task not found' }, 404)
+  const recommendationId = c.req.query('rid') ?? ''
+  // ULID shape, same gate the MCP route applies — anything else never leaves this worker.
+  if (!/^[0-9A-Z]{10,32}$/.test(recommendationId)) return c.json({ error: 'invalid recommendationId' }, 400)
+  const snapshot = await c.var.getRecommendationProgress(recommendationId)
+  if (!snapshot) return c.json({ error: 'not_found' }, 404)
+  return c.json(snapshot)
+})
 
 app.get('/tasks/:id/reference-prices', async (c) => {
   const { store, userEmail } = c.var

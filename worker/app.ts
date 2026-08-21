@@ -120,6 +120,26 @@ export function createApp(storeFor: (env: Env) => Store = (env) => createD1Store
     // Org credit (read-only) for the low-balance banner. Same relay key the DO runs on, so the
     // balance is org-wide; the key never leaves the Worker.
     c.set('getCredit', () => fetchCredit(rebyteConfig(env)))
+    // Progress side channel → flight MCP. The workspace id is the SAME identity anchor the
+    // relay stamps on the agent's MCP calls (X-Rebyte-Workspace-Id → tenant), so this read is
+    // scoped to the caller's own jobs; the service token never leaves the Worker.
+    c.set('getRecommendationProgress', async (recommendationId) => {
+      const mcpToken = env.SIMPLIFLY_MCP_TOKEN
+      if (!mcpToken) return null
+      const ac = await store.getAgentComputer(tenant)
+      if (!ac?.id) return null
+      const base = (env.SIMPLIFLY_MCP_URL ?? 'https://simplifly-mcp.impo.ai').replace(/\/+$/, '')
+      try {
+        const res = await fetch(`${base}/jobs/${recommendationId}/progress`, {
+          headers: { authorization: `Bearer ${mcpToken}`, 'x-rebyte-workspace-id': ac.id },
+        })
+        if (!res.ok) return null
+        const body = await res.json()
+        return body && typeof body === 'object' ? body as Record<string, unknown> : null
+      } catch {
+        return null
+      }
+    })
     await next()
   })
 

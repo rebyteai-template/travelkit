@@ -18,6 +18,12 @@ export interface Env extends OAuthEnv {
   ASSETS: Fetcher
   /** rebyte relay org key (secret: `wrangler secret put REBYTE_API_KEY`). */
   REBYTE_API_KEY: string
+  /** simplifly-mcp base origin for the UI progress side channel; defaults to the prod
+   *  custom domain when unset. */
+  SIMPLIFLY_MCP_URL?: string
+  /** simplifly-mcp shared service token (secret: `wrangler secret put SIMPLIFLY_MCP_TOKEN`).
+   *  Unset → the progress side channel is silently off; the agent tool channel is unaffected. */
+  SIMPLIFLY_MCP_TOKEN?: string
   /** rebyte relay base; defaults to https://api.rebyte.ai/v1 when unset. */
   REBYTE_API_URL?: string
   /** Shared embed gate key (secret: `wrangler secret put EMBED_KEY`). When set, every

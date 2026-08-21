@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { ChatBubble, FareVerification, FlightRecommendations, RecommendationPlan } from '../frames.ts'
 import { planBookingChangeLabels } from '../booking.ts'
@@ -12,6 +12,8 @@ import { FileCard } from './FileCard.tsx'
 import { Lightbox } from './Lightbox.tsx'
 import { UserQuestion } from './UserQuestion.tsx'
 import { AgentStatus } from './AgentStatus.tsx'
+import { signalFromProgress, type RecommendationProgressSignal } from '../agent-activity.ts'
+import { fetchRecommendationProgress } from '../api.ts'
 import type { UserQuestionAnswer } from '../user-question.ts'
 import { useReferencePrices, useSaveReferencePrice } from '../hooks/useReferencePrices.ts'
 import { useCtripBridge } from '../hooks/useCtripBridge.ts'
@@ -173,6 +175,40 @@ export function ChatPanel({
     : undefined
   const latestActivity = [...chat].reverse().find((bubble) => bubble.activity)?.activity
   const hasLiveActivity = latestActivity?.state === 'active'
+
+  // The progress side channel. The agent's flight_recommendation_get holds server-side for
+  // ~55s, during which the tool channel delivers ZERO new frames — so while the run is live
+  // and has named its recommendationId, poll the worker's proxy every few seconds and paint
+  // the engine's actual stage/counters over the (stale) run. Terminal status stops the loop;
+  // the recommendations table itself still only ever arrives through the tool channel.
+  const liveRecommendationId = hasLiveActivity ? latestActivity?.recommendationId : undefined
+  const [liveProgress, setLiveProgress] = useState<RecommendationProgressSignal | null>(null)
+  useEffect(() => {
+    setLiveProgress(null)
+    if (!liveRecommendationId || !sessionKey) return
+    let stopped = false
+    const tick = async () => {
+      try {
+        const snap = await fetchRecommendationProgress(sessionKey, liveRecommendationId)
+        if (stopped) return
+        if (snap.status === 'queued' || snap.status === 'running') {
+          setLiveProgress(signalFromProgress(snap.progress))
+        } else {
+          // Terminal: let the run's own (tool-channel) state take over; the table is close behind.
+          stopped = true
+          window.clearInterval(timer)
+        }
+      } catch {
+        // A missed poll is just a quiet tick; the next one retries.
+      }
+    }
+    const timer = window.setInterval(() => void tick(), 4000)
+    void tick()
+    return () => {
+      stopped = true
+      window.clearInterval(timer)
+    }
+  }, [liveRecommendationId, sessionKey])
   useLayoutEffect(() => {
     if (loading || (!chat.length && !busy && !children)) return
     const el = chatRef.current
@@ -200,9 +236,14 @@ export function ChatPanel({
         chat.map((b) => {
           if (b.activity) {
             if (b.activity.state === 'waiting') return null
+            // The side channel's snapshot outranks the run's last tool frame, but only on the
+            // LIVE run — completed runs render their own durable facts.
+            const overlay = b.activity === latestActivity && b.activity.state === 'active' && liveProgress
+              ? { ...b.activity, ...liveProgress }
+              : b.activity
             return (
               <div key={b.key} className="msg full agent-progress-message">
-                <AgentStatus run={b.activity} runId={b.runId} />
+                <AgentStatus run={overlay} runId={b.runId} />
               </div>
             )
           }
