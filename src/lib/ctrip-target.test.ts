@@ -10,7 +10,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { adultUnitPrice, quoteTargetFor, unquotableReason } from './ctrip-target.ts'
+import { adultPreTaxUnitPrice, adultUnitPrice, quoteTargetFor, unquotableReason } from './ctrip-target.ts'
 import type { RecommendationPlan } from '../frames.ts'
 
 /** The target when the plan is quotable, null when refused — most tests only care about one side. */
@@ -140,6 +140,25 @@ test('a booking with children yields no adult figure rather than a blended one',
     ticketGroups: [{ ticketGroupId: 't1', passengerGroupId: 'g1', journeyIndexes: [0], fareSource: 'oneway', exactPassengerCount: { adult: 2, child: 1, infant: 0 }, verifiedAt: '', validity: { status: 'verified', validUntil: '' }, verifiedPrice: { amount: 2400, currency: 'CNY' } }],
   } as Partial<RecommendationPlan>)
   assert.equal(adultUnitPrice(family), null)
+})
+
+test('the pre-tax figure divides fareTotal, not the taxed amount', () => {
+  // ¥1700 total = ¥1500 fare + ¥200 tax for two adults → ¥750/adult pre-tax, the figure that
+  // sits on the same basis as Ctrip's list fare.
+  const price = adultPreTaxUnitPrice(roundTrip([
+    { ticketGroupId: 't1', passengerGroupId: 'g1', journeyIndexes: [0, 1], fareSource: 'roundtrip', exactPassengerCount: { adult: 2, child: 0, infant: 0 }, verifiedAt: '', validity: { status: 'verified', validUntil: '' }, verifiedPrice: { amount: 1700, currency: 'CNY', fareTotal: 1500, taxTotal: 200 } },
+  ]))
+  assert.equal(price?.amount, 750)
+  assert.equal(price?.currency, 'CNY')
+})
+
+test('one ticket without the split voids the whole pre-tax figure', () => {
+  // Summing a pre-tax leg with a taxed leg would fabricate a basis neither side quoted.
+  const price = adultPreTaxUnitPrice(roundTrip([
+    { ticketGroupId: 't1', passengerGroupId: 'g1', journeyIndexes: [0], fareSource: 'oneway', exactPassengerCount: { adult: 2, child: 0, infant: 0 }, verifiedAt: '', validity: { status: 'verified', validUntil: '' }, verifiedPrice: { amount: 1400, currency: 'CNY', fareTotal: 1300, taxTotal: 100 } },
+    { ticketGroupId: 't2', passengerGroupId: 'g1', journeyIndexes: [1], fareSource: 'oneway', exactPassengerCount: { adult: 2, child: 0, infant: 0 }, verifiedAt: '', validity: { status: 'verified', validUntil: '' }, verifiedPrice: { amount: 1100, currency: 'CNY' } },
+  ]))
+  assert.equal(price, null)
 })
 
 test('mixed currencies refuse to sum', () => {

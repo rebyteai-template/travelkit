@@ -491,27 +491,44 @@ tr.cheapest td { background: var(--good-soft); }
 .recommend-plan-total { display: flex; align-items: baseline; gap: 7px; margin: 2px 0; }
 .recommend-plan-total-label { color: var(--muted); font-size: 11px; font-weight: 600; }
 .recommend-plan-total-amount { color: var(--accent); font-size: 15px; white-space: nowrap; }
-/* The Ctrip comparison, directly under our own total so the two read as a pair. Kept visually
-   quieter than 总价: ours is the verified figure, this one was read off someone else's page. */
-.recommend-reference { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px; margin: 0 0 2px; }
-.recommend-reference-label { color: var(--muted); font-size: 11px; font-weight: 600; }
-.recommend-reference-amount { color: var(--text); font-size: 13px; white-space: nowrap; }
-/* Ctrip's figure is one adult, pre-tax. Saying so beside the number is what keeps it from being
-   read as a total — the two sides used to differ by the passenger count as well as the tax. */
-.recommend-reference-basis { color: var(--muted); font-size: 10px; }
-.recommend-reference-gap { display: inline-flex; align-items: baseline; gap: 4px; font-size: 11px; font-weight: 600; }
-.recommend-reference-gap.is-cheaper { color: var(--good); }
-.recommend-reference-gap.is-dearer { color: var(--warn); }
-/* The gap is arithmetic on two figures quoted on DIFFERENT bases (Ctrip lists pre-tax, our total
-   is tax-inclusive). Marked so nobody reads it as a settled saving. */
-.recommend-reference-caveat {
-  color: var(--muted); font-size: 10px; font-weight: 500;
-  border-bottom: 1px dotted var(--border-strong); cursor: help;
+/* Our total is tax-inclusive; said once beside it so the pre-tax ledger below cannot be misread
+   as contradicting it. */
+.recommend-plan-total-basis { color: var(--muted); font-size: 10px; }
+/* The Ctrip comparison: a small aligned ledger under 总价. Two-column grid — source label left,
+   mono amount right — with the verdict (高/低 ¥x) as its own concluding row. The grid plus
+   nowrap is what killed the old flex-wrap line salad in this 200px-wide column: amounts align
+   vertically across plans, and nothing ever breaks mid-word again. */
+.recommend-reference {
+  display: grid; grid-template-columns: max-content 1fr; column-gap: 10px; row-gap: 3px;
+  align-items: baseline; align-self: stretch;
+  margin: 0 0 2px; padding: 7px 9px 6px;
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--radius-md);
 }
+.recommend-reference-src { color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.recommend-reference-amt { justify-self: end; color: var(--text); font-size: 13px; white-space: nowrap; }
+/* Per-row basis tag, used only in the mixed-basis fallback (old data without the fare/tax split)
+   where the two rows genuinely differ. The comparable state states the shared basis once below. */
+.recommend-reference-tag { color: var(--muted); font-size: 10px; font-weight: 400; margin-left: 4px; }
+/* The verdict row: the one number this cell exists to produce, so it gets the size and the color.
+   Direction reads off the two rows above it (高 = ours higher). It never ranks or hides a plan —
+   it states the arithmetic and stops. */
+.recommend-reference-verdict {
+  grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  margin-top: 3px; padding-top: 5px; border-top: 1px solid var(--border-strong);
+  font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+.recommend-reference-verdict.is-cheaper { color: var(--good); }
+.recommend-reference-verdict.is-dearer { color: var(--warn); }
+.recommend-reference-note { grid-column: 1 / -1; color: var(--muted); font-size: 10px; }
+/* Footer seat for the re-read button in states that have no verdict row to host it. */
+.recommend-reference-foot { grid-column: 1 / -1; display: flex; justify-content: flex-end; margin-top: 1px; }
+.recommend-reference-foot:empty { display: none; }
+.recommend-reference-error { grid-column: 1 / -1; color: var(--warn); font-size: 10px; }
 /* Shown only when a browser extension answered; the only way a figure enters this cell. */
 .recommend-reference-capture {
   padding: 2px 6px; border: 0; border-radius: 6px; background: transparent; color: var(--accent);
   font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap;
+  justify-self: end;
 }
 .recommend-reference-capture:hover:not(:disabled) { background: var(--accent-soft); }
 .recommend-reference-capture:disabled { opacity: .55; cursor: wait; }
@@ -519,12 +536,10 @@ tr.cheapest td { background: var(--good-soft); }
    seat the read button occupies once installed. A link, not a button — it opens the store page
    and performs nothing itself. */
 .recommend-reference-install {
-  padding: 2px 6px; border-radius: 6px; color: var(--accent);
+  justify-self: end; padding: 2px 6px; border-radius: 6px; color: var(--accent);
   font-size: 11px; font-weight: 700; text-decoration: none; white-space: nowrap;
 }
 .recommend-reference-install:hover { background: var(--accent-soft); }
-/* A hint beside the button, never a blocker: a failed read leaves the button ready to retry. */
-.recommend-reference-error { color: var(--warn); font-size: 10px; }
 .recommend-plan-journeys { margin: 1px 0 2px; padding-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .recommend-plan-journeys li { padding-left: 1px; }
 .recommend-plan-journeys li span + span { margin-left: 6px; }

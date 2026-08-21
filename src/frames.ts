@@ -68,6 +68,11 @@ export interface CompactJourney {
 export interface CompactPrice {
   amount: number
   currency: string
+  /** Pre-tax fare total (票面价合计) and tax total (机建燃油等), passed through from the verify
+   *  API when it returned per-passenger fare+tax lines. Absent on older skill output and on
+   *  salePrice-only verifications. fareTotal is what a pre-tax OTA list price compares against. */
+  fareTotal?: number
+  taxTotal?: number
   perType?: Record<string, { num?: number; unitTotal?: number; subtotal?: number }>
 }
 export interface CompactTicketGroup {
@@ -492,7 +497,20 @@ function parseRequiredPassengerInfos(raw: unknown): string[] | null {
 function parsePositivePrice(raw: unknown): CompactPrice | null {
   if (!isObj(raw) || typeof raw.amount !== 'number' || !Number.isFinite(raw.amount) || raw.amount <= 0) return null
   if (typeof raw.currency !== 'string' || !raw.currency.trim()) return null
-  return { amount: raw.amount, currency: raw.currency, perType: parseCompactPricePerType(raw.perType) }
+  // The tax split rides along only when it is internally consistent (a fareTotal above the
+  // total would poison every pre-tax comparison downstream); an inconsistent pair is dropped
+  // as a pair, never half-kept.
+  const fareTotal = typeof raw.fareTotal === 'number' && Number.isFinite(raw.fareTotal) && raw.fareTotal > 0
+    ? raw.fareTotal : undefined
+  const taxTotal = typeof raw.taxTotal === 'number' && Number.isFinite(raw.taxTotal) && raw.taxTotal >= 0
+    ? raw.taxTotal : undefined
+  const splitOk = fareTotal !== undefined && fareTotal <= raw.amount
+  return {
+    amount: raw.amount,
+    currency: raw.currency,
+    ...(splitOk ? { fareTotal, ...(taxTotal !== undefined ? { taxTotal } : {}) } : {}),
+    perType: parseCompactPricePerType(raw.perType),
+  }
 }
 
 function parseRecommendationCapabilities(raw: unknown): RecommendationPlan['capabilities'] | null {

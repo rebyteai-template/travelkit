@@ -80,14 +80,13 @@ export function quoteTargetFor(
   }
 }
 
-/** Our price for ONE adult, tax included — the like-for-like counterpart to Ctrip's `adultPrice`.
- *
- *  Read off an adults-only passenger group so no child or infant fare is averaged in. A group's
- *  ticket groups are summed first: a round trip may be issued as one covering both journeys or as
- *  two covering one each, and only the sum is the traveller's price either way. Null when the plan
- *  has no adults-only group (e.g. a single-child booking) — a figure we cannot derive honestly is
- *  better absent than approximated. */
-export function adultUnitPrice(plan: RecommendationPlan): CompactPrice | null {
+/** Shared shape of both adult-unit figures: read one amount per ticket group off an adults-only
+ *  passenger group, sum, divide by the adult count. A `read` returning null for any ticket voids
+ *  the whole figure — a partial sum would silently compare a fraction of the itinerary. */
+function adultUnit(
+  plan: RecommendationPlan,
+  read: (ticket: RecommendationPlan['ticketGroups'][number]) => number | null | undefined,
+): CompactPrice | null {
   const group = plan.passengerGroups.find(
     (candidate) =>
       candidate.passengers.adult > 0 && candidate.passengers.child === 0 && candidate.passengers.infant === 0,
@@ -101,11 +100,35 @@ export function adultUnitPrice(plan: RecommendationPlan): CompactPrice | null {
   // Mixed currencies cannot be summed, and guessing a conversion here would invent precision.
   if (tickets.some((ticket) => ticket.verifiedPrice.currency !== currency)) return null
 
-  const total = tickets.reduce((sum, ticket) => sum + ticket.verifiedPrice.amount, 0)
+  let total = 0
+  for (const ticket of tickets) {
+    const amount = read(ticket)
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) return null
+    total += amount
+  }
   const adults = group.passengers.adult
-  if (!Number.isFinite(total) || total <= 0 || adults <= 0) return null
+  if (total <= 0 || adults <= 0) return null
 
   return { amount: Math.round((total / adults) * 100) / 100, currency }
+}
+
+/** Our price for ONE adult, tax included — what the traveller actually pays us.
+ *
+ *  Read off an adults-only passenger group so no child or infant fare is averaged in. A group's
+ *  ticket groups are summed first: a round trip may be issued as one covering both journeys or as
+ *  two covering one each, and only the sum is the traveller's price either way. Null when the plan
+ *  has no adults-only group (e.g. a single-child booking) — a figure we cannot derive honestly is
+ *  better absent than approximated. */
+export function adultUnitPrice(plan: RecommendationPlan): CompactPrice | null {
+  return adultUnit(plan, (ticket) => ticket.verifiedPrice.amount)
+}
+
+/** Our PRE-TAX fare for ONE adult — the true like-for-like counterpart to Ctrip's `adultPrice`
+ *  (Ctrip's list fare excludes airport fee and fuel surcharge). Needs every ticket group to carry
+ *  the verify API's fare/tax split (`verifiedPrice.fareTotal`); older skill output without it
+ *  yields null, and the cell falls back to showing both bases side by side without subtracting. */
+export function adultPreTaxUnitPrice(plan: RecommendationPlan): CompactPrice | null {
+  return adultUnit(plan, (ticket) => ticket.verifiedPrice.fareTotal)
 }
 
 /** Why this plan cannot be compared, for the cell to show instead of a dead button. Derived from

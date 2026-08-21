@@ -9,7 +9,7 @@ import type {
   RecommendationStatus,
   SearchResult,
 } from '../frames.ts'
-import { adultUnitPrice, unquotableReason } from '../lib/ctrip-target.ts'
+import { adultPreTaxUnitPrice, adultUnitPrice, unquotableReason } from '../lib/ctrip-target.ts'
 
 import type { ReferencePrice } from '../api.ts'
 import { paxSummary, planTotal } from '../booking.ts'
@@ -164,14 +164,16 @@ export interface CtripCompare {
 }
 
 /**
- * The Ctrip comparison for one plan.
+ * The Ctrip comparison for one plan: a two-row ledger (携程 / 我们) with the gap as its
+ * concluding line.
  *
- * Both figures shown here are PER ADULT. Ctrip prices one adult; our plan total covers every
- * passenger, so it is divided down by `adultUnitPrice` before the two are put side by side —
- * without that, a two-adult booking reads as though we were twice the price. The remaining
- * difference in basis is TAX: Ctrip's search fare excludes the airport fee and fuel surcharge,
- * ours includes them, and the plan carries no tax-exclusive figure to subtract. So the gap is
- * shown with that stated, and in the direction it actually errs — we look dearer than we are.
+ * Both figures are PER ADULT (Ctrip prices one adult; `adultUnitPrice` divides our multi-pax
+ * total down — without that a two-adult booking reads as though we were twice the price), and
+ * when the skill passed through the verify API's fare/tax split, both are PRE-TAX: our
+ * `adultPreTaxUnitPrice` against Ctrip's list fare, same basis, so the subtraction is a real
+ * channel-price gap. Older results without the split fall back to showing both figures with
+ * their bases named and NO subtraction — a gap across mismatched bases is a number nobody
+ * should act on.
  *
  * It never judges the plan: no reordering, no dropping, no "cheaper elsewhere" warning
  * (CLAUDE.md 推荐边界) — it shows the numbers and stops.
@@ -186,7 +188,8 @@ function ReferencePriceCell({ plan, price, onCapture, installed, captureError, c
 }) {
   const [capturing, setCapturing] = useState(false)
 
-  const ourAdult = adultUnitPrice(plan)
+  const ourPreTax = adultPreTaxUnitPrice(plan)
+  const ourTaxed = adultUnitPrice(plan)
   const blocked = unquotableReason(plan)
 
   async function runCapture() {
@@ -201,71 +204,84 @@ function ReferencePriceCell({ plan, price, onCapture, installed, captureError, c
 
   const canCapture = Boolean(onCapture && !blocked)
 
+  /* Re-read, not edit: every figure in this cell comes from Ctrip's own payload, so a
+     wrong-looking number is fixed by reading again, never by typing over it. */
+  const captureButton = (label: string) => canCapture ? (
+    <button
+      type="button"
+      className="recommend-reference-capture"
+      disabled={capturing}
+      title={captureVersion ? `携程比价插件 ${captureVersion}` : undefined}
+      onClick={() => void runCapture()}
+    >
+      {capturing ? '读取中…' : label}
+    </button>
+  ) : null
+
+  const errorLine = captureError ? <span className="recommend-reference-error">{captureError}</span> : null
+
   if (price) {
-    // Compare like with like: per adult on both sides, or not at all.
-    const comparable = ourAdult && price.currency === ourAdult.currency
-    const gap = comparable ? Math.round((ourAdult.amount - price.amount) * 100) / 100 : null
+    const sourceTitle = price.source === 'ctrip-extension' ? '插件读取' : undefined
+    // Compare like with like: per adult AND pre-tax on both sides, or no subtraction at all.
+    const preTax = ourPreTax && price.currency === ourPreTax.currency ? ourPreTax : null
+    if (preTax) {
+      const gap = Math.round((preTax.amount - price.amount) * 100) / 100
+      const cheaper = gap <= 0
+      return (
+        <div className="recommend-reference">
+          <span className="recommend-reference-src" title={sourceTitle}>携程</span>
+          <strong className="recommend-reference-amt mono">{recommendationMoney(price.amount, price.currency)}</strong>
+          <span className="recommend-reference-src">我们</span>
+          <strong className="recommend-reference-amt mono">{recommendationMoney(preTax.amount, preTax.currency)}</strong>
+          <span className={`recommend-reference-verdict ${cheaper ? 'is-cheaper' : 'is-dearer'}`}>
+            <span title={`我们的成人票面价比携程${cheaper ? '低' : '高'} ${recommendationMoney(Math.abs(gap), preTax.currency)}`}>
+              {cheaper ? '低 ' : '高 '}
+              <span className="mono">{recommendationMoney(Math.abs(gap), preTax.currency)}</span>
+            </span>
+            {captureButton('重新读取')}
+          </span>
+          <span className="recommend-reference-note">成人票面价 · 均不含税</span>
+          {errorLine}
+        </div>
+      )
+    }
+    const taxed = ourTaxed && price.currency === ourTaxed.currency ? ourTaxed : null
     return (
       <div className="recommend-reference">
-        <span className="recommend-reference-label">
-          携程{price.source === 'ctrip-extension' ? '（插件读取）' : ''}
-        </span>
-        <strong className="recommend-reference-amount mono">
+        <span className="recommend-reference-src" title={sourceTitle}>携程</span>
+        <strong className="recommend-reference-amt mono">
           {recommendationMoney(price.amount, price.currency)}
+          <span className="recommend-reference-tag">不含税</span>
         </strong>
-        <span className="recommend-reference-basis">/成人·不含税</span>
-        {comparable && gap !== null ? (
-          <span className={`recommend-reference-gap ${gap <= 0 ? 'is-cheaper' : 'is-dearer'}`}>
-            我们 <span className="mono">{recommendationMoney(ourAdult.amount, ourAdult.currency)}</span>
-            /成人·含税 ·
-            {gap <= 0 ? ' 低 ' : ' 高 '}
-            <span className="mono">{recommendationMoney(Math.abs(gap), ourAdult.currency)}</span>
-            <span
-              className="recommend-reference-caveat"
-              title="携程为不含税票面价，我们含机建与燃油。实际差距比此处显示的更有利于我们；上游提供税前价后才能精确对齐。"
-            >
-              含税差未扣
-            </span>
-          </span>
+        {taxed ? (
+          <>
+            <span className="recommend-reference-src">我们</span>
+            <strong className="recommend-reference-amt mono">
+              {recommendationMoney(taxed.amount, taxed.currency)}
+              <span className="recommend-reference-tag">含税</span>
+            </strong>
+            <span className="recommend-reference-note">口径不同，不能直接相减；该结果缺票面价拆分</span>
+          </>
         ) : (
-          <span className="recommend-reference-caveat" title="该方案无纯成人票组或币种不同，无法按成人单价对齐">
+          <span className="recommend-reference-note" title="该方案无纯成人票组或币种不同，无法按成人单价对齐">
             无法按成人单价对齐
           </span>
         )}
-        {/* Re-read, not edit: every figure in this cell comes from Ctrip's own payload, so a
-            wrong-looking number is fixed by reading again, never by typing over it. */}
-        {canCapture ? (
-          <button
-            type="button"
-            className="recommend-reference-capture"
-            disabled={capturing}
-            title={captureVersion ? `携程比价插件 ${captureVersion}` : undefined}
-            onClick={() => void runCapture()}
-          >
-            {capturing ? '读取中…' : '重新读取'}
-          </button>
-        ) : null}
+        <span className="recommend-reference-foot">{captureButton('重新读取')}</span>
+        {errorLine}
       </div>
     )
   }
 
   return (
     <div className="recommend-reference">
-      <span className="recommend-reference-label">携程价</span>
+      <span className="recommend-reference-src">携程</span>
       {canCapture ? (
-        <button
-          type="button"
-          className="recommend-reference-capture"
-          disabled={capturing}
-          title={captureVersion ? `携程比价插件 ${captureVersion}` : undefined}
-          onClick={() => void runCapture()}
-        >
-          {capturing ? '读取中…' : '自动读取'}
-        </button>
+        captureButton('自动读取')
       ) : blocked ? (
         /* Why there is no button, so its absence does not read as a broken extension. The plan's
            own 携程比价 link is still right there for anyone who wants to look. */
-        <span className="recommend-reference-caveat">{blocked}</span>
+        <span className="recommend-reference-note">{blocked}</span>
       ) : installed === false ? (
         /* No extension answered: the read entry becomes the install entry. Chrome does not
            inject content scripts into already-open tabs on install, hence the reload note.
@@ -281,7 +297,7 @@ function ReferencePriceCell({ plan, price, onCapture, installed, captureError, c
           安装比价插件
         </a>
       ) : null}
-      {captureError ? <span className="recommend-reference-error">{captureError}</span> : null}
+      {errorLine}
     </div>
   )
 }
@@ -316,6 +332,7 @@ function PlanSummary({ plan, busy, onAction, onStartBooking, ctripCompare }: {
       <div className="recommend-plan-total">
         <span className="recommend-plan-total-label">总价</span>
         <strong className="recommend-plan-total-amount mono">{recommendationMoney(total.amount, total.currency)}</strong>
+        <span className="recommend-plan-total-basis">含税</span>
       </div>
       {ctripCompare ? (
         <ReferencePriceCell
